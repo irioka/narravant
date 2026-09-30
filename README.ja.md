@@ -19,17 +19,7 @@ NARRAVANT は、小説や脚本のテキストからオーディオブック用�
 
 リアルタイム朗読 — Import・分析・声のデザイン・自動スクロール付き再生:
 
-<!--
-  デモ動画（約3分・720p）。リポジトリにコミットした動画は GitHub では再生できないため、
-  Web UI からアップロードして埋め込みます。
-  1. このリポジトリで新しい GitHub issue（または PR / release）を開く。
-  2. コメント欄に `narravant-demo-720p.mp4` をドラッグしてアップロード完了を待つ。
-  3. GitHub が https://github.com/<owner>/narravant/assets/.../<id>.mp4 のような URL を返す。
-  4. 下のプレースホルダ URL をその URL に置き換える（単独行のままにすると
-     GitHub がインラインプレイヤーで再生する）。その後 issue を閉じる。
--->
-
-https://github.com/OWNER/narravant/assets/REPLACE_WITH_UPLOADED_VIDEO_URL.mp4
+https://github.com/user-attachments/assets/511a7b1d-07ab-4e1b-8aa5-9045ebe5dd8c
 
 > ここで示すサンプル作品は、著作権が消滅した日本語文学のライブラリ [青空文庫](https://www.aozora.gr.jp/) のものです。
 

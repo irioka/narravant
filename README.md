@@ -19,17 +19,7 @@ NARRAVANT is an open source application that turns novels and screenplays into a
 
 Real-time reading — import, analysis, voice design, and playback with auto-scroll:
 
-<!--
-  Demo video (~3 min, 720p). GitHub does not host videos committed to the repo,
-  so the video is attached through the web UI:
-  1. Open a new GitHub issue (or a PR/release) on this repository.
-  2. Drag `narravant-demo-720p.mp4` into the comment box and wait for the upload.
-  3. GitHub returns a URL like https://github.com/<owner>/narravant/assets/.../<id>.mp4
-  4. Replace the placeholder URL below with that URL (keep it on its own line so
-     GitHub renders an inline player). Then close the issue.
--->
-
-https://github.com/OWNER/narravant/assets/REPLACE_WITH_UPLOADED_VIDEO_URL.mp4
+https://github.com/user-attachments/assets/511a7b1d-07ab-4e1b-8aa5-9045ebe5dd8c
 
 > The sample work shown here is from [Aozora Bunko](https://www.aozora.gr.jp/), a library of public-domain Japanese literature.
 
