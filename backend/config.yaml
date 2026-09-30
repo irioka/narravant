@@ -1,0 +1,84 @@
+gemini:
+  analysis_max_attempts: 3 # Max attempts to regenerate an incomplete structured analysis without patching it
+  generation_max_attempts: 6 # Max attempts to retry the same request on transient analysis 5xx/408/429 (1 initial + 5 retries)
+  voice_design_max_attempts: 3 # Max attempts to retry the same Voice Design request on transient 503/502/504 (1 initial + 2 retries)
+  retry_backoff_seconds: 3 # Base retry wait unit (seconds); grows in proportion to the attempt number
+  connection_timeout_seconds: 300 # Upper bound for stream start and first-chunk receipt (seconds)
+  chunk_timeout_seconds: 60 # Upper bound for the interval between chunks after the first chunk (seconds)
+  processing_timeout_seconds: 1800 # Upper bound for the whole generative-AI processing including conversion and analysis (seconds)
+  max_output_tokens: 65536
+  max_main_characters: 6
+  thinking_level: low # Gemini 3.8 Flash supports only LOW/MEDIUM/HIGH
+  import_continuation_max_attempts: 8
+  import_max_fountain_characters: 1000000
+  text_reader_source_unit_max_characters: 24000
+  text_reader_source_unit_overlap_characters: 3000
+  pdf_classifier_page_window: 8
+  pdf_reader_page_window: 6
+  pdf_reader_page_overlap: 1
+  reader_refinement_max_attempts: 1
+  scene_regeneration_max_attempts: 1
+  classification_max_output_tokens: 2048
+  reader_max_output_tokens: 8192
+  planning_max_output_tokens: 16384
+  scene_writing_max_output_tokens: 16384
+  verification_max_output_tokens: 4096
+
+playback:
+  tts_max_attempts: 6 # Max attempts covering transient TTS errors during playback (1 initial + 5 retries)
+  scene_pause_duration_ms: 3000 # Silence inserted at a Scene Heading transition (milliseconds)
+
+emotion_arc:
+  max_points: 36
+
+sse:
+  heartbeat_interval_seconds: 15
+  poll_interval_milliseconds: 250
+
+file_import:
+  max_size_mb: 50
+  pdf_max_pages: 1000
+  fdx_max_depth: 64
+  txt_minimum_confidence: 0.70
+  draft_ttl_seconds: 3600
+
+valence_search:
+  similarity_threshold: 0.5 # Cosine similarity threshold (0.0-1.0); only documents at or above this value match in similarity search
+
+valence_vectorization:
+  algorithm: shape_slope_dct
+  profile_revision: 2
+  value_min: 1
+  value_max: 7
+  dimensions: 10
+  canonical_points: 64
+  interpolation: pchip
+  dct_type: 2
+  dct_norm: ortho
+  slope_method: first_difference
+  level_dimensions: 6
+  slope_dimensions: 3
+  level_weight: 0.7
+  slope_weight: 0.3
+  flat_range_epsilon: 0.5
+
+valence_patterns:
+  # Represent the 6 basic emotional arcs from Reagan et al. (2016) using only semantic control points from 1 to 7.
+  - id: 'n'
+    name: 'N (Rise-fall-rise)'
+    control_values: [1, 7, 1, 7]
+  - id: 'reverse_n'
+    name: 'Reverse N (Fall-rise-fall)'
+    control_values: [7, 1, 7, 1]
+  - id: 'v'
+    name: 'V (Fall-rise)'
+    control_values: [7, 1, 7]
+  - id: 'reverse_v'
+    name: 'Reverse V (Rise-fall)'
+    control_values: [1, 7, 1]
+  - id: 'rise'
+    name: 'Rise'
+    control_values: [1, 7]
+  - id: 'fall'
+    name: 'Fall'
+    control_values: [7, 1]

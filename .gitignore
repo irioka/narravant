@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+backend/.venv/
+env/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node / React / Reflex
+node_modules/
+frontend/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dist/
+frontend/dist/
+.web/
+backend/.web/
+
+# Local runtime & DB
+runtime/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Environment & secrets
+.env
+.env.local
+*.pem
+*.key
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+.gstack/
+graphify-out/
+.serena/
+
+# Local manuscripts and generated audio
+.env.*
+!.env.example
+tests/scripts/
+audio-output/
+*.wav
+*.mp3
+*.flac
+
+# Kiro: 個人環境から取り込む外部 Skill（プロジェクト固有 Skill は管理する）
+.kiro/skills/graphify/
+.kiro/skills/systematic-debugging/
+.kiro/skills/verification-before-completion/
+.kiro/skills/receiving-code-review/
+.kiro/skills/requesting-code-review/

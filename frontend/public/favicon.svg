@@ -1,0 +1,12 @@
+<svg aria-label="NARRAVANT screenplay mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 96">
+  <path d="M18 6h49v78H18z" fill="#fff" stroke="#0e639c" stroke-width="2.5"/>
+  <path d="M12 11h49v78H12z" fill="#0e639c" fill-opacity=".08" stroke="#0e639c" stroke-width="3"/>
+  <path d="M12 11h9v78h-9z" fill="#0e639c" fill-opacity=".12"/>
+  <circle data-part="brad" cx="16.5" cy="28" r="3" fill="#fff" stroke="#0e639c" stroke-width="2"/>
+  <circle data-part="brad" cx="16.5" cy="70" r="3" fill="#fff" stroke="#0e639c" stroke-width="2"/>
+  <path d="M29 31h23M29 38h18" fill="none" stroke="#0e639c" stroke-linecap="round" stroke-width="2.5"/>
+  <path d="M30 52h20M30 58h14" fill="none" stroke="#0e639c" stroke-linecap="round" stroke-opacity=".45" stroke-width="2"/>
+  <circle data-part="analysis-lens" cx="53" cy="68" r="13" fill="#fff" stroke="#0e639c" stroke-width="3"/>
+  <path d="m62.5 77.5 8 8" fill="none" stroke="#0e639c" stroke-linecap="round" stroke-width="4"/>
+  <path d="M47 68h12M53 62v12" fill="none" stroke="#0e639c" stroke-linecap="round" stroke-width="2"/>
+</svg>

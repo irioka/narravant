@@ -1,0 +1,3757 @@
+{
+  "components": {
+    "schemas": {
+      "AnalysisSchema": {
+        "description": "Canonical v1 analysis payload returned with each document version.",
+        "properties": {
+          "characters": {
+            "items": {
+              "$ref": "#/components/schemas/CharacterAnalysisSchema"
+            },
+            "title": "Characters",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "completed",
+              "not_requested"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "turning_points": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "identified": "#/components/schemas/IdentifiedTurningPointSchema",
+                  "not_applicable": "#/components/schemas/NotApplicableTurningPointSchema"
+                },
+                "propertyName": "availability"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/IdentifiedTurningPointSchema"
+                },
+                {
+                  "$ref": "#/components/schemas/NotApplicableTurningPointSchema"
+                }
+              ]
+            },
+            "title": "Turning Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "status",
+          "turning_points",
+          "characters"
+        ],
+        "title": "AnalysisSchema",
+        "type": "object"
+      },
+      "ApiErrorCode": {
+        "description": "Stable API error codes consumed by the web client.",
+        "enum": [
+          "VALIDATION_ERROR",
+          "EMPTY_FILE",
+          "FILE_TOO_LARGE",
+          "UNSUPPORTED_MEDIA_TYPE",
+          "INVALID_ENCODING",
+          "MALFORMED_FDX",
+          "MALFORMED_PDF",
+          "INVALID_NATIVE_DOCUMENT",
+          "PROCESS_RESTARTED",
+          "UNAUTHENTICATED",
+          "AUTHENTICATION_UNAVAILABLE",
+          "ACCOUNT_BINDING_CONFLICT",
+          "DOCUMENT_NOT_FOUND",
+          "TASK_NOT_FOUND",
+          "NOT_FOUND",
+          "FORBIDDEN",
+          "CONFLICT",
+          "DOCUMENT_CONTENT_MISSING",
+          "CONTRACT_MISMATCH",
+          "INTERNAL_ERROR"
+        ],
+        "title": "ApiErrorCode",
+        "type": "string"
+      },
+      "ApiErrorDetail": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ApiErrorCode"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ApiErrorDetail",
+        "type": "object"
+      },
+      "ApiErrorEnvelope": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ApiErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ApiErrorEnvelope",
+        "type": "object"
+      },
+      "Body_import_document_api_v1_documents_import_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "description": ".fountain/.txt/.pdf/.fdx/.json script. Text input uses strict charset detection; PDF input, including image-only PDF, is sent to Gemini as application/pdf. Input bytes are not persisted.",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_import_document_api_v1_documents_import_post",
+        "type": "object"
+      },
+      "CharacterAnalysisSchema": {
+        "description": "Main character analysis stored in the canonical v1 document payload.",
+        "properties": {
+          "agency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agency"
+          },
+          "choice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choice"
+          },
+          "external_goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Goal"
+          },
+          "fear_or_cost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fear Or Cost"
+          },
+          "goal_to_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal To Outcome"
+          },
+          "internal_need": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Internal Need"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "obstacle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Obstacle"
+          },
+          "related_turning_points": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Related Turning Points",
+            "type": "array"
+          },
+          "voice_traits": {
+            "default": "",
+            "title": "Voice Traits",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "CharacterAnalysisSchema",
+        "type": "object"
+      },
+      "CreateVoiceRequest": {
+        "description": "Request payload to create a new voice persona.",
+        "properties": {
+          "language_code": {
+            "default": "ja-JP",
+            "description": "Language code",
+            "title": "Language Code",
+            "type": "string"
+          },
+          "speaker": {
+            "description": "Speaker name (narrator or character)",
+            "minLength": 1,
+            "title": "Speaker",
+            "type": "string"
+          },
+          "voice_traits": {
+            "description": "Natural language voice description",
+            "minLength": 1,
+            "title": "Voice Traits",
+            "type": "string"
+          }
+        },
+        "required": [
+          "speaker",
+          "voice_traits"
+        ],
+        "title": "CreateVoiceRequest",
+        "type": "object"
+      },
+      "CreateVoiceResponse": {
+        "description": "Response payload containing created voice assignment details.",
+        "properties": {
+          "speaker": {
+            "title": "Speaker",
+            "type": "string"
+          },
+          "voice_id": {
+            "title": "Voice Id",
+            "type": "string"
+          },
+          "voice_traits": {
+            "title": "Voice Traits",
+            "type": "string"
+          }
+        },
+        "required": [
+          "speaker",
+          "voice_id",
+          "voice_traits"
+        ],
+        "title": "CreateVoiceResponse",
+        "type": "object"
+      },
+      "DialogueSchema": {
+        "description": "Dialogue line within a scene.",
+        "properties": {
+          "character": {
+            "title": "Character",
+            "type": "string"
+          },
+          "line": {
+            "title": "Line",
+            "type": "string"
+          }
+        },
+        "required": [
+          "character",
+          "line"
+        ],
+        "title": "DialogueSchema",
+        "type": "object"
+      },
+      "DocumentCapabilitiesSchema": {
+        "description": "Actions authorized for the requesting user on a document.",
+        "properties": {
+          "can_delete": {
+            "title": "Can Delete",
+            "type": "boolean"
+          },
+          "can_edit": {
+            "title": "Can Edit",
+            "type": "boolean"
+          },
+          "can_share": {
+            "title": "Can Share",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "can_edit",
+          "can_share",
+          "can_delete"
+        ],
+        "title": "DocumentCapabilitiesSchema",
+        "type": "object"
+      },
+      "DocumentDetailResponse": {
+        "description": "Full document detail with scenes and emotion arc from storage.",
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/AnalysisSchema"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/DocumentCapabilitiesSchema"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version_id": {
+            "title": "Current Version Id",
+            "type": "integer"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "emotion_arc": {
+            "$ref": "#/components/schemas/EmotionArcSchema"
+          },
+          "expected_version": {
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "gcs_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gcs Uri"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "is_saved": {
+            "title": "Is Saved",
+            "type": "boolean"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "narrator": {
+            "$ref": "#/components/schemas/NarratorSchema"
+          },
+          "owner_email": {
+            "title": "Owner Email",
+            "type": "string"
+          },
+          "owner_user_id": {
+            "title": "Owner User Id",
+            "type": "string"
+          },
+          "scenes": {
+            "items": {
+              "$ref": "#/components/schemas/SceneSchema"
+            },
+            "title": "Scenes",
+            "type": "array"
+          },
+          "shared_count": {
+            "title": "Shared Count",
+            "type": "integer"
+          },
+          "source_fountain": {
+            "title": "Source Fountain",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version_id": {
+            "title": "Version Id",
+            "type": "integer"
+          },
+          "voice_assignments": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceAssignmentSchema"
+            },
+            "title": "Voice Assignments",
+            "type": "array"
+          }
+        },
+        "required": [
+          "document_id",
+          "owner_user_id",
+          "title",
+          "current_version_id",
+          "version_id",
+          "expected_version",
+          "is_saved",
+          "created_at",
+          "updated_at",
+          "owner_email",
+          "shared_count",
+          "source_fountain",
+          "capabilities",
+          "metadata",
+          "scenes",
+          "analysis",
+          "emotion_arc"
+        ],
+        "title": "DocumentDetailResponse",
+        "type": "object"
+      },
+      "DocumentItem": {
+        "description": "Summary item for document list view.",
+        "properties": {
+          "arc_distance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Arc Distance"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version_id": {
+            "title": "Current Version Id",
+            "type": "integer"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "gcs_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gcs Uri"
+          },
+          "is_saved": {
+            "title": "Is Saved",
+            "type": "boolean"
+          },
+          "owner_email": {
+            "title": "Owner Email",
+            "type": "string"
+          },
+          "owner_user_id": {
+            "title": "Owner User Id",
+            "type": "string"
+          },
+          "shared_count": {
+            "title": "Shared Count",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version_id": {
+            "title": "Version Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "document_id",
+          "owner_user_id",
+          "title",
+          "current_version_id",
+          "version_id",
+          "expected_version",
+          "is_saved",
+          "created_at",
+          "updated_at",
+          "owner_email",
+          "shared_count"
+        ],
+        "title": "DocumentItem",
+        "type": "object"
+      },
+      "DocumentListResponse": {
+        "description": "Paginated document list response.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "DocumentListResponse",
+        "type": "object"
+      },
+      "DocumentUpdateRequest": {
+        "description": "Request to update document metadata and/or script text with optimistic locking.",
+        "properties": {
+          "analysis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "base_version_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Version currently being edited",
+            "title": "Base Version Id"
+          },
+          "emotion_arc": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmotionArcSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_version": {
+            "description": "Expected current version_id for optimistic locking",
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "fountain_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fountain Text"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          },
+          "narrator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NarratorSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "voice_assignments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/VoiceAssignmentSchema"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice Assignments"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "title": "DocumentUpdateRequest",
+        "type": "object"
+      },
+      "DocumentVersionItem": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "is_current": {
+            "title": "Is Current",
+            "type": "boolean"
+          },
+          "payload_sha256": {
+            "title": "Payload Sha256",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "version_id": {
+            "title": "Version Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version_id",
+          "title",
+          "created_at",
+          "payload_sha256",
+          "is_current"
+        ],
+        "title": "DocumentVersionItem",
+        "type": "object"
+      },
+      "DocumentVersionListResponse": {
+        "properties": {
+          "current_version_id": {
+            "title": "Current Version Id",
+            "type": "integer"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentVersionItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "document_id",
+          "current_version_id",
+          "items"
+        ],
+        "title": "DocumentVersionListResponse",
+        "type": "object"
+      },
+      "EmotionArcPointMappingSchema": {
+        "additionalProperties": false,
+        "description": "One aggregated emotion-arc point's inclusive source-scene range.",
+        "properties": {
+          "end_scene_number": {
+            "minimum": 1.0,
+            "title": "End Scene Number",
+            "type": "integer"
+          },
+          "point_number": {
+            "minimum": 1.0,
+            "title": "Point Number",
+            "type": "integer"
+          },
+          "representative_scene_number": {
+            "minimum": 1.0,
+            "title": "Representative Scene Number",
+            "type": "integer"
+          },
+          "start_scene_number": {
+            "minimum": 1.0,
+            "title": "Start Scene Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "point_number",
+          "start_scene_number",
+          "end_scene_number",
+          "representative_scene_number"
+        ],
+        "title": "EmotionArcPointMappingSchema",
+        "type": "object"
+      },
+      "EmotionArcSchema": {
+        "description": "Valence/tension data (valence 1-7 int, non-appearance 0, tension -3..+3 int).",
+        "properties": {
+          "characters": {
+            "additionalProperties": {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "title": "Characters",
+            "type": "object"
+          },
+          "scene_mapping": {
+            "items": {
+              "$ref": "#/components/schemas/EmotionArcPointMappingSchema"
+            },
+            "title": "Scene Mapping",
+            "type": "array"
+          },
+          "tension": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Tension",
+            "type": "array"
+          },
+          "valence": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Valence",
+            "type": "array"
+          },
+          "valence_vector": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 10,
+            "minItems": 10,
+            "title": "Valence Vector",
+            "type": "array"
+          }
+        },
+        "required": [
+          "valence",
+          "tension",
+          "characters",
+          "scene_mapping",
+          "valence_vector"
+        ],
+        "title": "EmotionArcSchema",
+        "type": "object"
+      },
+      "IdentifiedTurningPointSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "availability": {
+            "const": "identified",
+            "default": "identified",
+            "title": "Availability",
+            "type": "string"
+          },
+          "change": {
+            "minLength": 1,
+            "title": "Change",
+            "type": "string"
+          },
+          "involved_characters": {
+            "items": {
+              "$ref": "#/components/schemas/TurningPointCharacterSchema"
+            },
+            "minItems": 1,
+            "title": "Involved Characters",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "null"
+          },
+          "scene_number": {
+            "minimum": 1.0,
+            "title": "Scene Number",
+            "type": "integer"
+          },
+          "tp_number": {
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Tp Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tp_number",
+          "label",
+          "scene_number",
+          "change",
+          "involved_characters"
+        ],
+        "title": "IdentifiedTurningPointSchema",
+        "type": "object"
+      },
+      "ImportDraftResponse": {
+        "description": "Ephemeral completed-import payload. It is never written to task_events.",
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/AnalysisSchema"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "emotion_arc": {
+            "$ref": "#/components/schemas/EmotionArcSchema"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Version"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "narrator": {
+            "$ref": "#/components/schemas/NarratorSchema"
+          },
+          "scenes": {
+            "items": {
+              "$ref": "#/components/schemas/SceneSchema"
+            },
+            "title": "Scenes",
+            "type": "array"
+          },
+          "source_fountain": {
+            "title": "Source Fountain",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "version_id": {
+            "minimum": 1,
+            "title": "Version Id",
+            "type": "integer"
+          },
+          "voice_assignments": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceAssignmentSchema"
+            },
+            "title": "Voice Assignments",
+            "type": "array"
+          }
+        },
+        "required": [
+          "document_id",
+          "version_id",
+          "title",
+          "source_fountain",
+          "metadata",
+          "scenes",
+          "analysis",
+          "emotion_arc"
+        ],
+        "title": "ImportDraftResponse",
+        "type": "object"
+      },
+      "ImportDraftSaveRequest": {
+        "additionalProperties": false,
+        "description": "Current client-side Import draft to publish in the single explicit Save action.",
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/AnalysisSchema"
+          },
+          "emotion_arc": {
+            "$ref": "#/components/schemas/EmotionArcSchema"
+          },
+          "fountain_text": {
+            "minLength": 1,
+            "title": "Fountain Text",
+            "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/NativeMetadataSchema"
+          },
+          "narrator": {
+            "$ref": "#/components/schemas/NarratorSchema"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "voice_assignments": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceAssignmentSchema"
+            },
+            "title": "Voice Assignments",
+            "type": "array"
+          }
+        },
+        "required": [
+          "title",
+          "fountain_text",
+          "metadata",
+          "analysis",
+          "emotion_arc"
+        ],
+        "title": "ImportDraftSaveRequest",
+        "type": "object"
+      },
+      "ImportSaveResponse": {
+        "properties": {
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "version_id": {
+            "title": "Version Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "document_id",
+          "version_id",
+          "expected_version"
+        ],
+        "title": "ImportSaveResponse",
+        "type": "object"
+      },
+      "NarratorSchema": {
+        "description": "Voice configuration for the narrator.",
+        "properties": {
+          "voice_traits": {
+            "default": "",
+            "title": "Voice Traits",
+            "type": "string"
+          }
+        },
+        "title": "NarratorSchema",
+        "type": "object"
+      },
+      "NativeMetadataSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "characters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Characters",
+            "type": "array"
+          },
+          "logline": {
+            "minLength": 1,
+            "title": "Logline",
+            "type": "string"
+          },
+          "synopsis": {
+            "minLength": 1,
+            "title": "Synopsis",
+            "type": "string"
+          },
+          "theme_setting": {
+            "minLength": 1,
+            "title": "Theme Setting",
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "logline",
+          "synopsis",
+          "theme_setting"
+        ],
+        "title": "NativeMetadataSchema",
+        "type": "object"
+      },
+      "NotApplicableTurningPointSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "availability": {
+            "const": "not_applicable",
+            "default": "not_applicable",
+            "title": "Availability",
+            "type": "string"
+          },
+          "change": {
+            "title": "Change",
+            "type": "null"
+          },
+          "involved_characters": {
+            "items": {
+              "$ref": "#/components/schemas/TurningPointCharacterSchema"
+            },
+            "maxItems": 0,
+            "title": "Involved Characters",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "scene_number": {
+            "title": "Scene Number",
+            "type": "null"
+          },
+          "tp_number": {
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Tp Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tp_number",
+          "label",
+          "reason"
+        ],
+        "title": "NotApplicableTurningPointSchema",
+        "type": "object"
+      },
+      "ReanalysisTaskResultEvent": {
+        "description": "Validated emotion-arc draft returned by a completed reanalysis task.",
+        "properties": {
+          "emotion_arc": {
+            "$ref": "#/components/schemas/EmotionArcSchema"
+          }
+        },
+        "required": [
+          "emotion_arc"
+        ],
+        "title": "ReanalysisTaskResultEvent",
+        "type": "object"
+      },
+      "SceneSchema": {
+        "description": "Structured scene in a screenplay.",
+        "properties": {
+          "dialogues": {
+            "items": {
+              "$ref": "#/components/schemas/DialogueSchema"
+            },
+            "title": "Dialogues",
+            "type": "array"
+          },
+          "heading": {
+            "title": "Heading",
+            "type": "string"
+          },
+          "scene_number": {
+            "title": "Scene Number",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scene_number",
+          "heading",
+          "text",
+          "dialogues"
+        ],
+        "title": "SceneSchema",
+        "type": "object"
+      },
+      "TaskAcceptedResponse": {
+        "properties": {
+          "status": {
+            "default": "queued",
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_type": {
+            "title": "Task Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "task_type"
+        ],
+        "title": "TaskAcceptedResponse",
+        "type": "object"
+      },
+      "TaskCancelResponse": {
+        "properties": {
+          "status": {
+            "default": "cancel_requested",
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "TaskCancelResponse",
+        "type": "object"
+      },
+      "TaskCancelledEvent": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "TaskCancelledEvent",
+        "type": "object"
+      },
+      "TaskCompletedEvent": {
+        "properties": {
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Document Id"
+          },
+          "import_draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportDraftResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "reanalysis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReanalysisTaskResultEvent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "version_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version Id"
+          }
+        },
+        "title": "TaskCompletedEvent",
+        "type": "object"
+      },
+      "TaskErrorEvent": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "title": "TaskErrorEvent",
+        "type": "object"
+      },
+      "TaskProgressEvent": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "percentage": {
+            "maximum": 100,
+            "minimum": 0,
+            "title": "Percentage",
+            "type": "integer"
+          },
+          "phase": {
+            "enum": [
+              "queued",
+              "cancelling",
+              "structuring",
+              "classifying",
+              "reading",
+              "building_plot_graph",
+              "planning",
+              "writing",
+              "verifying",
+              "analyzing"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "received_characters": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Received Characters"
+          }
+        },
+        "required": [
+          "phase",
+          "percentage",
+          "message"
+        ],
+        "title": "TaskProgressEvent",
+        "type": "object"
+      },
+      "TurningPointCharacterSchema": {
+        "additionalProperties": false,
+        "description": "One character's goal/conflict/choice/action/change at a turning point.",
+        "properties": {
+          "action": {
+            "minLength": 1,
+            "title": "Action",
+            "type": "string"
+          },
+          "change": {
+            "minLength": 1,
+            "title": "Change",
+            "type": "string"
+          },
+          "choice": {
+            "minLength": 1,
+            "title": "Choice",
+            "type": "string"
+          },
+          "conflict": {
+            "minLength": 1,
+            "title": "Conflict",
+            "type": "string"
+          },
+          "goal": {
+            "minLength": 1,
+            "title": "Goal",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "goal",
+          "conflict",
+          "choice",
+          "action",
+          "change"
+        ],
+        "title": "TurningPointCharacterSchema",
+        "type": "object"
+      },
+      "ValencePatternItem": {
+        "description": "One configured valence-arc pattern safe to expose to the UI.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "pattern_id": {
+            "title": "Pattern Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern_id",
+          "name",
+          "description"
+        ],
+        "title": "ValencePatternItem",
+        "type": "object"
+      },
+      "ValencePatternListResponse": {
+        "description": "Configured Valence pattern catalogue in its canonical config order.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ValencePatternItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ValencePatternListResponse",
+        "type": "object"
+      },
+      "ValenceSimilarityItem": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "pattern_id": {
+            "title": "Pattern Id",
+            "type": "string"
+          },
+          "percentage": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Percentage",
+            "type": "number"
+          }
+        },
+        "required": [
+          "pattern_id",
+          "name",
+          "description",
+          "percentage"
+        ],
+        "title": "ValenceSimilarityItem",
+        "type": "object"
+      },
+      "ValenceSimilarityResponse": {
+        "properties": {
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ValenceSimilarityItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "version_id": {
+            "title": "Version Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "document_id",
+          "version_id",
+          "items"
+        ],
+        "title": "ValenceSimilarityResponse",
+        "type": "object"
+      },
+      "VoiceAssignmentSchema": {
+        "description": "Assignment of a voice to a speaker (narrator or character).",
+        "properties": {
+          "speaker": {
+            "minLength": 1,
+            "title": "Speaker",
+            "type": "string"
+          },
+          "voice_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice Id"
+          },
+          "voice_traits": {
+            "default": "",
+            "title": "Voice Traits",
+            "type": "string"
+          }
+        },
+        "required": [
+          "speaker"
+        ],
+        "title": "VoiceAssignmentSchema",
+        "type": "object"
+      },
+      "VoicePreviewRequest": {
+        "description": "Request payload to synthesize a short sample line with an existing voice.",
+        "properties": {
+          "language_code": {
+            "default": "ja-JP",
+            "description": "Language code",
+            "title": "Language Code",
+            "type": "string"
+          },
+          "style": {
+            "default": "",
+            "description": "Optional performance direction",
+            "title": "Style",
+            "type": "string"
+          },
+          "text": {
+            "description": "Short sample line to synthesize",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "voice_id": {
+            "description": "Created voice id (voice_...)",
+            "minLength": 1,
+            "title": "Voice Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voice_id",
+          "text"
+        ],
+        "title": "VoicePreviewRequest",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Intelligent screenplay analysis and narrative arc workbench API",
+    "title": "NARRAVANT API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/documents": {
+      "get": {
+        "description": "List screenplays with optional filtering and narrative arc similarity matching.",
+        "operationId": "list_documents_api_v1_documents_get",
+        "parameters": [
+          {
+            "description": "Search term for title",
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Search term for title",
+              "title": "Query"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Repeated field:direction server-side sort terms",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Repeated field:direction server-side sort terms",
+              "title": "Sort"
+            }
+          },
+          {
+            "description": "Document ID to find similar narrative arcs",
+            "in": "query",
+            "name": "similar_to_arc_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Document ID to find similar narrative arcs",
+              "title": "Similar To Arc Id"
+            }
+          },
+          {
+            "description": "Configured Valence pattern ID to find similar narrative arcs; mutually exclusive with similar_to_arc_id",
+            "in": "query",
+            "name": "arc_pattern_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Configured Valence pattern ID to find similar narrative arcs; mutually exclusive with similar_to_arc_id",
+              "title": "Arc Pattern Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "List Documents",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/import": {
+      "post": {
+        "description": "Start an import that returns an ephemeral draft over SSE after the 202 response.",
+        "operationId": "import_document_api_v1_documents_import_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_import_document_api_v1_documents_import_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAcceptedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Import Document",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/import/{task_id}": {
+      "delete": {
+        "description": "Discard only the process-local draft; no saved content is touched.",
+        "operationId": "discard_import_draft_api_v1_documents_import__task_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Discard Import Draft",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/import/{task_id}/save": {
+      "post": {
+        "description": "Atomically publish the current client-side Import draft selected by Save.",
+        "operationId": "save_import_draft_api_v1_documents_import__task_id__save_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportDraftSaveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportSaveResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Save Import Draft",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/{doc_id}": {
+      "delete": {
+        "description": "Soft-delete a document.",
+        "operationId": "delete_document_api_v1_documents__doc_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Delete Document",
+        "tags": [
+          "documents"
+        ]
+      },
+      "get": {
+        "description": "Fetch complete document details, scenes, and emotion arc from GCS.",
+        "operationId": "get_document_detail_api_v1_documents__doc_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "requested_version_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Requested Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Document Detail",
+        "tags": [
+          "documents"
+        ]
+      },
+      "put": {
+        "description": "Update document metadata and/or script body with optimistic lock validation.",
+        "operationId": "update_document_api_v1_documents__doc_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Update Document",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/{doc_id}/emotion-arc/reanalyze": {
+      "post": {
+        "description": "Queue an owner-only reanalysis that returns an unsaved emotion-arc draft by SSE.",
+        "operationId": "reanalyze_emotion_arc_api_v1_documents__doc_id__emotion_arc_reanalyze_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAcceptedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Reanalyze Emotion Arc",
+        "tags": [
+          "emotion-arc"
+        ]
+      }
+    },
+    "/api/v1/documents/{doc_id}/emotion-arc/similarities": {
+      "get": {
+        "description": "Compare the selected document's completed valence arc to all configured Valence patterns.",
+        "operationId": "get_emotion_arc_similarities_api_v1_documents__doc_id__emotion_arc_similarities_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValenceSimilarityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Emotion Arc Similarities",
+        "tags": [
+          "emotion-arc"
+        ]
+      }
+    },
+    "/api/v1/documents/{doc_id}/versions": {
+      "get": {
+        "operationId": "list_document_versions_api_v1_documents__doc_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentVersionListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "List Document Versions",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/{doc_id}/versions/{version_id}": {
+      "get": {
+        "operationId": "get_document_version_api_v1_documents__doc_id__versions__version_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "title": "Doc Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Document Version",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/{document_id}/voices": {
+      "post": {
+        "description": "Create a custom voice persona using Gemini Voice Design.\n\nNOTE (MF-2): This endpoint calls Voice Design and returns the created voice_id.\nIt does NOT persist to the document or advance version_id. Persistence of\nvoice_assignments is handled via regular PUT /api/v1/documents/{doc_id}.",
+        "operationId": "create_document_voice_api_v1_documents__document_id__voices_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVoiceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateVoiceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Create Document Voice",
+        "tags": [
+          "voices"
+        ]
+      }
+    },
+    "/api/v1/documents/{document_id}/voices/preview": {
+      "post": {
+        "description": "Synthesize a short sample line with an existing voice for the check button.\n\nReturns raw PCM audio (audio/l16; rate=24000; channels=1). The sample line is\nnot persisted; it is used only to preview a created voice.",
+        "operationId": "preview_document_voice_api_v1_documents__document_id__voices_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoicePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Preview Document Voice",
+        "tags": [
+          "voices"
+        ]
+      }
+    },
+    "/api/v1/emotion-arc/patterns": {
+      "get": {
+        "description": "Return labels from config.yaml; curve vectors remain server-side search inputs.",
+        "operationId": "get_valence_patterns_api_v1_emotion_arc_patterns_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValencePatternListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Valence Patterns",
+        "tags": [
+          "emotion-arc"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/cancel": {
+      "post": {
+        "operationId": "cancel_task_api_v1_tasks__task_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCancelResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Cancel Task",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}/progress": {
+      "get": {
+        "operationId": "task_progress_api_v1_tasks__task_id__progress_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "text/event-stream": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/TaskProgressEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskCompletedEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskErrorEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskCancelledEvent"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Persisted task SSE events; comments may be heartbeat frames."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Task Progress",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/version": {
+      "get": {
+        "description": "API version endpoint.",
+        "operationId": "get_version_api_v1_version_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Get Version Api V1 Version Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Version"
+      }
+    },
+    "/api/v1/voices": {
+      "post": {
+        "description": "Create a voice for an unsaved import draft without creating a document.",
+        "operationId": "create_draft_voice_api_v1_voices_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVoiceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateVoiceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Create Draft Voice",
+        "tags": [
+          "voices"
+        ]
+      }
+    },
+    "/api/v1/voices/preview": {
+      "post": {
+        "description": "Preview a voice assigned only in an unsaved import draft.",
+        "operationId": "preview_draft_voice_api_v1_voices_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoicePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Preview Draft Voice",
+        "tags": [
+          "voices"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "description": "Health check endpoint.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Healthz Healthz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Healthz"
+      }
+    }
+  }
+}
