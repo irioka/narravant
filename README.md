@@ -106,4 +106,4 @@ This project follows [Semantic Versioning](https://semver.org/). The release ver
 
 ## License
 
-The software is licensed under the [MIT License](LICENSE). It does not grant rights to imported books, third-party assets, or generated audio. You are responsible for permission to adapt and distribute the material you use.
+The software is licensed under the [MIT License](LICENSE), Copyright (c) 2026 Masayuki Irioka. It does not grant rights to imported books, third-party assets, or generated audio. You are responsible for permission to adapt and distribute the material you use.
