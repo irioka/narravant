@@ -34,7 +34,7 @@ from narravant.api.schemas import (
     VoiceAssignmentSchema,
 )
 from narravant.core.emotion_arc_resolution import scene_mapping_payload
-from narravant.core.fountain import FountainParser
+from narravant.core.fountain import FountainParser, normalize_speaker_name
 from narravant.core.valence_vector import default_valence_vectorizer
 from narravant.db.database import DocumentRepository, OptimisticLockError
 from narravant.domain.tasks import TERMINAL_TASK_STATUSES, TaskStatus
@@ -812,8 +812,7 @@ def canonical_analysis_to_v1(
 
 
 def _clean_character_name(name: str) -> str:
-    cleaned = re.sub(r"[\(（\[［].*?[\)）\]］]", "", name)
-    return re.sub(r"\s+", "", cleaned).strip()
+    return normalize_speaker_name(name)
 
 
 def align_character_arcs(

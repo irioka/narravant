@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from narravant.core.fountain import FountainParser
+from narravant.core.fountain import NARRATOR_SPEAKERS, FountainParser, normalize_speaker_name
 
 
 class PlaybackPlanError(Exception):
@@ -78,14 +78,23 @@ def build_playback_plan(
             message="No utterances found in screenplay source",
         )
 
-    # Build speaker -> voice_id lookup map from voice_assignments
+    # Build speaker -> voice_id lookup map from voice_assignments.
+    # Keep an exact-name map plus a normalized fallback so a voice assigned to a
+    # shortened display name (e.g. "奥の声") still resolves an utterance whose
+    # cue carries the full alias (e.g. "奥の声（山猫たち）"), and vice versa. The
+    # fountain parser only strips ASCII parentheses from cues, so analysis and
+    # playback can otherwise disagree on full-width aliased names.
     raw_assignments = document_data.get("voice_assignments") or []
     voice_map: dict[str, str] = {}
+    normalized_voice_map: dict[str, str] = {}
     for item in raw_assignments:
         speaker = item.get("speaker")
         voice_id = item.get("voice_id")
         if speaker and voice_id:
             voice_map[speaker] = voice_id
+            normalized_key = normalize_speaker_name(speaker)
+            if normalized_key:
+                normalized_voice_map.setdefault(normalized_key, voice_id)
 
     # Validate all utterances and resolve voices
     all_planned: list[PlannedUtterance] = []
@@ -99,7 +108,10 @@ def build_playback_plan(
                 utterance_index=u.utterance_index,
             )
 
-        voice_id = voice_map.get(speaker)
+        voice_id = voice_map.get(speaker) or normalized_voice_map.get(normalize_speaker_name(speaker))
+        if not voice_id and u.target_type == "narrator":
+            # 旧版の日本語キーと英語 cue は、同じナレーター役の声として照合する。
+            voice_id = next((voice_map[name] for name in NARRATOR_SPEAKERS if name in voice_map), None)
         if not voice_id:
             raise PlaybackPlanError(
                 code="UNASSIGNED_VOICE",

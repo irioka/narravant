@@ -2,7 +2,7 @@ import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Pause, RefreshCw, Vo
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import type { Scene } from '@/api/contracts'
+import type { DocumentDetail, Scene } from '@/api/contracts'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { base64ToUint8Array, pcm16ToAudioBuffer } from './audio-decoder'
@@ -16,6 +16,8 @@ export interface AudiobookPlayerProps {
   isPlaying: boolean
   onPlayingChange: (playing: boolean) => void
   disabled?: boolean
+  /** Import直後の下書きは、本文と声の割り当てを保存せず再生する。 */
+  draft?: Pick<DocumentDetail, 'source_fountain' | 'voice_assignments'>
   /** Optional guard run before playback starts; return false to block playback. */
   onBeforePlay?: () => boolean
   /** Current script cursor mapped to the first utterance to play. */
@@ -41,6 +43,7 @@ export function AudiobookPlayer({
   isPlaying,
   onPlayingChange,
   disabled = false,
+  draft,
   onBeforePlay,
   playbackStart,
   onSceneJump,
@@ -119,7 +122,7 @@ export function AudiobookPlayer({
   }, [sceneInputValue])
 
   const getAudioContext = useCallback(() => {
-    if (!audioContextRef.current) {
+    if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
       if (AudioCtx) {
         audioContextRef.current = new AudioCtx({ sampleRate: 24000 })
@@ -210,13 +213,16 @@ export function AudiobookPlayer({
 
   const startPlayback = useCallback((sceneNumber: number, utteranceIndex = 0) => {
     stopAudio()
+    // ボタン操作中に出力を起動する。音声の到着まで待つと再生制限に掛かる場合がある。
+    getAudioContext()
     setErrorMessage(undefined)
     setFailedPosition(undefined)
     setStatus('generating')
     onPlayingChange(true)
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/documents/${documentId}/playback`
+    const path = draft ? '/api/v1/documents/playback' : `/api/v1/documents/${documentId}/playback`
+    const wsUrl = `${protocol}//${window.location.host}${path}`
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
@@ -226,6 +232,7 @@ export function AudiobookPlayer({
         action: 'start',
         scene_number: sceneNumber,
         start_utterance_index: utteranceIndex,
+        ...(draft ? { draft } : {}),
       }))
     }
 
@@ -319,7 +326,7 @@ export function AudiobookPlayer({
     ws.onclose = () => {
       if (wsRef.current === ws) wsRef.current = null
     }
-  }, [documentId, getAudioContext, onPlaybackPositionChange, onPlayingChange, playNextInQueue, stopAudio, t])
+  }, [documentId, draft, getAudioContext, onPlaybackPositionChange, onPlayingChange, playNextInQueue, stopAudio, t])
 
   const stopPlayback = useCallback(() => {
     const ws = wsRef.current
@@ -368,13 +375,14 @@ export function AudiobookPlayer({
 
   useEffect(() => {
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close()
-      }
+      const ws = wsRef.current
+      wsRef.current = null
+      ws?.close()
       stopAudio()
-      if (audioContextRef.current) {
-        void audioContextRef.current.close()
-      }
+      // HMR でも cleanup が走るため、閉じた出力を次の再生に残さない。
+      const context = audioContextRef.current
+      audioContextRef.current = null
+      if (context && context.state !== 'closed') void context.close()
     }
   }, [stopAudio])
 

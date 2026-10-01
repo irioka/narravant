@@ -32,6 +32,29 @@ _SCENE_NUMBER_REGEX = re.compile(r"#(\d+)#\s*$")
 # spoken text.
 _PARENTHETICAL_LINE_REGEX = re.compile(r"^(?:\(|（).*(?:\)|）)$")
 _ASCII_CHARACTER_CUE_REGEX = re.compile(r"^[A-Z][A-Z0-9 ._'/-]{0,38}$")
+NARRATOR_SPEAKERS = ("ナレーター", "Narrator", "NARRATOR")
+
+# A character cue may carry a parenthesized alias/role, e.g. ``茨城暦（宇賀貞治）``
+# or ``奥の声（山猫たち）``. Both half-width and full-width brackets occur in
+# Japanese scripts. Keep the recognition in one place so analysis, the Fountain
+# parser, and playback agree on how to collapse a display name to its stable
+# identity when matching speakers to voices.
+_SPEAKER_ALIAS_REGEX = re.compile(r"[\(（\[［].*?[\)）\]］]")
+_WHITESPACE_REGEX = re.compile(r"\s+")
+
+
+def normalize_speaker_name(name: str) -> str:
+    """Collapse a speaker display name to its alias-free, whitespace-free form.
+
+    Used to reconcile the full cue name carried by utterances (which keeps any
+    parenthesized alias, e.g. ``奥の声（山猫たち）``) with a voice assignment
+    that may have been keyed on the shortened name (e.g. ``奥の声``). Returns an
+    empty string for falsy input.
+    """
+    if not name:
+        return ""
+    without_alias = _SPEAKER_ALIAS_REGEX.sub("", name)
+    return _WHITESPACE_REGEX.sub("", without_alias).strip()
 
 
 def is_parenthetical_line(line: str) -> bool:
@@ -166,7 +189,7 @@ class ParsedScript:
             for d in s.dialogues:
                 if (
                     d.character
-                    and d.character not in ("ナレーター", "Narrator", "NARRATOR")
+                    and d.character not in NARRATOR_SPEAKERS
                     and d.character not in seen
                 ):
                     seen.append(d.character)
@@ -263,6 +286,12 @@ class FountainParser:
         sanitized = sanitize_fountain_text(content)
         lines = sanitized.splitlines()
 
+        # Detect script language for narrator cue name: same test used by
+        # _wrap_bare_narration in vertex_analysis.py and narratorSpeakerName()
+        # in the frontend so all three paths agree on the cue name.
+        _has_japanese = any("\u3040" <= ch <= "\u30ff" or "\u3400" <= ch <= "\u9fff" for ch in sanitized)
+        narrator_cue_name = "ナレーター" if _has_japanese else "Narrator"
+
         metadata = ScriptMetadata()
         in_title_page = True
         title_page_lines: list[str] = []
@@ -339,7 +368,7 @@ class FountainParser:
                         UtteranceItem(
                             scene_number=current_scene.scene_number,
                             utterance_index=len(current_scene.utterances),
-                            speaker="ナレーター",
+                            speaker=narrator_cue_name,
                             target_type="narrator",
                             text=action_text,
                         )
@@ -352,8 +381,9 @@ class FountainParser:
                 speech = " ".join(current_dialogue_lines).strip()
                 if speech:
                     current_scene.dialogues.append(DialogueItem(character=current_character, line=speech))
-                    # A "@ナレーター"/"@Narrator" cue is narration voiced by the narrator.
-                    is_narrator = current_character in ("ナレーター", "Narrator", "NARRATOR")
+                    # "@ナレーター" (Japanese) or "@Narrator" / "@NARRATOR" (English) cues
+                    # are narration voiced by the narrator, not a character.
+                    is_narrator = current_character in NARRATOR_SPEAKERS
                     current_scene.utterances.append(
                         UtteranceItem(
                             scene_number=current_scene.scene_number,

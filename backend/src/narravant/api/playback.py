@@ -6,14 +6,17 @@ import asyncio
 import base64
 import json
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from narravant.api.dependencies import (
     LOCAL_USER_DISPLAY_NAME,
     LOCAL_USER_EMAIL,
     LOCAL_USER_ID,
 )
+from narravant.api.schemas import VoiceAssignmentSchema
 from narravant.db.database import DocumentRepository
 from narravant.services.playback import (
     PlaybackPlanError,
@@ -26,6 +29,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/documents", tags=["playback"])
 
 
+class DraftPlaybackRequest(BaseModel):
+    """保存せず試聴する下書きの、再生に必要な情報だけを受け取る。"""
+
+    model_config = ConfigDict(extra="forbid")
+    source_fountain: str = Field(min_length=1)
+    voice_assignments: list[VoiceAssignmentSchema]
+
+
+class PlaybackStartRequest(BaseModel):
+    """WebSocket の開始メッセージを音声生成前に検証する。"""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["start"]
+    scene_number: int = Field(default=1, ge=1, strict=True)
+    start_utterance_index: int = Field(default=0, ge=0, strict=True)
+    draft: DraftPlaybackRequest | None = None
+
+
 def _build_tts_client(settings):
     """Construct the TTS client for playback.
 
@@ -35,16 +56,18 @@ def _build_tts_client(settings):
     return create_tts_client(settings)
 
 
+@router.websocket("/playback")
 @router.websocket("/{document_id}/playback")
 async def document_playback_websocket(
     websocket: WebSocket,
-    document_id: str,
+    document_id: str | None = None,
 ) -> None:
     """Stream TTS playback events and PCM audio chunks over WebSocket.
 
     Messages:
     Client -> Server:
       - {"action": "start", "scene_number": <int>, "start_utterance_index": <int>}
+      - draft route: start also includes {"draft": {"source_fountain": <str>, "voice_assignments": <list>}}
       - {"action": "stop"}
     Server -> Client:
       - {"event": "utterance_start", "scene_number": n, "utterance_index": i, "speaker": "...", "target_type": "..."}
@@ -59,25 +82,29 @@ async def document_playback_websocket(
     # WebSocket routes cannot use the HTTP `Request`-based dependency accessors,
     # so resolve connection-scoped resources directly from app.state here.
     settings = websocket.app.state.settings
-    db_manager = websocket.app.state.db_manager
-    storage = websocket.app.state.storage_client
-    repo = DocumentRepository(db_manager)
-    # Single local user (matches HTTP get_current_user behavior).
-    repo.ensure_user(LOCAL_USER_ID, LOCAL_USER_EMAIL, LOCAL_USER_DISPLAY_NAME)
     tts_client = _build_tts_client(settings)
 
-    doc = repo.get_document(document_id)
-    if not doc:
-        await websocket.send_json(
-            {
-                "event": "error",
-                "message": f"Document '{document_id}' not found",
-                "scene_number": None,
-                "utterance_index": None,
-            }
-        )
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
+    doc = None
+    storage = None
+    # 未保存の再生は、この接続の下書きだけを使い、DB・ストレージに触れない。
+    if document_id is not None:
+        db_manager = websocket.app.state.db_manager
+        storage = websocket.app.state.storage_client
+        repo = DocumentRepository(db_manager)
+        # Single local user (matches HTTP get_current_user behavior).
+        repo.ensure_user(LOCAL_USER_ID, LOCAL_USER_EMAIL, LOCAL_USER_DISPLAY_NAME)
+        doc = repo.get_document(document_id)
+        if not doc:
+            await websocket.send_json(
+                {
+                    "event": "error",
+                    "message": f"Document '{document_id}' not found",
+                    "scene_number": None,
+                    "utterance_index": None,
+                }
+            )
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
 
     coordinator: TtsPlaybackCoordinator | None = None
     active_task: asyncio.Task | None = None
@@ -85,12 +112,16 @@ async def document_playback_websocket(
     async def _execute_playback(
         start_scene: int,
         start_utterance_index: int,
+        draft: DraftPlaybackRequest | None,
     ) -> None:
         nonlocal coordinator
         try:
-            # Re-read fresh document version for playback
-            current_version = doc["current_version_id"]
-            data, _ = storage.read_structured_script(document_id, current_version)
+            if draft is not None:
+                data = draft.model_dump()
+            else:
+                # Re-read fresh document version for playback
+                current_version = doc["current_version_id"]
+                data, _ = storage.read_structured_script(document_id, current_version)
 
             plan = build_playback_plan(
                 data,
@@ -186,15 +217,34 @@ async def document_playback_websocket(
             except Exception:
                 continue
 
-            action = msg.get("action")
+            action = msg.get("action") if isinstance(msg, dict) else None
             if action == "start":
                 # Duplicate start while actively playing is ignored (SC-3)
                 if active_task and not active_task.done():
                     continue
 
-                start_scene = int(msg.get("scene_number") or 1)
-                start_utterance = int(msg.get("start_utterance_index") or 0)
-                active_task = asyncio.create_task(_execute_playback(start_scene, start_utterance))
+                try:
+                    request = PlaybackStartRequest.model_validate(msg)
+                    if (document_id is None) != (request.draft is not None):
+                        raise ValueError("下書き再生には draft が必要です")
+                except (ValidationError, ValueError):
+                    await websocket.send_json(
+                        {
+                            "event": "error",
+                            "code": "INVALID_PLAYBACK_REQUEST",
+                            "message": "Invalid playback request",
+                            "scene_number": None,
+                            "utterance_index": None,
+                        }
+                    )
+                    continue
+                active_task = asyncio.create_task(
+                    _execute_playback(
+                        request.scene_number,
+                        request.start_utterance_index,
+                        request.draft,
+                    )
+                )
 
             elif action == "stop":
                 if coordinator:

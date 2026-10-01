@@ -27,6 +27,7 @@ from narravant.core.fountain import (
     FountainParser,
     ParsedScript,
     is_parenthetical_line,
+    normalize_speaker_name,
 )
 from narravant.core.settings import Settings
 from narravant.core.valence_vector import default_valence_vectorizer
@@ -1710,9 +1711,7 @@ def _canonical_character_profiles(generated: GeneratedAnalysis, expected_names: 
     if not expected_names:
         return profiles
 
-    def normalized(value: str) -> str:
-        without_alias = re.sub(r"[\(（\[［].*?[\)）\]］]", "", value)
-        return re.sub(r"\s+", "", without_alias).strip()
+    normalized = normalize_speaker_name
 
     result: list[dict[str, Any]] = []
     used: set[int] = set()

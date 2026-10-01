@@ -30,6 +30,26 @@ We made it through the night.
 """
 
 
+@pytest.mark.parametrize(
+    ("source", "assigned_name"),
+    [
+        ("INT. ROOM - DAY #1#\n\nThe room is quiet.", "ナレーター"),
+        ("Title: 日本語のタイトル\n\nINT. ROOM - DAY #1#\n\n@Narrator\nHello.", "ナレーター"),
+        ("INT. ROOM - DAY #1#\n\n@NARRATOR\nHello.", "Narrator"),
+        ("INT. ROOM - DAY #1#\n\n@ナレーター\nこんにちは。", "Narrator"),
+    ],
+)
+def test_narrator_voice_assignments_remain_compatible_across_languages(source, assigned_name):
+    plan = build_playback_plan(
+        {
+            "source_fountain": source,
+            "voice_assignments": [{"speaker": assigned_name, "voice_id": "voices/synthetic-narrator"}],
+        }
+    )
+    assert plan.utterances[0].target_type == "narrator"
+    assert plan.utterances[0].voice_id == "voices/synthetic-narrator"
+
+
 def test_build_playback_plan_success_ordering_and_speaker_types():
     """Verify playback plan establishes correct sequence, scene+index IDs, and voice assignments."""
     document_data = {
@@ -37,7 +57,7 @@ def test_build_playback_plan_success_ordering_and_speaker_types():
         "version_id": 1,
         "source_fountain": SAMPLE_FOUNTAIN,
         "voice_assignments": [
-            {"speaker": "ナレーター", "voice_id": "voices/fake-narrator-1"},
+            {"speaker": "Narrator", "voice_id": "voices/fake-narrator-1"},
             {"speaker": "ALICE", "voice_id": "voices/fake-alice-2"},
             {"speaker": "BOB", "voice_id": "voices/fake-bob-3"},
         ],
@@ -53,7 +73,7 @@ def test_build_playback_plan_success_ordering_and_speaker_types():
     u0 = plan.utterances[0]
     assert u0.scene_number == 1
     assert u0.utterance_index == 0
-    assert u0.speaker == "ナレーター"
+    assert u0.speaker == "Narrator"
     assert u0.target_type == "narrator"
     assert u0.text == "The room is dark and silent."
     assert u0.voice_id == "voices/fake-narrator-1"
@@ -71,7 +91,7 @@ def test_build_playback_plan_success_ordering_and_speaker_types():
     u2 = plan.utterances[2]
     assert u2.scene_number == 1
     assert u2.utterance_index == 2
-    assert u2.speaker == "ナレーター"
+    assert u2.speaker == "Narrator"
     assert u2.text == "The grandfather clock ticks."
 
     # Scene 1, Utterance 3: Bob dialogue
@@ -85,7 +105,7 @@ def test_build_playback_plan_success_ordering_and_speaker_types():
     u4 = plan.utterances[4]
     assert u4.scene_number == 2
     assert u4.utterance_index == 0
-    assert u4.speaker == "ナレーター"
+    assert u4.speaker == "Narrator"
     assert u4.text == "Morning sunlight fills the yard."
 
     # Scene 2, Utterance 1: Alice dialogue
@@ -102,7 +122,7 @@ def test_build_playback_plan_with_start_position():
         "version_id": 1,
         "source_fountain": SAMPLE_FOUNTAIN,
         "voice_assignments": [
-            {"speaker": "ナレーター", "voice_id": "voices/fake-narrator-1"},
+            {"speaker": "Narrator", "voice_id": "voices/fake-narrator-1"},
             {"speaker": "ALICE", "voice_id": "voices/fake-alice-2"},
             {"speaker": "BOB", "voice_id": "voices/fake-bob-3"},
         ],
@@ -130,7 +150,7 @@ def test_build_playback_plan_unassigned_voice_detection():
         "version_id": 1,
         "source_fountain": SAMPLE_FOUNTAIN,
         "voice_assignments": [
-            {"speaker": "ナレーター", "voice_id": "voices/fake-narrator-1"},
+            {"speaker": "Narrator", "voice_id": "voices/fake-narrator-1"},
             {"speaker": "ALICE", "voice_id": "voices/fake-alice-2"},
             {"speaker": "BOB", "voice_id": None},
         ],
@@ -153,7 +173,7 @@ def test_build_playback_plan_missing_speaker_in_assignments():
         "version_id": 1,
         "source_fountain": SAMPLE_FOUNTAIN,
         "voice_assignments": [
-            {"speaker": "ナレーター", "voice_id": "voices/fake-narrator-1"},
+            {"speaker": "Narrator", "voice_id": "voices/fake-narrator-1"},
             # ALICE is omitted
             {"speaker": "BOB", "voice_id": "voices/fake-bob-3"},
         ],
@@ -212,3 +232,38 @@ EXT. 深い山奥 - 昼 #1#
 
     assert [item.speaker for item in plan.utterances] == ["ナレーター", "若い紳士A", "ナレーター"]
     assert "紳士Aは犬の死体" in plan.utterances[-1].text
+
+
+def test_build_playback_plan_resolves_fullwidth_aliased_speaker_to_shortened_voice():
+    """A cue carrying a full-width alias resolves a voice keyed on the short name.
+
+    The Fountain parser strips only ASCII parentheses from cues, so an utterance
+    for ``@奥の声（山猫たち）`` keeps the full name, while analysis may surface the
+    shortened display name ``奥の声`` that the voice gets assigned to. Playback
+    must reconcile the two instead of raising UNASSIGNED_VOICE.
+    """
+    source_fountain = """Title: 注文の多い料理店
+
+EXT. 深い山奥 - 昼 #1#
+
+風が木々を揺らしている。
+
+@奥の声（山猫たち）
+さあさあ、こっちへおいで。
+"""
+    plan = build_playback_plan(
+        {
+            "document_id": "doc-test-fullwidth-alias",
+            "version_id": 1,
+            "source_fountain": source_fountain,
+            "voice_assignments": [
+                {"speaker": "ナレーター", "voice_id": "voices/fake-narrator"},
+                # Voice was created against the shortened, parens-stripped name.
+                {"speaker": "奥の声", "voice_id": "voices/fake-okunokoe"},
+            ],
+        }
+    )
+
+    character_utterance = next(item for item in plan.utterances if item.target_type == "character")
+    assert character_utterance.speaker == "奥の声（山猫たち）"
+    assert character_utterance.voice_id == "voices/fake-okunokoe"

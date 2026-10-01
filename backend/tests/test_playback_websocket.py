@@ -192,7 +192,7 @@ def test_playback_ws_start_from_specific_position(test_setup):
         assert len(starts) == 2
         assert starts[0]["scene_number"] == 2
         assert starts[0]["utterance_index"] == 0
-        assert starts[0]["speaker"] == "ナレーター"
+        assert starts[0]["speaker"] == "Narrator"
         assert starts[1]["scene_number"] == 2
         assert starts[1]["utterance_index"] == 1
         assert starts[1]["speaker"] == "BOB"

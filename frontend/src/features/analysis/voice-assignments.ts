@@ -1,9 +1,13 @@
 import type { Character, DocumentDetail } from '@/api/contracts'
-import { spokenCharacterNames } from './fountain-scenes'
+import { isNarratorSpeaker, narratorSpeakerName, spokenCharacterNames } from './fountain-scenes'
 
 export type VoiceAssignment = NonNullable<DocumentDetail['voice_assignments']>[number]
 
-/** The speaker name used for the narrator across the app. */
+/**
+ * Fallback narrator speaker name for Japanese scripts.
+ * Prefer `narratorSpeakerName(document.source_fountain)` when the Fountain
+ * source is available so the key matches the actual cue in the script.
+ */
 export const NARRATOR_SPEAKER = 'ナレーター'
 
 /** Add spoken cues that an older analysis omitted from its character profiles. */
@@ -35,7 +39,10 @@ export function assignmentForSpeaker(
   assignments: VoiceAssignment[] | undefined,
   speaker: string,
 ): VoiceAssignment | undefined {
-  return assignments?.find((assignment) => assignment.speaker === speaker)
+  const exact = assignments?.find((assignment) => assignment.speaker === speaker)
+  if (exact?.voice_id || !isNarratorSpeaker(speaker)) return exact
+  const aliases = assignments?.filter((assignment) => isNarratorSpeaker(assignment.speaker))
+  return aliases?.find((assignment) => assignment.voice_id) ?? exact ?? aliases?.[0]
 }
 
 /** Return the created voice_id for a speaker, or undefined when it has no voice yet. */
@@ -57,20 +64,23 @@ export function upsertVoiceAssignment(
   next: VoiceAssignment,
 ): VoiceAssignment[] {
   const list = assignments ?? []
-  const index = list.findIndex((assignment) => assignment.speaker === next.speaker)
+  const matches = (assignment: VoiceAssignment) => assignment.speaker === next.speaker
+    || (isNarratorSpeaker(next.speaker) && isNarratorSpeaker(assignment.speaker))
+  const index = list.findIndex(matches)
   if (index === -1) return [...list, next]
-  return list.map((assignment, position) => (position === index ? next : assignment))
+  return list.flatMap((assignment, position) => position === index ? [next] : matches(assignment) ? [] : [assignment])
 }
 
 /** All speakers that need a voice: every character plus the narrator. */
 export function speakersNeedingVoice(document: DocumentDetail): { speaker: string; voice_traits: string }[] {
+  const narrator = narratorSpeakerName(document.source_fountain)
   const spokenNames = new Set(spokenCharacterNames(document.source_fountain))
   const characters = charactersWithSpokenCues(document).filter((character) => spokenNames.has(character.name)).map((character) => ({
     speaker: character.name,
     voice_traits: character.voice_traits ?? '',
   }))
   return [
-    { speaker: NARRATOR_SPEAKER, voice_traits: document.narrator?.voice_traits ?? '' },
+    { speaker: narrator, voice_traits: document.narrator?.voice_traits ?? '' },
     ...characters,
   ]
 }

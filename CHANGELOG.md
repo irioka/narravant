@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-10-01
+
+### Fixed
+
+- Restore scene navigation and audiobook playback immediately after Import, using the current unsaved script and generated voice assignments without saving a document first.
+- Recreate closed audio output when restarting playback and prepare playback when the Play button is pressed.
+- Match narrator voices across English and Japanese speaker names, and reconcile character cues with parenthesized aliases.
+- Remove the duplicate narrator name from the Characters pane.
+
 ## [0.1.0]
 
 The first release: turn a single work into an audiobook you can play back in real time.

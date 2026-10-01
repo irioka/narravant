@@ -1,5 +1,48 @@
 const SCENE_HEADING = /^(?:INT\.\/EXT|INT\/EXT|INT|EXT|EST|I\/E)(?:\.|\s)/im
 
+// Japanese hiragana, katakana, and CJK Unified Ideographs — same detection used
+// by the backend's _wrap_bare_narration to pick @ナレーター vs @Narrator.
+const JAPANESE_CHARS = /[\u3040-\u30ff\u3400-\u9fff]/
+
+export function isNarratorSpeaker(speaker: string): boolean {
+  return speaker === 'ナレーター' || speaker === 'Narrator' || speaker === 'NARRATOR'
+}
+
+/**
+ * Return the narrator cue name used in this Fountain source.
+ *
+ * The backend conversion prompt instructs the LLM to write "@ナレーター" for
+ * Japanese sources and "@Narrator" for English sources; the post-processing
+ * safety net (_wrap_bare_narration) uses the same Japanese-character test.
+ * The frontend uses this helper wherever the narrator speaker key is needed so
+ * that voice_assignments, missingVoiceSpeakers, and playback all agree on the
+ * same cue name, regardless of UI language setting.
+ */
+export function narratorSpeakerName(fountain: string): string {
+  // 明示 cue がある場合は、日本語タイトルや固有名詞による言語推定より優先する。
+  for (const line of fountain.split(/\r?\n/)) {
+    const cue = /^@(.+)$/.exec(line.trim())
+    if (!cue) continue
+    const speaker = cueSpeakerName(cue[1])
+    if (isNarratorSpeaker(speaker)) return speaker
+  }
+  return JAPANESE_CHARS.test(fountain) ? 'ナレーター' : 'Narrator'
+}
+
+/**
+ * Normalize a Fountain character cue to the speaker name used elsewhere.
+ *
+ * The backend parser (FountainParser.parse) strips only a trailing ASCII
+ * parenthetical from a cue, so a full-width alias such as `専門の猟師（案内人）`
+ * is kept verbatim as the speaker name on utterances and character profiles.
+ * The frontend must strip the same way; stripping full-width parentheses here
+ * too would yield `専門の猟師`, which no longer matches the backend profile name
+ * and causes a duplicate, empty character to be synthesized in the voice UI.
+ */
+export function cueSpeakerName(cue: string): string {
+  return cue.trim().replace(/\s*\(.*?\)\s*$/, '')
+}
+
 export function countSceneHeadings(text: string): number {
   return text.split(/\r?\n/).filter((line) => SCENE_HEADING.test(line)).length
 }
@@ -104,7 +147,7 @@ function playbackUtteranceRanges(source: string): Array<{ scene: number; range: 
     const cue = /^@(.+)$/.exec(text)
     if (cue) {
       flush()
-      currentCue = cue[1].trim().replace(/\s*[(（].*?[)）]\s*$/, '')
+      currentCue = cueSpeakerName(cue[1])
       continue
     }
     if (isPerformanceDirection(text)) continue
@@ -148,9 +191,7 @@ export function spokenCharacterNames(fountain: string): string[] {
     if (
       currentCue &&
       cueHasSpeech &&
-      currentCue !== 'ナレーター' &&
-      currentCue !== 'Narrator' &&
-      currentCue !== 'NARRATOR' &&
+      !isNarratorSpeaker(currentCue) &&
       !names.includes(currentCue)
     ) {
       names.push(currentCue)
@@ -164,7 +205,7 @@ export function spokenCharacterNames(fountain: string): string[] {
     const cue = /^@(.+)$/.exec(line)
     if (cue) {
       flush()
-      currentCue = cue[1].trim().replace(/\s*[(（].*?[)）]\s*$/, '')
+      currentCue = cueSpeakerName(cue[1])
       continue
     }
     if (line === '' || isSceneHeading(line) || isTitlePageLine(line)) {
@@ -193,7 +234,7 @@ export function firstUtteranceLine(
   narratorSpeaker: string,
 ): string {
   const lines = fountain.split(/\r?\n/)
-  const wantNarrator = speaker === narratorSpeaker
+  const wantNarrator = speaker === narratorSpeaker || isNarratorSpeaker(speaker)
   let currentSpeaker: string | undefined
   let currentCueHasDialogue = false
 
@@ -211,7 +252,7 @@ export function firstUtteranceLine(
     }
     const cue = /^@(.+)$/.exec(line)
     if (cue) {
-      currentSpeaker = cue[1].trim()
+      currentSpeaker = cueSpeakerName(cue[1])
       currentCueHasDialogue = false
       continue
     }
@@ -222,8 +263,8 @@ export function firstUtteranceLine(
     }
     if (isPerformanceDirection(line)) continue
     if (wantNarrator) {
-      if (currentSpeaker === undefined || currentSpeaker === narratorSpeaker) {
-        currentCueHasDialogue = currentSpeaker === narratorSpeaker
+      if (currentSpeaker === undefined || currentSpeaker === narratorSpeaker || isNarratorSpeaker(currentSpeaker)) {
+        currentCueHasDialogue = currentSpeaker !== undefined
         return firstSentence(line)
       }
       currentCueHasDialogue = true

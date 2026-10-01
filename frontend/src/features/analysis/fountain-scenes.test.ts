@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
-import { countSceneHeadings, firstUtteranceLine, hasSceneHeadings, playbackStartAtOffset, sceneHeadingRange, spokenCharacterNames, utteranceRange } from './fountain-scenes'
+import { countSceneHeadings, firstUtteranceLine, hasSceneHeadings, narratorSpeakerName, playbackStartAtOffset, sceneHeadingRange, spokenCharacterNames, utteranceRange } from './fountain-scenes'
 
 const NARRATOR = 'ナレーター'
+
+describe('narrator speaker identity', () => {
+  it.each(['Narrator', 'NARRATOR', 'ナレーター'])('明示された %s を本文の文字種より優先する', (speaker) => {
+    const source = `Title: 日本語のタイトル\n\nINT. ROOM - DAY\n\n@${speaker}\nHello.`
+    expect(narratorSpeakerName(source)).toBe(speaker)
+    expect(firstUtteranceLine(source, 'ナレーター', 'ナレーター')).toBe('Hello.')
+  })
+})
 
 const FOUNTAIN = [
   'Title: 走れメロス',
@@ -99,6 +107,15 @@ describe('playback source ranges', () => {
 
   it('collects every spoken non-narrator cue', () => {
     expect(spokenCharacterNames(source)).toEqual(['専門の猟師', '通行人'])
+  })
+
+  it('keeps a full-width parenthetical alias in the cue name (matches backend parser)', () => {
+    // The backend FountainParser strips only ASCII parentheses, so the speaker
+    // name on utterances and character profiles is "専門の猟師（案内人）". The
+    // frontend must agree, otherwise the voice UI synthesizes a duplicate,
+    // empty "専門の猟師" alongside the real profile.
+    const aliased = ['Title: 別名', '', 'INT. 森 - 昼 #1#', '', '@専門の猟師（案内人）', 'ここは危険だ。'].join('\n')
+    expect(spokenCharacterNames(aliased)).toEqual(['専門の猟師（案内人）'])
   })
 
   it('maps a cursor inside a paragraph to that paragraph playback start', () => {

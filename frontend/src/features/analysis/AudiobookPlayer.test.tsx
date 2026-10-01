@@ -39,9 +39,13 @@ class MockWebSocket {
 }
 
 class MockAudioContext {
-  state = 'running'
+  static instances: MockAudioContext[] = []
+  static starts: string[] = []
+  state: AudioContextState = 'running'
   sampleRate = 24000
   destination = {}
+
+  constructor() { MockAudioContext.instances.push(this) }
 
   createBuffer(_channels: number, length: number, sampleRate: number) {
     return {
@@ -56,16 +60,18 @@ class MockAudioContext {
       buffer: null,
       connect: () => undefined,
       onended: null,
-      start: () => undefined,
+      start: () => { MockAudioContext.starts.push(this.state) },
       stop: () => undefined,
     } as unknown as AudioBufferSourceNode
   }
 
   close() {
+    this.state = 'closed'
     return Promise.resolve()
   }
 
   resume() {
+    this.state = 'running'
     return Promise.resolve()
   }
 }
@@ -78,6 +84,8 @@ describe('AudiobookPlayer', () => {
 
   beforeEach(() => {
     MockWebSocket.instances = []
+    MockAudioContext.instances = []
+    MockAudioContext.starts = []
     vi.stubGlobal('WebSocket', MockWebSocket)
     vi.stubGlobal('AudioContext', MockAudioContext)
   })
@@ -172,6 +180,56 @@ describe('AudiobookPlayer', () => {
       scene_number: 2,
       start_utterance_index: 1,
     })
+  })
+
+  it('plays an unsaved import using its current script and voice assignments', async () => {
+    const draft = {
+      source_fountain: 'INT. ROOM - DAY #1#\n\n@Narrator\nHello.',
+      voice_assignments: [{ speaker: 'Narrator', voice_id: 'voices/synthetic', voice_traits: 'Calm' }],
+    }
+    renderPlayer({
+      documentId: 'draft-only-id', draft, isPlaying: false, onPlayingChange: vi.fn(),
+      playbackStart: { sceneNumber: 2, utteranceIndex: 1 }, scenes,
+    })
+
+    expect(screen.getByRole('spinbutton', { name: '再生開始シーン番号' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+
+    const ws = MockWebSocket.instances[0]
+    expect(ws.url).toMatch(/\/api\/v1\/documents\/playback$/)
+    expect(JSON.parse(ws.sentMessages[0])).toEqual({
+      action: 'start', scene_number: 2, start_utterance_index: 1, draft,
+    })
+  })
+
+  it('再生ボタンの操作中に音声出力を準備する', () => {
+    renderPlayer({ documentId: 'draft', isPlaying: false, onPlayingChange: vi.fn(), scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    expect(MockAudioContext.instances).toHaveLength(1)
+  })
+
+  it('閉じた音声出力を再利用せず、下書きの受信音声を再生する', async () => {
+    renderPlayer({
+      documentId: 'draft', isPlaying: false, onPlayingChange: vi.fn(), scenes,
+      draft: { source_fountain: 'INT. ROOM - DAY\n\n@Narrator\nHello.', voice_assignments: [] },
+    })
+    const emitAudio = (ws: MockWebSocket) => {
+      ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+      ws.emitMessage({ event: 'audio_chunk', data: 'AQIDBA==' })
+      ws.emitMessage({ event: 'utterance_end', scene_number: 1, utterance_index: 0 })
+    }
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    emitAudio(MockWebSocket.instances[0])
+    await MockAudioContext.instances[0].close()
+
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[1]?.sentMessages).toHaveLength(1))
+    emitAudio(MockWebSocket.instances[1])
+
+    expect(MockAudioContext.starts).toEqual(['running', 'running'])
+    expect(MockAudioContext.instances).toHaveLength(2)
   })
 
   it('stops when an external document operation changes the stop signal', async () => {

@@ -17,4 +17,4 @@ async def test_api_version():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.get("/api/v1/version")
     assert response.status_code == 200
-    assert response.json() == {"version": "0.1.0", "name": "NARRAVANT"}
+    assert response.json() == {"version": "0.1.1", "name": "NARRAVANT"}
