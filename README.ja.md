@@ -106,6 +106,10 @@ VERSION     リリース番号の正本
 
 本プロジェクトは [セマンティックバージョニング](https://semver.org/lang/ja/) に従います。リリース番号は [`VERSION`](VERSION) に定義し、リリース内容は [`CHANGELOG.md`](CHANGELOG.md) を参照してください。
 
+## 参考文献
+
+NARRAVANT が参照する研究・技術仕様と、その利用箇所・適用の限界は [REFERENCES.md](REFERENCES.md) を参照してください。
+
 ## ライセンス
 
 ソフトウェアには [MIT License](LICENSE)（Copyright (c) 2026 Masayuki Irioka）を採用しています。入力した本、第三者の素材、生成音声の利用権はこのライセンスでは付与されません。翻案・配布する作品の権利確認は利用者が行ってください。

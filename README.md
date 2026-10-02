@@ -106,6 +106,10 @@ VERSION     Single source of truth for the release version
 
 This project follows [Semantic Versioning](https://semver.org/). The release version is defined in [`VERSION`](VERSION); see [`CHANGELOG.md`](CHANGELOG.md) for release notes.
 
+## References
+
+See [REFERENCES.md](REFERENCES.md) for the research and technical specifications behind NARRAVANT, their use, and their limits.
+
 ## License
 
 The software is licensed under the [MIT License](LICENSE), Copyright (c) 2026 Masayuki Irioka. It does not grant rights to imported books, third-party assets, or generated audio. You are responsible for permission to adapt and distribute the material you use.
