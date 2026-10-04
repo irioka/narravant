@@ -127,4 +127,19 @@ describe('playback source ranges', () => {
     const headingCursor = source.indexOf('INT. ROOM')
     expect(playbackStartAtOffset(source, headingCursor)).toEqual({ sceneNumber: 1, utteranceIndex: 0 })
   })
+
+  it('CONT\'D cues collapse to single character and preserve speech and preview', () => {
+    const contdSource = [
+      'INT. CABIN - DAY #1#',
+      '',
+      '@MAYA',
+      '(quietly)',
+      'First line of speech.',
+      '',
+      '@MAYA (CONT\'D)',
+      'Second line of speech.',
+    ].join('\n')
+    expect(spokenCharacterNames(contdSource)).toEqual(['MAYA'])
+    expect(firstUtteranceLine(contdSource, 'MAYA', NARRATOR)).toBe('First line of speech.')
+  })
 })

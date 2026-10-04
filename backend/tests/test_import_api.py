@@ -457,6 +457,7 @@ class FakeNarrativeAdapter:
         self.pdf_kind = pdf_kind
         self.calls: list[str] = []
         self.fountain = "Title: Adapted\n\nINT. ROOM - DAY #1#\n\nAdapted scene.\n"
+        self.adapt_languages: list[str] = []
 
     def classify_text(self, text: str, on_progress=None, deadline=None) -> SourceKind:
         self.calls.append("classify_text")
@@ -470,8 +471,17 @@ class FakeNarrativeAdapter:
             on_progress(100)
         return self.pdf_kind
 
-    def adapt_text(self, text: str, on_progress=None, ensure_not_cancelled=None, deadline=None) -> str:
+    def adapt_text(
+        self,
+        text: str,
+        on_progress=None,
+        ensure_not_cancelled=None,
+        deadline=None,
+        *,
+        source_language: str = "und",
+    ) -> str:
         self.calls.append("adapt_text")
+        self.adapt_languages.append(source_language)
         if on_progress:
             on_progress("reading", 1)
         return self.fountain
@@ -493,9 +503,19 @@ class FakeDocumentAnalyzer:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.fountain = "Title: Normalized\n\nINT. ROOM - DAY #1#\n\nNormalized scene.\n"
+        self.normalize_languages: list[str] = []
+        self.analyze_languages: list[str] = []
 
-    def normalize_screenplay_text(self, text: str, on_progress=None, deadline=None) -> str:
+    def normalize_screenplay_text(
+        self,
+        text: str,
+        on_progress=None,
+        deadline=None,
+        *,
+        source_language: str = "und",
+    ) -> str:
         self.calls.append("normalize_screenplay_text")
+        self.normalize_languages.append(source_language)
         return self.fountain
 
     def normalize_screenplay_pdf(self, pdf_bytes: bytes, on_progress=None, deadline=None) -> str:
@@ -510,8 +530,10 @@ class FakeDocumentAnalyzer:
         processing_deadline: float | None = None,
         source_filename: str | None = None,
         expected_characters: list[str] | None = None,
+        source_language: str = "und",
     ) -> CanonicalAnalysis:
         self.calls.append("analyze")
+        self.analyze_languages.append(source_language)
         from narravant.services.vertex_analysis import CanonicalAnalysis
 
         return CanonicalAnalysis(
@@ -763,7 +785,15 @@ def test_import_inconclusive_pdf_and_failed_adaptation_emit_terminal_error_witho
 
     # Case B: ADAPTATION_VERIFICATION_FAILED
     class FailedAdaptationAdapter(FakeNarrativeAdapter):
-        def adapt_text(self, text: str, on_progress=None, ensure_not_cancelled=None, deadline=None) -> str:
+        def adapt_text(
+            self,
+            text: str,
+            on_progress=None,
+            ensure_not_cancelled=None,
+            deadline=None,
+            *,
+            source_language: str = "und",
+        ) -> str:
             raise NarrativeAdaptationError(
                 "ADAPTATION_VERIFICATION_FAILED",
                 "シーン再生成の上限に達しました。",
@@ -945,3 +975,249 @@ async def test_import_and_save_pipeline_with_local_storage_client(tmp_path: Path
     assert stored_json["metadata"]["title"] == "Local Saved Script"
     assert stored_json["narrator"]["voice_traits"] == "講談調の朗々とした語り口"
     assert stored_json["analysis"]["characters"][0]["voice_traits"] == "若々しく威勢のいい侠客の声"
+
+
+def test_import_service_propagates_source_language() -> None:
+    analyzer = FakeDocumentAnalyzer()
+    adapter = FakeNarrativeAdapter(text_kind=SourceKind.SCREENPLAY)
+    service, _repo, _storage, _tasks = _service_with_adapter(adapter, analyzer=analyzer)
+
+    en_screenplay = (
+        b"Title: Storm Cabin\n\n"
+        b"INT. CABIN - DAY #1#\n\n"
+        b"@MAYA\n"
+        b"The river rose, and she knew that her friend must find shelter with the group.\n"
+    )
+    imported_en = validate_import(
+        "storm.fountain",
+        en_screenplay,
+        1024 * 1024,
+        pdf_max_pages=10,
+        fdx_max_depth=10,
+        txt_minimum_confidence=0.7,
+    )
+    task_en = service.start("owner-1", imported_en)
+    service.run(task_en, en_screenplay)
+    assert analyzer.normalize_languages == ["en"]
+    assert analyzer.analyze_languages == ["en"]
+
+    analyzer.normalize_languages.clear()
+    analyzer.analyze_languages.clear()
+    ja_screenplay = (
+        "Title: 嵐の小屋\n\n"
+        "INT. CABIN - DAY #1#\n\n"
+        "@マヤ\n"
+        "川の水が増えたため、少女は友人と一緒に安全な小屋を探しました。二人は協力しながら出口を見つけました。\n"
+    ).encode()
+    imported_ja = validate_import(
+        "storm_ja.fountain",
+        ja_screenplay,
+        1024 * 1024,
+        pdf_max_pages=10,
+        fdx_max_depth=10,
+        txt_minimum_confidence=0.7,
+    )
+    task_ja = service.start("owner-1", imported_ja)
+    service.run(task_ja, ja_screenplay)
+    assert analyzer.normalize_languages == ["ja"]
+    assert analyzer.analyze_languages == ["ja"]
+
+    # Prose novel import test
+    adapter_prose = FakeNarrativeAdapter(text_kind=SourceKind.NARRATIVE_PROSE)
+    analyzer_prose = FakeDocumentAnalyzer()
+    service_prose, _, _, _ = _service_with_adapter(adapter_prose, analyzer=analyzer_prose)
+
+    en_novel = (
+        b"The river rose, and Maya knew that her friend must find shelter with the group. "
+        b"They were walking toward a small cabin when the wind broke a branch above their heads. "
+        b"She held the map while Jon searched for a safer path. Their plan was to wait inside, "
+        b"but the door was locked and they had to find another way before the storm arrived."
+    )
+    imported_en_novel = validate_import(
+        "novel_en.txt",
+        en_novel,
+        1024 * 1024,
+        pdf_max_pages=10,
+        fdx_max_depth=10,
+        txt_minimum_confidence=0.7,
+    )
+    task_en_novel = service_prose.start("owner-1", imported_en_novel)
+    service_prose.run(task_en_novel, en_novel)
+    assert adapter_prose.adapt_languages == ["en"]
+    assert analyzer_prose.analyze_languages == ["en"]
+
+
+@pytest.mark.parametrize(
+    "invalid_cue_body",
+    [
+        "@MAYA stands beside @JON, watching the rain.\nThe shutter rattles.",
+        "@MAYA sits on the wooden floor.\nThe shutter rattles.",
+        "@MAYA\n(quietly)\n\n@JON\nHello.",
+    ],
+)
+def test_import_fails_on_invalid_generated_cue(invalid_cue_body: str) -> None:
+    analyzer = FakeDocumentAnalyzer()
+    analyzer.fountain = f"Title: Test\n\nINT. CABIN - DAY #1#\n\n{invalid_cue_body}\n"
+    adapter = FakeNarrativeAdapter(text_kind=SourceKind.SCREENPLAY)
+    service, repo, storage, tasks = _service_with_adapter(adapter, analyzer=analyzer)
+
+    content = b"Title: Test\n\nINT. CABIN - DAY #1#\n\n@MAYA\nHello.\n"
+    imported = validate_import(
+        "test.fountain",
+        content,
+        1024 * 1024,
+        pdf_max_pages=10,
+        fdx_max_depth=10,
+        txt_minimum_confidence=0.7,
+    )
+    task_id = service.start("owner-1", imported)
+    service.run(task_id, content)
+
+    events = tasks.events_after(task_id, 0)
+    error = events[-1]
+    assert error.event_type == "error"
+    assert error.payload["code"] == "INVALID_SCRIPT_STRUCTURE"
+    assert len(analyzer.analyze_languages) == 0
+    assert not any(item.event_type == "completed" for item in events)
+    assert service.drafts.get(task_id) is None
+    assert repo.list_documents(limit=10, offset=0)[1] == 0
+    assert storage._objects == {}
+
+
+def test_import_sentence_in_cue_respects_known_source_speakers() -> None:
+    analyzer = FakeDocumentAnalyzer()
+    analyzer.fountain = "Title: Test\n\nINT. CABIN - DAY #1#\n\n@MAYA van Meer.\nI am here.\n"
+    adapter = FakeNarrativeAdapter(text_kind=SourceKind.SCREENPLAY)
+
+    # 1. Known in source: accepted
+    service, repo, storage, tasks = _service_with_adapter(adapter, analyzer=analyzer)
+    content_with_known = b"Title: Test\n\nINT. CABIN - DAY #1#\n\n@MAYA van Meer.\nI am here.\n"
+    imported_known = validate_import(
+        "test.fountain",
+        content_with_known,
+        1024 * 1024,
+        pdf_max_pages=10,
+        fdx_max_depth=10,
+        txt_minimum_confidence=0.7,
+    )
+    task_id_1 = service.start("owner-1", imported_known)
+    service.run(task_id_1, content_with_known)
+
+    events_1 = tasks.events_after(task_id_1, 0)
+    assert events_1[-1].event_type == "completed"
+    assert len(analyzer.analyze_languages) == 1
+
+    # 2. Unknown in source: rejected as sentence_in_cue -> INVALID_SCRIPT_STRUCTURE
+    analyzer.analyze_languages.clear()
+    service2, repo2, storage2, tasks2 = _service_with_adapter(adapter, analyzer=analyzer)
+    content_without_known = b"Title: Test\n\nINT. CABIN - DAY #1#\n\n@OTHER\nHello.\n"
+    imported_unknown = validate_import(
+        "test.fountain",
+        content_without_known,
+        1024 * 1024,
+        pdf_max_pages=10,
+        fdx_max_depth=10,
+        txt_minimum_confidence=0.7,
+    )
+    task_id_2 = service2.start("owner-1", imported_unknown)
+    service2.run(task_id_2, content_without_known)
+
+    events_2 = tasks2.events_after(task_id_2, 0)
+    assert events_2[-1].event_type == "error"
+    assert events_2[-1].payload["code"] == "INVALID_SCRIPT_STRUCTURE"
+    assert len(analyzer.analyze_languages) == 0
+
+
+def test_import_fails_on_generated_speech_language_mismatch() -> None:
+    analyzer = FakeDocumentAnalyzer()
+    # Generated fountain has Japanese dialogue
+    analyzer.fountain = (
+        "Title: Storm Cabin\n\n"
+        "INT. CABIN - DAY #1#\n\n"
+        "@MAYA\n"
+        "川の水が増えたため、少女は友人と一緒に安全な小屋を探しました。二人は協力しながら出口を見つけました。\n"
+    )
+    adapter = FakeNarrativeAdapter(text_kind=SourceKind.SCREENPLAY)
+    service, _repo, _storage, tasks = _service_with_adapter(adapter, analyzer=analyzer)
+
+    # Source is English
+    en_screenplay = (
+        b"Title: Storm Cabin\n\n"
+        b"INT. CABIN - DAY #1#\n\n"
+        b"@MAYA\n"
+        b"The river rose, and she knew that her friend must find shelter with the group.\n"
+    )
+    imported = validate_import(
+        "storm.fountain",
+        en_screenplay,
+        1024 * 1024,
+        pdf_max_pages=10,
+        fdx_max_depth=10,
+        txt_minimum_confidence=0.7,
+    )
+    task_id = service.start("owner-1", imported)
+    service.run(task_id, en_screenplay)
+
+    events = tasks.events_after(task_id, 0)
+    error = events[-1]
+    assert error.event_type == "error"
+    assert error.payload["code"] == "IMPORT_FAILED"
+    assert len(analyzer.analyze_languages) == 0
+
+
+@pytest.mark.parametrize(
+    ("filename", "ext", "is_pdf", "text_kind", "pdf_kind"),
+    [
+        ("script.fountain", ".fountain", False, SourceKind.SCREENPLAY, SourceKind.SCREENPLAY),
+        ("script.fdx", ".fdx", False, SourceKind.SCREENPLAY, SourceKind.SCREENPLAY),
+        ("screenplay.txt", ".txt", False, SourceKind.SCREENPLAY, SourceKind.SCREENPLAY),
+        ("novel.txt", ".txt", False, SourceKind.NARRATIVE_PROSE, SourceKind.SCREENPLAY),
+        ("screenplay.pdf", ".pdf", True, SourceKind.SCREENPLAY, SourceKind.SCREENPLAY),
+        ("novel.pdf", ".pdf", True, SourceKind.SCREENPLAY, SourceKind.NARRATIVE_PROSE),
+    ],
+)
+def test_all_import_formats_reject_invalid_cue_at_final_boundary(
+    filename: str, ext: str, is_pdf: bool, text_kind: SourceKind, pdf_kind: SourceKind
+) -> None:
+    invalid_fountain = (
+        "Title: Test\n\nINT. CABIN - DAY #1#\n\n"
+        "@MAYA stands beside @JON, watching the rain.\nThe shutter rattles.\n"
+    )
+    analyzer = FakeDocumentAnalyzer()
+    analyzer.fountain = invalid_fountain
+    adapter = FakeNarrativeAdapter(text_kind=text_kind, pdf_kind=pdf_kind)
+    adapter.fountain = invalid_fountain
+    service, repo, storage, tasks = _service_with_adapter(adapter, analyzer=analyzer)
+
+    if is_pdf:
+        pdf_stream = BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.write(pdf_stream)
+        content = pdf_stream.getvalue()
+    elif ext == ".fdx":
+        content = (
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<FinalDraft DocumentType="Script" Template="No" Version="1">\n'
+            b'<Content><Paragraph Type="Scene Heading"><Text>INT. CABIN - DAY</Text></Paragraph>'
+            b'<Paragraph Type="Character"><Text>MAYA</Text></Paragraph>'
+            b'<Paragraph Type="Dialogue"><Text>Hello.</Text></Paragraph></Content></FinalDraft>'
+        )
+    else:
+        content = b"Title: Test\n\nINT. CABIN - DAY #1#\n\n@MAYA\nHello.\n"
+
+    imported = validate_import(
+        filename,
+        content,
+        1024 * 1024,
+        pdf_max_pages=10,
+        fdx_max_depth=10,
+        txt_minimum_confidence=0.7,
+    )
+    task_id = service.start("owner-1", imported)
+    service.run(task_id, content)
+
+    events = tasks.events_after(task_id, 0)
+    assert events[-1].event_type == "error"
+    assert events[-1].payload["code"] == "INVALID_SCRIPT_STRUCTURE"
+    assert len(analyzer.analyze_languages) == 0

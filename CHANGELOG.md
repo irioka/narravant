@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-10-04
+
+### Fixed
+
+- Keep the source language throughout AI import and reject clearly mismatched narration or analysis, including short descriptive sentences.
+- Validate generated speaker cues before analysis to prevent action descriptions from becoming character names, while retaining valid names and CONT'D speaker identity.
+- Request freshly worded prose adaptations and reinforce that instruction within existing retries after RECITATION, without accepting blocked output.
+- Regenerate scenes with empty or malformed speaker cues within the existing shared scene budget, and report safe scene and line positions on failure.
+
+### Changed
+
+- Simplify the English/Japanese UI language-switch explanation in Basic Usage.
+
 ## [0.1.1] - 2026-10-01
 
 ### Fixed

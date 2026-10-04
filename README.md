@@ -2,16 +2,11 @@
 
 [日本語](README.ja.md)
 
-Current release: **0.1.1**.
+Current release: **0.1.2**.
 
 NARRAVANT is an open source application that turns novels and screenplays into audiobook scripts and reads them aloud. It generates an audiobook script in [Fountain](https://fountain.io/) format from your source text, then uses Gemini TTS to play the narration and character voices in real time. It also analyzes the story through five turning points and an emotional arc. Background music and sound effects are not supported.
 
 ## Screenshots
-
-<!--
-  Screenshots live under docs/images/. The UI is captured in Japanese; the same
-  images are shared by the English and Japanese READMEs.
--->
 
 | Analysis workbench | Five turning points |
 | --- | --- |
@@ -87,6 +82,8 @@ To run each process separately, use `make dev-backend` (FastAPI on port 8000) an
 3. **Design voices** — write voice traits for the narrator and each character, generate voices with Gemini, and assign them per speaker.
 4. **Play** — start real-time playback from the current paragraph. The editor highlights and auto-scrolls to the spoken text.
 5. **Export / import** via Native JSON to move a work between local databases.
+
+Use **en / ja** to change the UI language.
 
 ## Development
 

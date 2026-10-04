@@ -10,6 +10,8 @@ from unittest.mock import patch
 import pytest
 from pypdf import PageObject, PdfWriter
 
+from narravant.core.content_language import ContentLanguageMismatch
+from narravant.core.generated_fountain import GeneratedFountainCueError
 from narravant.services.narrative_adaptation import (
     CausalEdge,
     CausalPlotGraph,
@@ -168,6 +170,9 @@ class FakeNarrativeClient:
         self.verify_results: dict[int, list[tuple[bool, str | None]]] = {}
         self.write_counts: dict[int, int] = defaultdict(int)
         self.verified_scenes: list[int] = []
+        self.read_languages: list[str] = []
+        self.plan_languages: list[str] = []
+        self.write_languages: list[str] = []
 
     def classify_text_source(self, text: str, on_progress=None, deadline=None) -> SourceKind:
         if on_progress:
@@ -185,7 +190,10 @@ class FakeNarrativeClient:
         source_anchor: SourceAnchor,
         on_progress=None,
         deadline=None,
+        *,
+        source_language="und",
     ) -> list[ReaderCandidateEvent]:
+        self.read_languages.append(source_language)
         return [
             ReaderCandidateEvent(
                 summary="アリスが庭を歩く",
@@ -219,7 +227,15 @@ class FakeNarrativeClient:
             ]
         return []
 
-    def plan_scenes(self, dag: CausalPlotGraph, on_progress=None, deadline=None) -> list[PlannedScene]:
+    def plan_scenes(
+        self,
+        dag: CausalPlotGraph,
+        on_progress=None,
+        deadline=None,
+        *,
+        source_language="und",
+    ) -> list[PlannedScene]:
+        self.plan_languages.append(source_language)
         return [
             PlannedScene(
                 scene_number=1,
@@ -259,8 +275,16 @@ class FakeNarrativeClient:
         previous_scenes: Sequence[str],
         on_progress=None,
         deadline=None,
+        *,
+        source_language="und",
     ) -> str:
+        self.write_languages.append(source_language)
         self.write_counts[scene_plan.scene_number] += 1
+        if source_language == "ja":
+            return (
+                f"{scene_plan.heading}\n\n"
+                f"シーン{scene_plan.scene_number}の描写です（v{self.write_counts[scene_plan.scene_number]}）。\n"
+            )
         return (
             f"{scene_plan.heading}\n\n"
             f"Action for scene {scene_plan.scene_number} (v{self.write_counts[scene_plan.scene_number]}).\n"
@@ -275,7 +299,9 @@ class FakeNarrativeClient:
             return results.pop(0)
         return True, None
 
-    def normalize_screenplay_text(self, text: str, on_progress=None, deadline=None) -> str:
+    def normalize_screenplay_text(
+        self, text: str, on_progress=None, deadline=None, *, source_language="und"
+    ) -> str:
         return text
 
     def normalize_screenplay_pdf(self, source_pdf: bytes, on_progress=None, deadline=None) -> str:
@@ -374,3 +400,182 @@ def test_narrative_adaptation_service_classify_text_and_pdf_passes_progress() ->
     kind_pdf = service.classify_pdf(sample_pdf, on_progress=on_progress)
     assert kind_pdf == SourceKind.NARRATIVE_PROSE
     assert progress_calls == [42]
+
+
+def test_narrative_adaptation_source_language_propagation() -> None:
+    client = FakeNarrativeClient()
+    config = _make_test_config()
+    service = NarrativeAdaptationService(client, config)
+
+    en_text = (
+        "The river rose, and she knew that her friend must find shelter with the group. "
+        "They searched the forest together and found a wooden cabin before the storm hit."
+    )
+    # Intermediate summaries are Japanese (FakeNarrativeClient returns "アリスが庭を歩く"),
+    # but source_language must remain "en" across all stages.
+    service.adapt_text(en_text, source_language="en")
+
+    assert client.read_languages == ["en"]
+    assert client.plan_languages == ["en"]
+    assert all(lang == "en" for lang in client.write_languages)
+
+    # Test Japanese source propagation
+    client2 = FakeNarrativeClient()
+    service2 = NarrativeAdaptationService(client2, config)
+    ja_text = "川の水が増えたため、少女は友人と一緒に安全な小屋を探しました。二人は協力しながら出口を見つけました。"
+    service2.adapt_text(ja_text, source_language="ja")
+    assert client2.read_languages == ["ja"]
+    assert client2.plan_languages == ["ja"]
+    assert all(lang == "ja" for lang in client2.write_languages)
+
+
+def test_narrative_adaptation_rejects_invalid_cues_before_verify() -> None:
+    client = FakeNarrativeClient()
+    client.write_scene = lambda plan, units, prev, **kwargs: (  # type: ignore[assignment]
+        f"{plan.heading}\n\n@アリス stands beside @ウサギ, watching.\nThe shutter rattles.\n"
+    )
+    config = _make_test_config()
+    service = NarrativeAdaptationService(client, config)
+
+    with pytest.raises(GeneratedFountainCueError, match="^inline_at_in_cue$"):
+        service.adapt_text("原作本文", source_language="ja")
+
+    assert len(client.verified_scenes) == 0
+
+
+def test_narrative_adaptation_rejects_unknown_character_cue_before_verify() -> None:
+    client = FakeNarrativeClient()
+    client.write_scene = lambda plan, units, prev, **kwargs: (  # type: ignore[assignment]
+        f"{plan.heading}\n\n@UNKNOWN\nHello there.\n"
+    )
+    config = _make_test_config()
+    service = NarrativeAdaptationService(client, config)
+
+    with pytest.raises(GeneratedFountainCueError, match="^unknown_character_cue$"):
+        service.adapt_text("原作本文", source_language="ja")
+
+    assert len(client.verified_scenes) == 0
+
+
+def test_narrative_adaptation_rejects_speech_language_mismatch_before_verify() -> None:
+    client = FakeNarrativeClient()
+    client.write_scene = lambda plan, units, prev, **kwargs: (  # type: ignore[assignment]
+        f"{plan.heading}\n\n@アリス\n川の水が増えたため、少女は友人と一緒に安全な小屋を探しました。二人は協力しながら出口を見つけました。\n"
+    )
+    config = _make_test_config()
+    service = NarrativeAdaptationService(client, config)
+
+    with pytest.raises(ContentLanguageMismatch, match="^output_language$"):
+        service.adapt_text("English source text with enough length to be confirmed.", source_language="en")
+
+    assert len(client.verified_scenes) == 0
+
+
+def test_empty_cue_is_regenerated_before_verify_with_same_context(caplog) -> None:
+    client = FakeNarrativeClient()
+    write = client.write_scene
+    requests = []
+
+    def generate(plan, units, prev, **kwargs):
+        requests.append((plan.scene_number, list(prev), kwargs))
+        valid = write(plan, units, prev, **kwargs)
+        if plan.scene_number == 2 and client.write_counts[2] == 1:
+            return f"{plan.heading}\n\n@アリス\n(quietly)"
+        return valid
+
+    client.write_scene = generate
+    result = NarrativeAdaptationService(client, _make_test_config()).adapt_text(
+        "合成小説", deadline=1234567890.0, source_language="ja"
+    )
+    assert client.write_counts[2] == 2
+    assert client.verified_scenes.count(2) == 1
+    scene_requests = [r for r in requests if r[0] == 2]
+    assert scene_requests[0][1:] == scene_requests[1][1:]
+    assert scene_requests[1][2] == {"deadline": 1234567890.0, "source_language": "ja"}
+    assert "(quietly)" not in result
+    assert "scene_number=2" in caplog.text
+    assert "line_number=3" in caplog.text
+    assert "cue_without_speech" in caplog.text
+    assert "アリス" not in caplog.text
+
+
+def test_empty_cue_exhaustion_is_bounded_and_never_verified(caplog) -> None:
+    client = FakeNarrativeClient()
+    write = client.write_scene
+
+    def generate(plan, units, prev, **kwargs):
+        write(plan, units, prev, **kwargs)
+        return f"{plan.heading}\n\n@アリス"
+
+    client.write_scene = generate
+    with pytest.raises(GeneratedFountainCueError, match="^cue_without_speech$"):
+        NarrativeAdaptationService(client, _make_test_config()).adapt_text("合成小説")
+    assert client.write_counts[1] == 2
+    assert client.verified_scenes == []
+    assert "exhausted" in caplog.text
+
+
+def test_cue_and_semantic_verification_share_regeneration_budget() -> None:
+    client = FakeNarrativeClient()
+    write = client.write_scene
+
+    def generate(plan, units, prev, **kwargs):
+        valid = write(plan, units, prev, **kwargs)
+        if plan.scene_number == 1 and client.write_counts[1] == 1:
+            return f"{plan.heading}\n\n@アリス"
+        return valid
+
+    client.write_scene = generate
+    client.verify_results[1] = [(False, "synthetic verification failure")]
+    with pytest.raises(NarrativeAdaptationError, match="ADAPTATION_VERIFICATION_FAILED"):
+        NarrativeAdaptationService(client, _make_test_config()).adapt_text("合成小説")
+    assert client.write_counts[1] == 2
+
+
+@pytest.mark.parametrize("budget", [1, 2])
+def test_cue_failure_during_verification_regeneration_uses_remaining_budget(budget) -> None:
+    client = FakeNarrativeClient()
+    write = client.write_scene
+
+    def generate(plan, units, prev, **kwargs):
+        valid = write(plan, units, prev, **kwargs)
+        if plan.scene_number == 2 and client.write_counts[2] == 2:
+            return f"{plan.heading}\n\n@アリス"
+        return valid
+
+    client.write_scene = generate
+    client.verify_results[2] = [(False, "synthetic verification failure"), (True, None)]
+    config = _make_test_config().model_copy(update={"scene_regeneration_max_attempts": budget})
+    service = NarrativeAdaptationService(client, config)
+    if budget == 1:
+        with pytest.raises(GeneratedFountainCueError, match="^cue_without_speech$"):
+            service.adapt_text("合成小説")
+        assert client.write_counts[2] == 2
+        assert client.verified_scenes.count(2) == 1
+    else:
+        result = service.adapt_text("合成小説")
+        assert "@アリス" not in result
+        assert client.write_counts[2] == 3
+        assert client.verified_scenes.count(2) == 2
+        assert client.verified_scenes.count(3) == 2
+
+
+def test_cancel_between_cue_failure_and_regeneration_prevents_next_write() -> None:
+    client = FakeNarrativeClient()
+    write = client.write_scene
+
+    def generate(plan, units, prev, **kwargs):
+        write(plan, units, prev, **kwargs)
+        return f"{plan.heading}\n\n@アリス"
+
+    def ensure_not_cancelled():
+        if client.write_counts[1]:
+            raise RuntimeError("synthetic cancellation")
+
+    client.write_scene = generate
+    with pytest.raises(RuntimeError, match="synthetic cancellation"):
+        NarrativeAdaptationService(client, _make_test_config()).adapt_text(
+            "合成小説", ensure_not_cancelled=ensure_not_cancelled
+        )
+    assert client.write_counts[1] == 1
+    assert client.verified_scenes == []

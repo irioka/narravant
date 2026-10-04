@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import unicodedata
 from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
@@ -11,6 +12,16 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 from pypdf import PdfReader, PdfWriter
+
+from narravant.core.content_language import (
+    SourceLanguage,
+    infer_source_language,
+    validate_text_language,
+)
+from narravant.core.fountain import FountainParser
+from narravant.core.generated_fountain import GeneratedFountainCueError, validate_generated_fountain_cues
+
+logger = logging.getLogger(__name__)
 
 
 class NarrativeAdaptationError(RuntimeError):
@@ -458,6 +469,7 @@ class NarrativeGenerationClient(Protocol):
         *,
         on_progress: Callable[[int], None] | None = None,
         deadline: float | None = None,
+        source_language: SourceLanguage = "und",
     ) -> list[ReaderCandidateEvent]: ...
 
     def read_pdf_window(
@@ -482,6 +494,7 @@ class NarrativeGenerationClient(Protocol):
         *,
         on_progress: Callable[[int], None] | None = None,
         deadline: float | None = None,
+        source_language: SourceLanguage = "und",
     ) -> list[PlannedScene]: ...
 
     def write_scene(
@@ -492,6 +505,7 @@ class NarrativeGenerationClient(Protocol):
         *,
         on_progress: Callable[[int], None] | None = None,
         deadline: float | None = None,
+        source_language: SourceLanguage = "und",
     ) -> str: ...
 
     def verify_scene(
@@ -577,11 +591,15 @@ class NarrativeAdaptationService:
         on_progress: Callable[[str, int], None] | None = None,
         ensure_not_cancelled: Callable[[], None] | None = None,
         deadline: float | None = None,
+        source_language: SourceLanguage = "und",
     ) -> str:
         if ensure_not_cancelled:
             ensure_not_cancelled()
         if on_progress:
             on_progress("reading", 0)
+
+        if source_language == "und" and source_text:
+            source_language = infer_source_language(source_text)
 
         max_chars = self.config.text_reader_source_unit_max_characters
         overlap = self.config.text_reader_source_unit_overlap_characters
@@ -611,6 +629,7 @@ class NarrativeAdaptationService:
                 anchor,
                 ensure_not_cancelled=ensure_not_cancelled,
                 deadline=deadline,
+                source_language=source_language,
             )
             raw_events.extend(events)
 
@@ -634,8 +653,15 @@ class NarrativeAdaptationService:
                     location_time=cand.location_time,
                     foreshadowing_candidates=cand.foreshadowing_candidates,
                 )
-        story_events = list(events_by_key.values())
-        return self._run_pipeline(story_events, source_units, on_progress, ensure_not_cancelled, deadline)
+            story_events = list(events_by_key.values())
+        return self._run_pipeline(
+            story_events,
+            source_units,
+            on_progress,
+            ensure_not_cancelled,
+            deadline,
+            source_language=source_language,
+        )
 
     def adapt_pdf(
         self,
@@ -681,11 +707,17 @@ class NarrativeAdaptationService:
         *,
         ensure_not_cancelled: Callable[[], None] | None,
         deadline: float | None,
+        source_language: SourceLanguage = "und",
     ) -> list[ReaderCandidateEvent]:
         for attempt in range(self.config.reader_refinement_max_attempts + 1):
             if ensure_not_cancelled:
                 ensure_not_cancelled()
-            events = self.client.read_text_window(text_window, source_anchor, deadline=deadline)
+            events = self.client.read_text_window(
+                text_window,
+                source_anchor,
+                deadline=deadline,
+                source_language=source_language,
+            )
             valid = True
             for ev in events:
                 if not ev.summary or not ev.summary.strip():
@@ -707,6 +739,8 @@ class NarrativeAdaptationService:
         on_progress: Callable[[str, int], None] | None,
         ensure_not_cancelled: Callable[[], None] | None,
         deadline: float | None,
+        *,
+        source_language: SourceLanguage = "und",
     ) -> str:
         # 2. Causal Plot Graph
         if ensure_not_cancelled:
@@ -723,7 +757,7 @@ class NarrativeAdaptationService:
         if on_progress:
             on_progress("planning", 0)
 
-        planned_scenes = self.client.plan_scenes(dag, deadline=deadline)
+        planned_scenes = self.client.plan_scenes(dag, deadline=deadline, source_language=source_language)
         if not planned_scenes:
             raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
 
@@ -735,6 +769,50 @@ class NarrativeAdaptationService:
         if on_progress:
             on_progress("writing", 0)
 
+        def _validate_scene_piece(piece: str, characters: list[str]) -> None:
+            validate_generated_fountain_cues(
+                piece,
+                known_source_speakers=characters,
+                strict_speaker_names=True,
+            )
+            parsed = FountainParser.parse(piece)
+            utterance_text = "\n".join(item.text for item in parsed.all_utterances())
+            validate_text_language(utterance_text, source_language)
+
+        # 構造検査・verify・後続場面の改稿で同じ場面別予算を共有する。
+        regeneration_attempts: dict[int, int] = defaultdict(int)
+
+        def _reserve_regeneration(scene_number: int) -> None:
+            if regeneration_attempts[scene_number] >= self.config.scene_regeneration_max_attempts:
+                raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+            regeneration_attempts[scene_number] += 1
+
+        def _write_valid_scene(plan: PlannedScene, previous: list[str]) -> str:
+            while True:
+                if ensure_not_cancelled:
+                    ensure_not_cancelled()
+                piece = self.client.write_scene(
+                    plan, source_units, previous, deadline=deadline, source_language=source_language
+                )
+                try:
+                    _validate_scene_piece(piece, plan.characters)
+                    return piece
+                except GeneratedFountainCueError as exc:
+                    exhausted = regeneration_attempts[plan.scene_number] >= self.config.scene_regeneration_max_attempts
+                    logger.warning(
+                        "Generated scene cue invalid; %s scene_number=%d line_number=%s reason=%s "
+                        "regeneration_attempts=%d regeneration_max_attempts=%d",
+                        "attempts exhausted" if exhausted else "regenerating",
+                        plan.scene_number,
+                        exc.line_number,
+                        exc.reason,
+                        regeneration_attempts[plan.scene_number],
+                        self.config.scene_regeneration_max_attempts,
+                    )
+                    if exhausted:
+                        raise
+                    _reserve_regeneration(plan.scene_number)
+
         scene_fountains: dict[int, str] = {}
         for plan in planned_scenes:
             if ensure_not_cancelled:
@@ -742,7 +820,7 @@ class NarrativeAdaptationService:
             prev_scenes = [
                 scene_fountains[p.scene_number] for p in planned_scenes if p.scene_number < plan.scene_number
             ]
-            fountain_piece = self.client.write_scene(plan, source_units, prev_scenes, deadline=deadline)
+            fountain_piece = _write_valid_scene(plan, prev_scenes)
             scene_fountains[plan.scene_number] = fountain_piece
 
         # 5. Verifying & Selective Regeneration
@@ -771,8 +849,6 @@ class NarrativeAdaptationService:
             downstream.sort()
             return downstream
 
-        regeneration_attempts: dict[int, int] = defaultdict(int)
-
         # First pass: verify all scenes in topological order
         initial_failed_scenes: list[int] = []
         for plan in planned_scenes:
@@ -787,14 +863,11 @@ class NarrativeAdaptationService:
 
         for s_num in initial_failed_scenes:
             plan = scene_map[s_num]
-            if regeneration_attempts[s_num] >= self.config.scene_regeneration_max_attempts:
-                raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
-
-            regeneration_attempts[s_num] += 1
+            _reserve_regeneration(s_num)
             prev_scenes = [
                 scene_fountains[p.scene_number] for p in planned_scenes if p.scene_number < plan.scene_number
             ]
-            new_text = self.client.write_scene(plan, source_units, prev_scenes, deadline=deadline)
+            new_text = _write_valid_scene(plan, prev_scenes)
             scene_fountains[s_num] = new_text
 
             re_passed, _re_reason = self.client.verify_scene(plan, new_text, deadline=deadline)
@@ -816,14 +889,11 @@ class NarrativeAdaptationService:
 
             passed, _reason = self.client.verify_scene(plan, current_text, deadline=deadline)
             if not passed:
-                if regeneration_attempts[s_num] >= self.config.scene_regeneration_max_attempts:
-                    raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
-
-                regeneration_attempts[s_num] += 1
+                _reserve_regeneration(s_num)
                 prev_scenes = [
                     scene_fountains[p.scene_number] for p in planned_scenes if p.scene_number < plan.scene_number
                 ]
-                new_text = self.client.write_scene(plan, source_units, prev_scenes, deadline=deadline)
+                new_text = _write_valid_scene(plan, prev_scenes)
                 scene_fountains[s_num] = new_text
 
                 re_passed, _re_reason = self.client.verify_scene(plan, new_text, deadline=deadline)

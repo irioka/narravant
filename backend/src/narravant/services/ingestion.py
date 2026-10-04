@@ -33,8 +33,18 @@ from narravant.api.schemas import (
     SceneSchema,
     VoiceAssignmentSchema,
 )
+from narravant.core.content_language import (
+    ContentLanguageMismatch,
+    SourceLanguage,
+    infer_source_language,
+    validate_text_language,
+)
 from narravant.core.emotion_arc_resolution import scene_mapping_payload
 from narravant.core.fountain import FountainParser, normalize_speaker_name
+from narravant.core.generated_fountain import (
+    GeneratedFountainCueError,
+    validate_generated_fountain_cues,
+)
 from narravant.core.valence_vector import default_valence_vectorizer
 from narravant.db.database import DocumentRepository, OptimisticLockError
 from narravant.domain.tasks import TERMINAL_TASK_STATUSES, TaskStatus
@@ -212,6 +222,7 @@ class DocumentAnalyzer(Protocol):
         on_progress: ProgressReporter,
         *,
         deadline: float | None = None,
+        source_language: SourceLanguage = "und",
     ) -> str: ...
 
     def normalize_screenplay_pdf(
@@ -230,6 +241,7 @@ class DocumentAnalyzer(Protocol):
         processing_deadline: float | None = None,
         source_filename: str | None = None,
         expected_characters: list[str] | None = None,
+        source_language: SourceLanguage = "und",
     ) -> CanonicalAnalysis: ...
 
 
@@ -257,6 +269,7 @@ class NarrativeAdapter(Protocol):
         on_progress: Callable[[str, int], None] | None = None,
         ensure_not_cancelled: Callable[[], None] | None = None,
         deadline: float | None = None,
+        source_language: SourceLanguage = "und",
     ) -> str: ...
 
     def adapt_pdf(
@@ -381,6 +394,15 @@ class ImportService:
                 )
             else:
                 deadline = monotonic() + self.processing_timeout_seconds
+                source_language: SourceLanguage = "und"
+                if imported.text is not None:
+                    original_text = imported.text
+                    if imported.extension in {".fountain", ".fdx"}:
+                        original_text = "\n".join(
+                            item.text for item in FountainParser.parse(imported.text).all_utterances()
+                        )
+                    source_language = infer_source_language(original_text)
+
                 if imported.extension in {".fountain", ".fdx"}:
                     self.tasks.publish(
                         task_id,
@@ -395,21 +417,43 @@ class ImportService:
                         _required_text(imported),
                         self._stream_reporter(task_id, "writing", 20),
                         deadline=deadline,
+                        source_language=source_language,
                     )
                 elif imported.extension == ".txt":
-                    source_fountain = self._route_text_import(task_id, imported, deadline)
+                    source_fountain = self._route_text_import(
+                        task_id, imported, deadline, source_language=source_language
+                    )
                 elif imported.extension == ".pdf":
                     source_fountain = self._route_pdf_import(task_id, content, deadline)
                 else:
                     raise ImportValidationError("UNSUPPORTED_MEDIA_TYPE", "未対応のファイル形式です。")
 
                 self._ensure_not_cancelled(task_id)
+
+                known_source_speakers: list[str] = []
+                if imported.text is not None and imported.extension in {".fountain", ".fdx", ".txt"}:
+                    try:
+                        parsed_original = FountainParser.parse(imported.text)
+                        if parsed_original.scene_count() > 0:
+                            known_source_speakers = parsed_original.dialogue_character_names()
+                    except Exception:
+                        known_source_speakers = []
+
+                validate_generated_fountain_cues(
+                    source_fountain,
+                    known_source_speakers=known_source_speakers,
+                    strict_speaker_names=False,
+                )
+
                 parsed_source = FountainParser.parse(source_fountain)
                 if parsed_source.scene_count() < 1 or parsed_source.utterance_count() < 1:
                     raise ImportValidationError(
                         "INVALID_SCRIPT_STRUCTURE",
                         "生成された脚本にシーンまたは発話がありません。",
                     )
+
+                utterance_text = "\n".join(item.text for item in parsed_source.all_utterances())
+                validate_text_language(utterance_text, source_language)
                 self.tasks.publish(
                     task_id,
                     "progress",
@@ -424,6 +468,7 @@ class ImportService:
                     self._stream_reporter(task_id, "analyzing", 65),
                     processing_deadline=deadline,
                     source_filename=imported.filename,
+                    source_language=source_language,
                 )
                 structured = canonical_analysis_to_v1(
                     source_fountain,
@@ -473,6 +518,28 @@ class ImportService:
             )
         except VertexStreamTimeoutError:
             self._fail(task_id, "IMPORT_FAILED", VERTEX_TIMEOUT_MESSAGE, retryable=True)
+        except GeneratedFountainCueError as exc:
+            logger.error(
+                "Import task failed due to invalid generated cue task_id=%s reason=%s scene_number=%s line_number=%s",
+                task_id,
+                exc.reason,
+                exc.scene_number,
+                exc.line_number,
+            )
+            self._fail(
+                task_id,
+                "INVALID_SCRIPT_STRUCTURE",
+                "生成された脚本の構造が不正です。",
+                retryable=False,
+            )
+        except ContentLanguageMismatch:
+            logger.error("Import task failed due to output language mismatch task_id=%s", task_id)
+            self._fail(
+                task_id,
+                "IMPORT_FAILED",
+                "文書のImportまたは分析に失敗しました。",
+                retryable=False,
+            )
         except Exception as exc:
             if is_transient_vertex_error(exc):
                 logger.error(
@@ -493,7 +560,14 @@ class ImportService:
                     retryable=False,
                 )
 
-    def _route_text_import(self, task_id: str, imported: ValidatedImport, deadline: float) -> str:
+    def _route_text_import(
+        self,
+        task_id: str,
+        imported: ValidatedImport,
+        deadline: float,
+        *,
+        source_language: SourceLanguage = "und",
+    ) -> str:
         text = _required_text(imported)
         self.tasks.publish(
             task_id,
@@ -524,12 +598,14 @@ class ImportService:
                 text,
                 on_progress=self._stream_reporter(task_id, "writing", 20),
                 deadline=deadline,
+                source_language=source_language,
             )
         return self.adapter.adapt_text(
             text,
             on_progress=self._adaptation_reporter(task_id),
             ensure_not_cancelled=lambda: self._ensure_not_cancelled(task_id),
             deadline=deadline,
+            source_language=source_language,
         )
 
     def _route_pdf_import(self, task_id: str, content: bytes, deadline: float) -> str:

@@ -23,4 +23,18 @@ describe('narrator voice compatibility', () => {
     const next = { speaker: 'Narrator', voice_id: 'voices/new', voice_traits: '' }
     expect(upsertVoiceAssignment([{ speaker: 'ナレーター', voice_id: 'voices/old', voice_traits: '' }, character], next)).toEqual([next, character])
   })
+
+  it('CONT\'D による同一話者の台詞は1人の話者として声割当を求める', () => {
+    const assignments = [
+      { speaker: 'MAYA', voice_id: 'voices/maya', voice_traits: '' },
+      { speaker: 'Narrator', voice_id: 'voices/narrator', voice_traits: '' },
+    ]
+    const document = {
+      source_fountain: 'INT. ROOM - DAY\n\n@MAYA\nHello.\n\n@MAYA (CONT\'D)\nAgain.',
+      narrator: { voice_traits: 'Calm' },
+      analysis: { characters: [{ name: 'MAYA', external_goal: 'Win' }] },
+      voice_assignments: assignments,
+    } as unknown as DocumentDetail
+    expect(missingVoiceSpeakers(document)).toEqual([])
+  })
 })

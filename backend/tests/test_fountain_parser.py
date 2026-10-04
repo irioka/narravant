@@ -240,3 +240,31 @@ INT. 部屋 - 昼 #1#
     parsed = FountainParser.parse(script)
 
     assert parsed.dialogue_character_names() == ["専門の猟師", "通行人"]
+
+
+def test_contd_cues_are_collapsed_to_single_character() -> None:
+    """CONT'D cues with ASCII or curly apostrophe collapse to the same character."""
+    script = """Title: Contd Test
+
+INT. ROOM - DAY #1#
+
+@MAYA
+(quietly)
+First line.
+
+@MAYA (CONT'D)
+Second line.
+
+BOB
+(calmly)
+Third line.
+
+BOB (CONT’D)
+Fourth line.
+"""
+    parsed = FountainParser.parse(script)
+    assert parsed.dialogue_character_names() == ["MAYA", "BOB"]
+    utterances = [u for u in parsed.all_utterances() if u.target_type == "character"]
+    assert len(utterances) == 4
+    assert [u.speaker for u in utterances] == ["MAYA", "MAYA", "BOB", "BOB"]
+    assert [u.text for u in utterances] == ["First line.", "Second line.", "Third line.", "Fourth line."]

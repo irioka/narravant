@@ -1563,7 +1563,7 @@
   "info": {
     "description": "Intelligent screenplay analysis and narrative arc workbench API",
     "title": "NARRAVANT API",
-    "version": "0.1.0"
+    "version": "0.1.2"
   },
   "openapi": "3.1.0",
   "paths": {

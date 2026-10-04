@@ -304,3 +304,78 @@ async def test_collect_stream_text_retries_transient_with_proportional_backoff(
     assert attempts_count == 3  # 1 initial + 2 retries
     # generation_attempt 1: 1 * 3 = 3.0, generation_attempt 2: 2 * 3 = 6.0
     assert sleep_calls == [3.0, 6.0]
+
+
+@pytest.mark.asyncio
+async def test_collect_stream_text_retries_recitation_with_injected_directive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from narravant.services.vertex_analysis import VertexDocumentAnalyzer
+
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    analyzer.generation_max_attempts = 3
+    analyzer.retry_backoff_seconds = 1
+    analyzer.model = "gemini-3.8-flash"
+    analyzer.thinking_level = "LOW"
+    analyzer.connection_timeout_seconds = 300
+    analyzer.chunk_timeout_seconds = 60
+    analyzer._request_config = lambda config, **_: {"max_output_tokens": 1000}  # type: ignore[assignment]
+    analyzer._safe_response_summary = lambda _: "summary"  # type: ignore[assignment]
+
+    async def fake_sleep(_: float) -> None:
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    passed_contents: list[str] = []
+    attempts_count = 0
+
+    class DummyChunk:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class RecitationThenSuccessClient:
+        class aio:
+            @staticmethod
+            async def aclose():
+                pass
+
+            class models:
+                @staticmethod
+                async def generate_content_stream(*args, **kwargs):
+                    nonlocal attempts_count
+                    attempts_count += 1
+                    passed_contents.append(kwargs.get("contents", ""))
+
+                    async def gen():
+                        if attempts_count == 1:
+                            yield DummyChunk("Verbatim quotation interrupted...")
+                        else:
+                            yield DummyChunk("Adapted audio drama dialogue.")
+
+                    return gen()
+
+    analyzer._create_client = lambda: RecitationThenSuccessClient()  # type: ignore[assignment]
+    analyzer._finish_reasons = (  # type: ignore[assignment]
+        lambda _: ("RECITATION",) if attempts_count == 1 else ("STOP",)
+    )
+    analyzer._token_counts = lambda _: (10, 5, 0, 15)  # type: ignore[assignment]
+
+    result = await analyzer._collect_stream_text_async(
+        contents="Initial book scene prompt",
+        on_progress=lambda _: None,
+        config=None,
+        operation="write_scene",
+        attempt=1,
+        processing_deadline=1000000000.0,
+        allow_non_stop=False,
+    )
+
+    assert result.text == "Adapted audio drama dialogue."
+    assert attempts_count == 2
+    assert "Initial book scene prompt" in passed_contents[0]
+    assert "ANTI-RECITATION" not in passed_contents[0]
+    assert "ANTI-RECITATION" in passed_contents[1]
+    assert "paraphrase" in passed_contents[1].lower()

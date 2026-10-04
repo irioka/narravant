@@ -413,3 +413,161 @@ def test_voice_traits_in_generated_and_canonical_analysis():
     canonical = VertexDocumentAnalyzer._canonicalize(_parsed_stub(), generated, max_points=36)
     assert canonical.narrator == {"voice_traits": "落ち着いた中低音のナレーション"}
     assert canonical.characters[0]["voice_traits"] == "力強い熱血漢の声"
+
+
+EN = "The river rose, and she knew that her friend must find shelter with the group."
+JA = "川の水が増えたため、少女は友人と一緒に安全な小屋を探しました。二人は協力しながら出口を見つけました。"
+
+
+def _fake_analysis_analyzer(monkeypatch, payloads):
+    from types import SimpleNamespace
+
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    analyzer.analysis_max_attempts = 2
+    analyzer.processing_timeout_seconds = 60
+    analyzer.max_main_characters = 6
+    analyzer.emotion_arc_max_points = 36
+    calls = []
+    responses = iter(payloads)
+
+    def collect(**kwargs):
+        calls.append(kwargs)
+        value = json.dumps(next(responses), ensure_ascii=False)
+        return SimpleNamespace(text=value, received_characters=len(value))
+
+    monkeypatch.setattr(analyzer, "_collect_stream_text", collect)
+    return analyzer, calls
+
+
+def _language_payload(description: str) -> dict:
+    payload = make_valid_generated(3)
+    payload["metadata"].update(
+        title="Synthetic storm", logline=description, synopsis=description
+    )
+    payload["characters"][0]["name"] = "MAYA"
+    for point in payload["turning_points"]:
+        point["involved_characters"][0]["name"] = "MAYA"
+    if description == EN:
+        payload["metadata"]["theme_setting"] = "Cooperation. Evidence: Scenes 1, 2."
+        for profile in payload["characters"]:
+            for key in (
+                "external_goal",
+                "internal_need",
+                "fear_or_cost",
+                "obstacle",
+                "choice",
+                "agency",
+                "goal_to_outcome",
+                "voice_traits",
+            ):
+                profile[key] = EN
+        payload["narrator"]["voice_traits"] = EN
+        for point in payload["turning_points"]:
+            point["change"] = EN
+            for person in point["involved_characters"]:
+                for key in ("goal", "conflict", "choice", "action", "change"):
+                    person[key] = EN
+    return payload
+
+
+def test_analysis_retries_wrong_language_within_existing_budget(monkeypatch):
+    analyzer, calls = _fake_analysis_analyzer(
+        monkeypatch, [_language_payload(JA), _language_payload(EN)]
+    )
+    source = "Title: Synthetic storm\n\n" + "\n\n".join(
+        f"INT. CABIN - DAY #{n}#\n\n@MAYA\n{EN}" for n in range(1, 4)
+    )
+    result = analyzer.analyze(source, lambda _: None, source_language="en")
+    assert result.metadata["synopsis"] == EN
+    assert len(calls) == 2
+    assert "output_language" in calls[1]["contents"]
+    assert calls[0]["processing_deadline"] == calls[1]["processing_deadline"]
+
+
+def test_analysis_fails_when_all_attempts_wrong_language(monkeypatch):
+    analyzer, calls = _fake_analysis_analyzer(
+        monkeypatch, [_language_payload(JA), _language_payload(JA)]
+    )
+    source = "Title: Synthetic storm\n\n" + "\n\n".join(
+        f"INT. CABIN - DAY #{n}#\n\n@MAYA\n{EN}" for n in range(1, 4)
+    )
+    with pytest.raises(
+        ValueError,
+        match="Vertex returned incomplete structured analysis after configured attempts",
+    ):
+        analyzer.analyze(source, lambda _: None, source_language="en")
+    assert len(calls) == 2
+
+
+def test_analysis_rejects_single_field_language_mismatch_synopsis(monkeypatch):
+    payload = _language_payload(EN)
+    payload["metadata"]["synopsis"] = JA
+    analyzer, calls = _fake_analysis_analyzer(
+        monkeypatch, [payload, _language_payload(EN)]
+    )
+    source = "Title: Synthetic storm\n\n" + "\n\n".join(
+        f"INT. CABIN - DAY #{n}#\n\n@MAYA\n{EN}" for n in range(1, 4)
+    )
+    result = analyzer.analyze(source, lambda _: None, source_language="en")
+    assert result.metadata["synopsis"] == EN
+    assert len(calls) == 2
+
+
+def test_analysis_rejects_single_field_language_mismatch_character(monkeypatch):
+    payload = _language_payload(EN)
+    payload["characters"][0]["voice_traits"] = JA
+    analyzer, calls = _fake_analysis_analyzer(
+        monkeypatch, [payload, _language_payload(EN)]
+    )
+    source = "Title: Synthetic storm\n\n" + "\n\n".join(
+        f"INT. CABIN - DAY #{n}#\n\n@MAYA\n{EN}" for n in range(1, 4)
+    )
+    analyzer.analyze(source, lambda _: None, source_language="en")
+    assert len(calls) == 2
+
+
+def test_analysis_rejects_single_field_language_mismatch_turning_point(monkeypatch):
+    payload = _language_payload(EN)
+    payload["turning_points"][0]["change"] = JA
+    analyzer, calls = _fake_analysis_analyzer(
+        monkeypatch, [payload, _language_payload(EN)]
+    )
+    source = "Title: Synthetic storm\n\n" + "\n\n".join(
+        f"INT. CABIN - DAY #{n}#\n\n@MAYA\n{EN}" for n in range(1, 4)
+    )
+    analyzer.analyze(source, lambda _: None, source_language="en")
+    assert len(calls) == 2
+
+
+def test_analysis_accepts_english_with_japanese_character_and_work_name(monkeypatch):
+    payload = _language_payload(EN)
+    payload["metadata"]["title"] = "羅生門"
+    payload["characters"][0]["name"] = "下人"
+    for point in payload["turning_points"]:
+        point["involved_characters"][0]["name"] = "下人"
+    analyzer, calls = _fake_analysis_analyzer(monkeypatch, [payload])
+    source = "Title: 羅生門\n\n" + "\n\n".join(
+        f"INT. GATE - DAY #{n}#\n\n@下人\n{EN}" for n in range(1, 4)
+    )
+    result = analyzer.analyze(source, lambda _: None, source_language="en")
+    assert result.metadata["title"] == "羅生門"
+    assert result.characters[0]["name"] == "下人"
+    assert len(calls) == 1
+
+
+def test_analysis_rejects_short_japanese_field_for_english_source(monkeypatch):
+    """Short Japanese sentences (even under 10 kana) must be rejected for English source."""
+    payload_short_jp = _language_payload(EN)
+    payload_short_jp["metadata"]["synopsis"] = "川の水が増水し、少女は小屋へ逃げ込んだ。"
+    payload_short_jp["characters"][0]["external_goal"] = "家に戻りたい。"
+
+    analyzer, calls = _fake_analysis_analyzer(
+        monkeypatch, [payload_short_jp, _language_payload(EN)]
+    )
+    source = "Title: Synthetic storm\n\n" + "\n\n".join(
+        f"INT. CABIN - DAY #{n}#\n\n@MAYA\n{EN}" for n in range(1, 4)
+    )
+    result = analyzer.analyze(source, lambda _: None, source_language="en")
+    assert result.metadata["synopsis"] == EN
+    assert len(calls) == 2
+    assert "output_language" in calls[1]["contents"]
