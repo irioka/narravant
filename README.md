@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-Current release: **0.1.2**.
+Current release: **0.1.3**.
 
 NARRAVANT is an open source application that turns novels and screenplays into audiobook scripts and reads them aloud. It generates an audiobook script in [Fountain](https://fountain.io/) format from your source text, then uses Gemini TTS to play the narration and character voices in real time. It also analyzes the story through five turning points and an emotional arc. Background music and sound effects are not supported.
 
@@ -54,8 +54,6 @@ cp .env.example .env
 - `GEMINI_TTS_MODEL`: Speech synthesis model (default: `gemini-3.8-flash-tts`).
 - `SQLITE_DB_PATH`: Path to the local SQLite database file (default: `./runtime/narravant.sqlite3`). Relative paths are resolved from the repository root (the directory containing `.env`).
 - `LOCAL_STORAGE_PATH`: Directory for local script storage (default: `./runtime/storage`). Relative paths are resolved from the repository root (the directory containing `.env`).
-
-Playback retry count and the silence inserted between Scene Headings are configured in `backend/config.yaml` under `playback` (`tts_max_attempts: 6`, `scene_pause_duration_ms: 3000`).
 
 > [!WARNING]
 > **API Billing Notice**

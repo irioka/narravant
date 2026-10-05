@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-現在のバージョン: **0.1.2**。
+現在のバージョン: **0.1.3**。
 
 NARRAVANT は、小説や脚本のテキストからオーディオブック用のスクリプトを生成して朗読する OSS アプリケーションです。原文から [Fountain](https://fountain.io/) 形式のオーディオブック用スクリプトを生成し、Gemini TTS でナレーションと登場人物の声をリアルタイムに再生します。5 つの転換点と感情アークによる分析にも対応します。BGM・効果音には対応していません。
 
@@ -54,8 +54,6 @@ cp .env.example .env
 - `GEMINI_TTS_MODEL`: 音声合成モデル（既定: `gemini-3.8-flash-tts`）。
 - `SQLITE_DB_PATH`: SQLite データベースファイルのパス（既定: `./runtime/narravant.sqlite3`）。相対パスは `.env` があるリポジトリルートから解決されます。
 - `LOCAL_STORAGE_PATH`: スクリプト保存ディレクトリ（既定: `./runtime/storage`）。相対パスは `.env` があるリポジトリルートから解決されます。
-
-再生中の TTS 再試行回数と Scene Heading 間の無音時間は、`backend/config.yaml` の `playback`（`tts_max_attempts: 6`、`scene_pause_duration_ms: 3000`）で設定します。
 
 > [!WARNING]
 > **API 利用料金について**

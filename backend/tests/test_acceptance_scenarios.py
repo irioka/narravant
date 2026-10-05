@@ -1,6 +1,6 @@
 """Comprehensive synthetic end-to-end acceptance tests for scenarios A1 through A9.
 
-These tests verify all acceptance criteria from .kiro/specs/single-work-audiobook/requirements.md
+These tests verify the single-work audiobook acceptance criteria.
 using fake dependencies, in-memory databases, and deterministic test fixtures.
 No real external Gemini API calls or billable services are invoked.
 """
@@ -452,15 +452,18 @@ INT. SALON - NIGHT #1#
                 if msg.get("event") == "playback_complete":
                     break
 
-        # 4発話が ナレーター → ALICE → BOB → ナレーター の順で処理されたことを確認
+        # Scene Heading を含む5発話が ナレーター → ナレーター → ALICE → BOB → ナレーター の順で処理されたことを確認
         utterance_starts = [e for e in events if e.get("event") == "utterance_start"]
-        assert len(utterance_starts) == 4
+        assert len(utterance_starts) == 5
         speakers = [u["speaker"] for u in utterance_starts]
-        assert speakers == ["ナレーター", "ALICE", "BOB", "ナレーター"]
+        assert speakers == ["ナレーター", "ナレーター", "ALICE", "BOB", "ナレーター"]
+        assert utterance_starts[0]["utterance_index"] == 0
+        assert fake_tts.calls[0]["text"] == "SALON - NIGHT"
 
         # TTS 呼び出し履歴の voice_id が割当と一致
-        assert len(fake_tts.calls) == 4
+        assert len(fake_tts.calls) == 5
         assert [c["voice_id"] for c in fake_tts.calls] == [
+            "voices/v-narrator",
             "voices/v-narrator",
             "voices/v-alice",
             "voices/v-bob",
@@ -474,7 +477,7 @@ INT. SALON - NIGHT #1#
 def test_scenario_a5_playback_failure_and_resume_from_failed_index(
     in_memory_db: DatabaseManager, in_memory_storage: InMemoryScriptStorageClient
 ) -> None:
-    """A5: 3番目の発話で失敗したとき停止し、3番目から再開して最後まで再生できる。"""
+    """A5: BOB の発話で失敗したとき停止し、同じ utterance index から再生できる。"""
     repo = DocumentRepository(in_memory_db)
     doc_id = "doc-a5"
 
@@ -550,11 +553,11 @@ INT. ROOM - DAY #1#
         payload_sha256="hash-a5",
     )
 
-    # 3番目の発話（index 2 = BOB）で失敗するように設定
-    fake_tts = FakeTtsClient(fail_on_utterance_indices={2})
+    # Scene Heading が index 0 になるため、BOB は index 3。
+    fake_tts = FakeTtsClient(fail_on_utterance_indices={3})
     with _playback_ws_env(in_memory_db, in_memory_storage, fake_tts):
         client = TestClient(app)
-        # 1回目の再生: index 2 で失敗
+        # 1回目の再生: BOB の index 3 で失敗
         with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
             ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
 
@@ -567,12 +570,12 @@ INT. ROOM - DAY #1#
 
             error_ev = events[-1]
             assert error_ev["event"] == "error"
-            assert error_ev["utterance_index"] == 2  # 失敗位置が通知される
+            assert error_ev["utterance_index"] == 3  # 失敗位置が通知される
 
-        # 2回目の再生: 失敗位置 (index 2) から再試行
+        # 2回目の再生: 失敗位置 (index 3) から再試行
         fake_tts.fail_on_utterance_indices.clear()
         with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
-            ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 2})
+            ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 3})
 
             resume_events: list[dict[str, Any]] = []
             while True:
@@ -582,10 +585,10 @@ INT. ROOM - DAY #1#
                     break
 
             resumed_starts = [e for e in resume_events if e.get("event") == "utterance_start"]
-            assert len(resumed_starts) == 2  # index 2 と index 3 のみ再生
-            assert resumed_starts[0]["utterance_index"] == 2
+            assert len(resumed_starts) == 2  # index 3 と index 4 のみ再生
+            assert resumed_starts[0]["utterance_index"] == 3
             assert resumed_starts[0]["speaker"] == "BOB"
-            assert resumed_starts[1]["utterance_index"] == 3
+            assert resumed_starts[1]["utterance_index"] == 4
             assert resumed_starts[1]["speaker"] == "ナレーター"
 
 
@@ -636,7 +639,10 @@ def test_scenario_a6_script_and_voice_edits_reflect_immediately(
                 "valence_vector": [0.0] * 9 + [1.0],
             },
             "narrator": {"voice_traits": "nar"},
-            "voice_assignments": [{"speaker": "ALICE", "voice_id": "voices/v-alice-old", "voice_traits": "old"}],
+            "voice_assignments": [
+                {"speaker": "ナレーター", "voice_id": "voices/v-narrator", "voice_traits": "nar"},
+                {"speaker": "ALICE", "voice_id": "voices/v-alice-old", "voice_traits": "old"},
+            ],
         },
     )
     repo.create_document(
@@ -686,7 +692,10 @@ def test_scenario_a6_script_and_voice_edits_reflect_immediately(
                 "valence_vector": [0.0] * 9 + [1.0],
             },
             "narrator": {"voice_traits": "nar"},
-            "voice_assignments": [{"speaker": "ALICE", "voice_id": "voices/v-alice-new", "voice_traits": "new"}],
+            "voice_assignments": [
+                {"speaker": "ナレーター", "voice_id": "voices/v-narrator", "voice_traits": "nar"},
+                {"speaker": "ALICE", "voice_id": "voices/v-alice-new", "voice_traits": "new"},
+            ],
         },
     )
     repo.update_document(
@@ -709,9 +718,10 @@ def test_scenario_a6_script_and_voice_edits_reflect_immediately(
                 if msg.get("event") == "playback_complete":
                     break
 
-        assert len(fake_tts.calls) == 1
-        assert fake_tts.calls[0]["text"] == "New brand-new line."
-        assert fake_tts.calls[0]["voice_id"] == "voices/v-alice-new"
+        assert len(fake_tts.calls) == 2
+        assert fake_tts.calls[0] == {"text": "ROOM - DAY", "voice_id": "voices/v-narrator"}
+        assert fake_tts.calls[1]["text"] == "New brand-new line."
+        assert fake_tts.calls[1]["voice_id"] == "voices/v-alice-new"
 
 
 # ---------------------------------------------------------------------------

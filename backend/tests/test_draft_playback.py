@@ -63,7 +63,7 @@ def draft_connection(monkeypatch):
     return connect
 
 
-async def send_start(incoming, draft):
+async def send_start(incoming, draft, start_utterance_index=1):
     await incoming.put(
         {
             "type": "websocket.receive",
@@ -71,7 +71,7 @@ async def send_start(incoming, draft):
                 {
                     "action": "start",
                     "scene_number": 1,
-                    "start_utterance_index": 1,
+                    "start_utterance_index": start_utterance_index,
                     "draft": draft,
                 }
             ),
@@ -85,9 +85,9 @@ async def receive_event(outgoing):
     return json.loads(response["text"])
 
 
-async def test_unsaved_draft_plays_from_selected_position_without_persistence(draft_connection):
+async def test_unsaved_draft_plays_scene_heading_without_persisting(draft_connection):
     async with draft_connection() as (incoming, outgoing, tts):
-        await send_start(incoming, DRAFT)
+        await send_start(incoming, DRAFT, start_utterance_index=0)
         events = []
         while True:
             event = await receive_event(outgoing)
@@ -96,7 +96,30 @@ async def test_unsaved_draft_plays_from_selected_position_without_persistence(dr
                 break
         assert events[-1]["event"] == "playback_complete"
         starts = [event for event in events if event["event"] == "utterance_start"]
-        assert [(event["speaker"], event["utterance_index"]) for event in starts] == [("ALICE", 1)]
+        assert [(event["speaker"], event["utterance_index"]) for event in starts] == [
+            ("Narrator", 0),
+            ("Narrator", 1),
+            ("ALICE", 2),
+        ]
+        assert tts.calls == [
+            {"text": "ROOM - DAY", "voice_id": "voices/synthetic-narrator"},
+            {"text": "First.", "voice_id": "voices/synthetic-narrator"},
+            {"text": "Second.", "voice_id": "voices/synthetic-alice"},
+        ]
+
+
+async def test_unsaved_draft_resume_starts_from_selected_position_without_persistence(draft_connection):
+    async with draft_connection() as (incoming, outgoing, tts):
+        await send_start(incoming, DRAFT, start_utterance_index=2)
+        events = []
+        while True:
+            event = await receive_event(outgoing)
+            events.append(event)
+            if event["event"] in ("error", "playback_complete"):
+                break
+        assert events[-1]["event"] == "playback_complete"
+        starts = [event for event in events if event["event"] == "utterance_start"]
+        assert [(event["speaker"], event["utterance_index"]) for event in starts] == [("ALICE", 2)]
         assert tts.calls == [{"text": "Second.", "voice_id": "voices/synthetic-alice"}]
 
 
@@ -106,7 +129,7 @@ async def test_draft_missing_voice_fails_before_synthesis(draft_connection):
         event = await receive_event(outgoing)
         assert event["event"] == "error"
         assert "ALICE" in event["message"]
-        assert event["utterance_index"] == 1
+        assert event["utterance_index"] == 2
         assert tts.calls == []
 
 
@@ -164,4 +187,7 @@ async def test_saved_document_still_plays_without_a_draft(draft_connection, monk
             if event["event"] in ("error", "playback_complete"):
                 break
         assert events[-1]["event"] == "playback_complete"
-        assert tts.calls == [{"text": "Second.", "voice_id": "voices/synthetic-alice"}]
+        assert tts.calls == [
+            {"text": "First.", "voice_id": "voices/synthetic-narrator"},
+            {"text": "Second.", "voice_id": "voices/synthetic-alice"},
+        ]

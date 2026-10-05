@@ -1,4 +1,6 @@
 const SCENE_HEADING = /^(?:INT\.\/EXT|INT\/EXT|INT|EXT|EST|I\/E)(?:\.|\s)/im
+const SPOKEN_SCENE_HEADING_PREFIX = /^(?:INT\.\/EXT\.?|INT\/EXT\.?|I\/E\.?|INT\.?|EXT\.?|EST\.?)(?:\s+|$)/i
+const SCENE_NUMBER_SUFFIX = /\s*#\d+#\s*$/
 
 // Japanese hiragana, katakana, and CJK Unified Ideographs — same detection used
 // by the backend's _wrap_bare_narration to pick @ナレーター vs @Narrator.
@@ -97,6 +99,21 @@ export function utteranceRange(source: string, sceneNumber: number, utteranceInd
   return matches[utteranceIndex]?.range
 }
 
+function spokenSceneHeading(line: SourceLine): { text: string; range: TextRange } | undefined {
+  const trimmed = line.text.trim()
+  if (!trimmed) return undefined
+  const lineOffset = line.text.indexOf(trimmed)
+  const withoutNumber = trimmed.replace(SCENE_NUMBER_SUFFIX, '')
+  const classification = SPOKEN_SCENE_HEADING_PREFIX.exec(withoutNumber)
+  const contentStart = classification?.[0].length ?? 0
+  const content = withoutNumber.slice(contentStart)
+  const text = content.trim()
+  if (!text) return undefined
+  const leadingContentWhitespace = content.length - content.trimStart().length
+  const start = line.start + lineOffset + contentStart + leadingContentWhitespace
+  return { text, range: { start, end: start + text.length } }
+}
+
 /** Return the playback utterance containing (or immediately following) a text cursor. */
 export function playbackStartAtOffset(source: string, offset: number): PlaybackStartPosition | undefined {
   const ranges = playbackUtteranceRanges(source)
@@ -136,6 +153,8 @@ function playbackUtteranceRanges(source: string): Array<{ scene: number; range: 
       currentScene = sceneNumberFromHeading(text, fallbackScene)
       fallbackScene = currentScene + 1
       currentCue = undefined
+      const heading = spokenSceneHeading(line)
+      if (heading) ranges.push({ scene: currentScene, range: heading.range })
       continue
     }
     if (currentScene === undefined || isTitlePageLine(text)) continue
@@ -166,7 +185,7 @@ export function hasSceneHeadings(text: string): boolean {
   return SCENE_HEADING.test(text)
 }
 
-/** A Fountain scene heading line, used to skip headings when scanning narration. */
+/** A Fountain scene heading line, used to add its speakable content to narration. */
 function isSceneHeading(line: string): boolean {
   return SCENE_HEADING.test(line)
 }
@@ -256,7 +275,16 @@ export function firstUtteranceLine(
       currentCueHasDialogue = false
       continue
     }
-    if (isSceneHeading(line) || isTitlePageLine(line)) {
+    if (isSceneHeading(line)) {
+      if (wantNarrator) {
+        const heading = spokenSceneHeading({ text: raw, start: 0, end: raw.length })
+        if (heading) return firstSentence(heading.text)
+      }
+      currentSpeaker = undefined
+      currentCueHasDialogue = false
+      continue
+    }
+    if (isTitlePageLine(line)) {
       currentSpeaker = undefined
       currentCueHasDialogue = false
       continue

@@ -96,6 +96,7 @@ def test_settings_loads_supported_gemini_generation_parameters(
     assert settings.gemini_retry_backoff_seconds == 3
     assert settings.playback_tts_max_attempts == 6
     assert settings.playback_scene_pause_duration_ms == 3000
+    assert settings.playback_inter_utterance_pause_duration_ms == 1000
     assert settings.emotion_arc_max_points == 36
     assert settings.gemini_thinking_level == "LOW"
 
@@ -112,13 +113,13 @@ def test_settings_rejects_missing_required_yaml_key(monkeypatch: pytest.MonkeyPa
         Settings.load(tmp_path)
 
 
-@pytest.mark.parametrize("key", ["tts_max_attempts", "scene_pause_duration_ms"])
+@pytest.mark.parametrize("key", ["tts_max_attempts", "scene_pause_duration_ms", "inter_utterance_pause_duration_ms"])
 def test_settings_requires_playback_configuration(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, key: str) -> None:
     from narravant.core.settings import Settings, SettingsError
 
     _set_required_environment(monkeypatch)
     config = yaml.safe_load((BACKEND_ROOT / "config.yaml").read_text(encoding="utf-8"))
-    config["playback"].pop(key)
+    config["playback"].pop(key, None)
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
 
     with pytest.raises(SettingsError, match=f"playback.{key}"):

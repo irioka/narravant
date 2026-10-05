@@ -84,6 +84,7 @@ class Settings:
     gemini_verification_max_output_tokens: int
     playback_tts_max_attempts: int
     playback_scene_pause_duration_ms: int
+    playback_inter_utterance_pause_duration_ms: int
     emotion_arc_max_points: int
     sse_heartbeat_interval_seconds: int
     sse_poll_interval_milliseconds: int
@@ -202,6 +203,9 @@ class Settings:
         playback_scene_pause_duration_ms = cls._required_nonnegative_integer(
             raw_config, "playback", "scene_pause_duration_ms"
         )
+        playback_inter_utterance_pause_duration_ms = cls._required_nonnegative_integer(
+            raw_config, "playback", "inter_utterance_pause_duration_ms"
+        )
         try:
             emotion_arc_max_points = int(_required_yaml_value(raw_config, "emotion_arc", "max_points"))
         except (TypeError, ValueError) as exc:
@@ -259,6 +263,7 @@ class Settings:
             gemini_verification_max_output_tokens=positive_gemini_integers["verification_max_output_tokens"],
             playback_tts_max_attempts=playback_tts_max_attempts,
             playback_scene_pause_duration_ms=playback_scene_pause_duration_ms,
+            playback_inter_utterance_pause_duration_ms=playback_inter_utterance_pause_duration_ms,
             emotion_arc_max_points=emotion_arc_max_points,
             sse_heartbeat_interval_seconds=int(_required_yaml_value(raw_config, "sse", "heartbeat_interval_seconds")),
             sse_poll_interval_milliseconds=int(_required_yaml_value(raw_config, "sse", "poll_interval_milliseconds")),

@@ -252,6 +252,19 @@ class TaskAcceptedResponse(BaseModel):
     status: str = "queued"
 
 
+class ReanalyzeEmotionArcRequest(BaseModel):
+    """Optional current editor text; omitted bodies keep saved-version behavior."""
+
+    source_fountain: str | None = Field(default=None, min_length=1)
+
+
+class ImportDraftReanalyzeRequest(BaseModel):
+    """Current editor text to analyze while an Import is still an ephemeral draft."""
+
+    model_config = ConfigDict(extra="forbid")
+    source_fountain: str = Field(min_length=1)
+
+
 class NativeExchangeModel(BaseModel):
     """Trust-boundary model: external Native JSON has no extension fields."""
 

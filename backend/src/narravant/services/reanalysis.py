@@ -11,7 +11,8 @@ from narravant.db.database import DocumentRepository
 from narravant.domain.tasks import TaskStatus
 from narravant.services.ingestion import (
     DocumentAnalyzer,
-    align_character_arcs,
+    ImportDraft,
+    ImportDraftStore,
     validate_canonical_analysis,
 )
 from narravant.services.tasks import TaskManager
@@ -20,6 +21,151 @@ from narravant.storage.gcs import ScriptStorageClient
 
 class ReanalysisSnapshotConflictError(ValueError):
     """The source immutable version changed while Vertex was generating an arc draft."""
+
+
+class ImportDraftUnavailableError(ValueError):
+    """The process-local Import draft expired or was replaced before its reanalysis finished."""
+
+
+class ImportDraftReanalysisService:
+    """Generate an unsaved Emotional Arc for a process-local Import draft."""
+
+    def __init__(
+        self,
+        tasks: TaskManager,
+        drafts: ImportDraftStore,
+        analyzer: DocumentAnalyzer,
+        *,
+        emotion_arc_max_points: int,
+    ) -> None:
+        self.tasks = tasks
+        self.drafts = drafts
+        self.analyzer = analyzer
+        self.emotion_arc_max_points = emotion_arc_max_points
+
+    def start(self, owner_user_id: str, draft: ImportDraft) -> str:
+        version_id = int(draft.structured["version_id"])
+        return self.tasks.create(
+            owner_user_id,
+            "emotion_arc_reanalysis",
+            draft.document_id,
+            {
+                "document_id": draft.document_id,
+                "version_id": version_id,
+                "import_task_id": draft.task_id,
+            },
+        )
+
+    def run(self, task_id: str, *, import_task_id: str, source_fountain: str) -> None:
+        task = self.tasks.repository.get(task_id)
+        if task is None:
+            raise KeyError(task_id)
+        payload = json.loads(task["payload_json"])
+        try:
+            if self._cancel_requested(task_id):
+                self.tasks.cancel(task_id, "再分析をキャンセルしました。")
+                return
+
+            self.tasks.start(task_id)
+            self.tasks.publish(
+                task_id,
+                "progress",
+                {"phase": "reading", "percentage": 10, "message": "Import draftを確認しています。"},
+            )
+            draft = self._get_active_draft(import_task_id, task["owner_user_id"], payload)
+            if draft.structured.get("analysis", {}).get("status") != "completed":
+                raise ValueError("分析済みでないImport draftは再分析できません。")
+
+            parsed = FountainParser.parse(source_fountain)
+            existing_character_names = [
+                item["name"]
+                for item in draft.structured.get("analysis", {}).get("characters", [])
+                if isinstance(item, dict) and item.get("name")
+            ]
+            spoken_character_names = parsed.dialogue_character_names()
+            expected_characters = None if spoken_character_names else existing_character_names or None
+            self.tasks.publish(
+                task_id,
+                "progress",
+                {"phase": "analyzing", "percentage": 60, "message": "Emotional Arcを再分析しています。"},
+            )
+            analysis = self.analyzer.analyze(
+                source_fountain,
+                lambda received_characters: self.tasks.publish(
+                    task_id,
+                    "progress",
+                    {
+                        "phase": "analyzing",
+                        "percentage": 60,
+                        "message": "生成AIからの応答を受信しています。",
+                        "received_characters": received_characters,
+                    },
+                ),
+                expected_characters=expected_characters,
+            )
+            validate_canonical_analysis(
+                analysis,
+                parsed.scene_count(),
+                max_points=self.emotion_arc_max_points,
+            )
+            if self._cancel_requested(task_id):
+                self.tasks.cancel(task_id, "再分析をキャンセルしました。")
+                return
+
+            active_draft = self._get_active_draft(import_task_id, task["owner_user_id"], payload)
+            emotion_arc = {
+                "valence": analysis.emotion_arc["valence"],
+                "tension": analysis.emotion_arc["tension"],
+                "characters": analysis.emotion_arc["characters"],
+                "scene_mapping": analysis.emotion_arc["scene_mapping"],
+                "valence_vector": default_valence_vectorizer.vectorize(analysis.emotion_arc["valence"]),
+            }
+            self.tasks.publish(
+                task_id,
+                "progress",
+                {"phase": "structuring", "percentage": 90, "message": "再分析結果を準備しています。"},
+            )
+            if self._cancel_requested(task_id):
+                self.tasks.cancel(task_id, "再分析をキャンセルしました。")
+                return
+            self.tasks.complete(
+                task_id,
+                {
+                    "document_id": active_draft.document_id,
+                    "version_id": int(active_draft.structured["version_id"]),
+                    "reanalysis": {"emotion_arc": emotion_arc},
+                },
+            )
+        except ImportDraftUnavailableError:
+            self.tasks.fail(
+                task_id,
+                {
+                    "code": "IMPORT_DRAFT_EXPIRED",
+                    "message": "Import draftを確認できません。Importをやり直してください。",
+                    "retryable": True,
+                },
+            )
+        except Exception:
+            self.tasks.fail(
+                task_id,
+                {"code": "REANALYSIS_FAILED", "message": "Valenceの再分析に失敗しました。", "retryable": True},
+            )
+
+    def _get_active_draft(self, import_task_id: str, owner_user_id: str, payload: dict[str, Any]) -> ImportDraft:
+        draft = self.drafts.get(import_task_id)
+        if (
+            draft is None
+            or draft.owner_user_id != owner_user_id
+            or draft.document_id != payload["document_id"]
+            or draft.task_id != payload["import_task_id"]
+            or int(draft.structured["version_id"]) != int(payload["version_id"])
+        ):
+            raise ImportDraftUnavailableError("Import draft expired or changed during Emotional Arc reanalysis.")
+        return draft
+
+    def _cancel_requested(self, task_id: str) -> bool:
+        task = self.tasks.repository.get(task_id)
+        return task is not None and TaskStatus(task["status"]) is TaskStatus.CANCEL_REQUESTED
 
 
 class ReanalysisService:
@@ -60,7 +206,7 @@ class ReanalysisService:
             },
         )
 
-    def run(self, task_id: str) -> None:
+    def run(self, task_id: str, *, source_fountain: str | None = None) -> None:
         task = self.tasks.repository.get(task_id)
         if task is None:
             raise KeyError(task_id)
@@ -98,13 +244,17 @@ class ReanalysisService:
                 for item in source.get("analysis", {}).get("characters", [])
                 if isinstance(item, dict) and item.get("name")
             ]
+            analysis_source_fountain = source_fountain if source_fountain is not None else source["source_fountain"]
+            parsed = FountainParser.parse(analysis_source_fountain)
+            spoken_character_names = parsed.dialogue_character_names()
+            expected_characters = None if spoken_character_names else existing_character_names or None
             self.tasks.publish(
                 task_id,
                 "progress",
                 {"phase": "analyzing", "percentage": 60, "message": "Emotional Arcを再分析しています。"},
             )
             analysis = self.analyzer.analyze(
-                source["source_fountain"],
+                analysis_source_fountain,
                 lambda received_characters: self.tasks.publish(
                     task_id,
                     "progress",
@@ -115,9 +265,8 @@ class ReanalysisService:
                         "received_characters": received_characters,
                     },
                 ),
-                expected_characters=existing_character_names or None,
+                expected_characters=expected_characters,
             )
-            parsed = FountainParser.parse(source["source_fountain"])
             scene_count = parsed.scene_count()
             validate_canonical_analysis(
                 analysis,
@@ -128,18 +277,10 @@ class ReanalysisService:
                 self.tasks.cancel(task_id, "再分析をキャンセルしました。")
                 return
 
-            characters_arc = analysis.emotion_arc["characters"]
-            if existing_character_names:
-                characters_arc = align_character_arcs(
-                    characters_arc,
-                    existing_character_names,
-                    len(analysis.emotion_arc["valence"]),
-                )
-
             emotion_arc = {
                 "valence": analysis.emotion_arc["valence"],
                 "tension": analysis.emotion_arc["tension"],
-                "characters": characters_arc,
+                "characters": analysis.emotion_arc["characters"],
                 "scene_mapping": analysis.emotion_arc["scene_mapping"],
                 "valence_vector": default_valence_vectorizer.vectorize(analysis.emotion_arc["valence"]),
             }

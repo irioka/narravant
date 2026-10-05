@@ -19,6 +19,93 @@ logger = logging.getLogger(__name__)
 
 TRANSIENT_TTS_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 DEFAULT_SCENE_PAUSE_DURATION_MS = 3000
+DEFAULT_INTER_UTTERANCE_PAUSE_DURATION_MS = 1000
+MAX_TTS_SEGMENT_CHARACTERS = 180
+_SENTENCE_ENDINGS = frozenset("。！？!?…")
+_CLAUSE_ENDINGS = frozenset("、，,;；:")
+_CLOSING_PUNCTUATION = frozenset("」』）)]}’”\"〉》")
+_NON_TERMINAL_ABBREVIATIONS = frozenset({"dr.", "mr.", "mrs.", "ms.", "prof.", "sr.", "jr.", "e.g.", "i.e."})
+
+
+def _split_tts_text(text: str) -> list[str]:
+    """計画上の発話を文単位の TTS 要求へ分割する。
+
+    長文は句読点を優先して分ける。近くに句読点がない場合は、最初の音声を
+    遅らせないよう空白または文字境界で分ける。句読点は直前の segment に残す。
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    sentences: list[str] = []
+    start = 0
+    index = 0
+    while index < len(text):
+        character = text[index]
+        sentence_end = character in _SENTENCE_ENDINGS
+        if character == ".":
+            previous = text[index - 1] if index > 0 else ""
+            following = text[index + 1] if index + 1 < len(text) else ""
+            # 小数点や e.g. のような略記のピリオドでは分割しない。
+            preceding_token = text[: index + 1].rsplit(None, 1)[-1].lower()
+            dotted_abbreviation = preceding_token in _NON_TERMINAL_ABBREVIATIONS
+            sentence_end = (
+                not dotted_abbreviation
+                and not (previous.isdigit() and following.isdigit())
+                and (not following or following.isspace() or following in _CLOSING_PUNCTUATION)
+            )
+
+        if not sentence_end:
+            index += 1
+            continue
+
+        end = index + 1
+        while end < len(text) and (text[end] in _SENTENCE_ENDINGS or text[end] in _CLOSING_PUNCTUATION):
+            end += 1
+        sentences.append(text[start:end].strip())
+        start = end
+        index = end
+
+    if start < len(text):
+        sentences.append(text[start:].strip())
+
+    segments: list[str] = []
+    for sentence in sentences:
+        remaining = sentence
+        while len(remaining) > MAX_TTS_SEGMENT_CHARACTERS:
+            limit = MAX_TTS_SEGMENT_CHARACTERS
+            clause_positions = [
+                position for position, char in enumerate(remaining[:limit]) if char in _CLAUSE_ENDINGS
+            ]
+            if clause_positions:
+                end = clause_positions[-1] + 1
+            else:
+                next_clause = next(
+                    (
+                        position + 1
+                        for position, char in enumerate(remaining[limit:], start=limit)
+                        if char in _CLAUSE_ENDINGS
+                    ),
+                    None,
+                )
+                if next_clause is not None and next_clause <= limit + 30:
+                    end = next_clause
+                else:
+                    whitespace_positions = [
+                        position for position, char in enumerate(remaining[:limit]) if char.isspace()
+                    ]
+                    end = whitespace_positions[-1] + 1 if whitespace_positions else limit
+
+            piece = remaining[:end].strip()
+            if piece:
+                segments.append(piece)
+            remaining = remaining[end:].strip()
+
+        if remaining:
+            segments.append(remaining)
+
+    return segments
+
 
 def _extract_audio_chunks(sse_data_payload: str) -> Iterator[bytes]:
     """Decode base64 PCM audio from one Gemini SSE `data:` payload (JSON)."""
@@ -181,6 +268,7 @@ class FakeTtsClient:
         self.chunk_size = chunk_size
         self.call_count = 0
         self.synthesized_utterances: list[tuple[str, str]] = []
+        self.synthesized_styles: list[str] = []
         self.fail_on_utterance_text: str | None = None
         self.fail_on_utterance_indices = set(fail_on_utterance_indices) if fail_on_utterance_indices else set()
 
@@ -198,6 +286,7 @@ class FakeTtsClient:
         idx = self.call_count
         self.call_count += 1
         self.synthesized_utterances.append((text, voice_id))
+        self.synthesized_styles.append(style)
         self.last_style = style
 
         if idx in self.fail_on_utterance_indices:
@@ -222,9 +311,15 @@ class TtsPlaybackCoordinator:
     Handles sequentially yielding events, error halting, and cancellation.
     """
 
-    def __init__(self, tts_client: TtsClient, scene_pause_duration_ms: int = DEFAULT_SCENE_PAUSE_DURATION_MS) -> None:
+    def __init__(
+        self,
+        tts_client: TtsClient,
+        scene_pause_duration_ms: int = DEFAULT_SCENE_PAUSE_DURATION_MS,
+        inter_utterance_pause_duration_ms: int = DEFAULT_INTER_UTTERANCE_PAUSE_DURATION_MS,
+    ) -> None:
         self.tts_client = tts_client
         self.scene_pause_duration_ms = max(0, scene_pause_duration_ms)
+        self.inter_utterance_pause_duration_ms = max(0, inter_utterance_pause_duration_ms)
         self._stopped = False
         self._current_task: asyncio.Task | None = None
 
@@ -247,12 +342,19 @@ class TtsPlaybackCoordinator:
             if self._stopped:
                 break
 
-            if previous_scene is not None and u.scene_number != previous_scene:
-                yield {
-                    "type": "scene_pause",
-                    "scene_number": u.scene_number,
-                    "duration_ms": self.scene_pause_duration_ms,
-                }
+            if previous_scene is not None:
+                if u.scene_number != previous_scene:
+                    yield {
+                        "type": "scene_pause",
+                        "scene_number": u.scene_number,
+                        "duration_ms": self.scene_pause_duration_ms,
+                    }
+                else:
+                    yield {
+                        "type": "utterance_pause",
+                        "scene_number": u.scene_number,
+                        "duration_ms": self.inter_utterance_pause_duration_ms,
+                    }
 
             yield {
                 "type": "utterance_start",
@@ -263,22 +365,35 @@ class TtsPlaybackCoordinator:
             }
 
             try:
-                # The Fountain parenthetical is a performance direction sent to
-                # Gemini TTS via speechMetadata.style (turn-level styling), so it
-                # guides delivery but is not read aloud.
-                stream = self.tts_client.synthesize_stream(
-                    text=u.text,
-                    voice_id=u.voice_id,
-                    style=u.performance_direction,
-                )
-                async for chunk in stream:
+                for segment_index, segment in enumerate(_split_tts_text(u.text)):
+                    if segment_index > 0:
+                        yield {
+                            "type": "utterance_pause",
+                            "scene_number": u.scene_number,
+                            "duration_ms": self.inter_utterance_pause_duration_ms,
+                        }
+                    # Fountain の parenthetical は演技指示として送り、読み上げない。
+                    # 分割後も同じ計画上の発話として扱い、ハイライトと再開位置を保つ。
+                    stream = self.tts_client.synthesize_stream(
+                        text=segment,
+                        voice_id=u.voice_id,
+                        style=u.performance_direction,
+                    )
+                    async for chunk in stream:
+                        if self._stopped:
+                            break
+                        yield {
+                            "type": "audio_chunk",
+                            "scene_number": u.scene_number,
+                            "utterance_index": u.utterance_index,
+                            "data": chunk,
+                        }
                     if self._stopped:
                         break
                     yield {
-                        "type": "audio_chunk",
+                        "type": "audio_segment_end",
                         "scene_number": u.scene_number,
                         "utterance_index": u.utterance_index,
-                        "data": chunk,
                     }
             except asyncio.CancelledError:
                 self._stopped = True

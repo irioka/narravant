@@ -27,6 +27,7 @@ gemini:
 playback:
   tts_max_attempts: 6 # Max attempts covering transient TTS errors during playback (1 initial + 5 retries)
   scene_pause_duration_ms: 3000 # Silence inserted at a Scene Heading transition (milliseconds)
+  inter_utterance_pause_duration_ms: 1000 # Silence between split sentence segments and utterances within the same scene (milliseconds)
 
 emotion_arc:
   max_points: 36

@@ -19,7 +19,7 @@ export const en = {
   documents: {
     search: { ariaLabel: 'Search by title', placeholder: 'Search by document title', valencePattern: 'Valence pattern', sortHint: 'Click to sort; Shift-click for multiple columns.' },
     table: { title: 'Title', owner: 'Owner', shared: 'Shared', savedAt: 'Saved at', version: 'Version', valence: 'Valence', comparisonSource: 'Use {{title}} as the Valence comparison source', documentMenu: '{{title}} menu' },
-    list: { rename: 'Rename', renameAria: 'Rename “{{title}}”', titleInputAria: 'Document title', saveRename: 'Save title', cancelRename: 'Cancel', sortBy: 'Sort by {{column}}' },
+    list: { rename: 'Rename', renameAria: 'Rename “{{title}}”', titleInputAria: 'Document title', saveRename: 'Save title', cancelRename: 'Cancel', sortBy: 'Sort by {{column}}', resizeColumn: 'Resize {{column}} column' },
     states: { loadFailed: 'Unable to load documents. Check that the API is running.', renameFailed: 'Unable to rename the document. Reload the latest state and try again.', noMatches: 'No documents match these filters.', loadingMore: 'Loading…' },
     preview: { title: 'OVERVIEW', loadFailed: 'Unable to load the overview.', select: 'Select a document to view its analysis.', openWorkbench: 'Open Analysis Workbench' },
     delete: { title: 'Delete document?', description: '“{{title}}” will be permanently deleted.' },
@@ -29,6 +29,7 @@ export const en = {
   },
   analysis: {
     sections: { theme: 'Theme', synopsis: 'Synopsis', emotionalArc: 'Emotional Arc', turningPoints: 'Turning Points', mainCharacters: 'Main Characters', characters: 'Characters', narrator: 'Narrator' },
+    characterManagement: { add: 'Add character', nameInput: 'Character name', invalidName: 'A name is required and must be unique.', delete: 'Remove {{name}} from Characters', deleteTitle: 'Remove this character?', deleteDescription: 'This removes the profile and its emotional arc series for “{{name}}”. Turning point records are kept.', unregistered: 'Script speaker · unregistered', register: 'Add to Characters' },
     voices: {
       generateAll: 'Generate all voices',
       generate: 'Generate',
@@ -56,6 +57,7 @@ export const en = {
       utterancePosition: '(Scene {{scene}}, utterance #{{utterance}})',
       play: 'Play',
       playAria: 'Start playback',
+      preparing: 'Preparing first audio…',
       stop: 'Stop',
       stopAria: 'Stop playback',
       retry: 'Retry',

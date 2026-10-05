@@ -327,6 +327,86 @@ async def test_saved_document_update_uses_optimistic_locking() -> None:
 
 
 @pytest.mark.asyncio
+async def test_character_set_edits_save_without_rewriting_orphaned_turning_point_history() -> None:
+    repository, storage, owner = _context()
+    document_id = "doc-character-history"
+    payload = _payload(document_id, owner.user_id, "Character history")
+    payload["analysis"] = {
+        "status": "completed",
+        "turning_points": [
+            {
+                "tp_number": 1,
+                "label": "Opportunity",
+                "availability": "identified",
+                "scene_number": 1,
+                "change": "Historical change",
+                "reason": None,
+                "involved_characters": [
+                    {
+                        "name": "Removed speaker",
+                        "goal": "Old goal",
+                        "conflict": "Old conflict",
+                        "choice": "Old choice",
+                        "action": "Old action",
+                        "change": "Old character change",
+                    }
+                ],
+            }
+        ],
+        "characters": [
+            {"name": "Retained speaker", "related_turning_points": [1]},
+            {"name": "Removed speaker", "related_turning_points": [1]},
+        ],
+    }
+    payload["emotion_arc"]["characters"] = {"Retained speaker": [5], "Removed speaker": [3]}
+    stored = storage.write_structured_script(document_id, 1, payload, if_generation_match=0)
+    storage.write_search_text(document_id, str(payload["source_fountain"]), if_generation_match=0)
+    repository.create_document(
+        document_id,
+        owner.user_id,
+        "Character history",
+        stored.uri,
+        stored.generation,
+        stored.sha256,
+    )
+
+    edited = await update_document(
+        document_id,
+        DocumentUpdateRequest.model_validate(
+            {
+                "expected_version": 1,
+                "base_version_id": 1,
+                "analysis": {
+                    "status": "completed",
+                    "turning_points": payload["analysis"]["turning_points"],
+                    "characters": [
+                        {"name": "Retained speaker", "related_turning_points": [1]},
+                        {"name": "Added speaker", "related_turning_points": []},
+                    ],
+                },
+                "emotion_arc": {
+                    **payload["emotion_arc"],
+                    "characters": {"Retained speaker": [5], "Added speaker": [0]},
+                },
+            }
+        ),
+        repository,
+        storage,
+        owner,
+        EMOTION_ARC_SETTINGS,
+    )
+
+    persisted, _ = storage.read_structured_script(document_id, edited.version_id)
+    assert {character["name"] for character in persisted["analysis"]["characters"]} == {
+        "Retained speaker",
+        "Added speaker",
+    }
+    assert persisted["emotion_arc"]["characters"] == {"Retained speaker": [5], "Added speaker": [0]}
+    assert persisted["analysis"]["turning_points"] == payload["analysis"]["turning_points"]
+    assert edited.version_id == 2
+
+
+@pytest.mark.asyncio
 async def test_missing_saved_document_resources_use_document_not_found() -> None:
     repository, storage, owner = _context()
 

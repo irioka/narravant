@@ -22,7 +22,11 @@ from narravant.services.playback import (
     PlaybackPlanError,
     build_playback_plan,
 )
-from narravant.services.tts import TtsPlaybackCoordinator, create_tts_client
+from narravant.services.tts import (
+    DEFAULT_INTER_UTTERANCE_PAUSE_DURATION_MS,
+    TtsPlaybackCoordinator,
+    create_tts_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +76,9 @@ async def document_playback_websocket(
     Server -> Client:
       - {"event": "utterance_start", "scene_number": n, "utterance_index": i, "speaker": "...", "target_type": "..."}
       - {"event": "scene_pause", "scene_number": n, "duration_ms": <configured milliseconds>}
+      - {"event": "utterance_pause", "scene_number": n, "duration_ms": <configured milliseconds>}
       - {"event": "audio_chunk", "scene_number": n, "utterance_index": i, "data": "<base64 encoded PCM>"}
+      - {"event": "audio_segment_end", "scene_number": n, "utterance_index": i}
       - {"event": "utterance_end", "scene_number": n, "utterance_index": i}
       - {"event": "playback_complete"}
       - {"event": "error", "scene_number": n, "utterance_index": i, "message": "..."}
@@ -132,6 +138,11 @@ async def document_playback_websocket(
             coordinator = TtsPlaybackCoordinator(
                 tts_client=tts_client,
                 scene_pause_duration_ms=getattr(settings, "playback_scene_pause_duration_ms", 3000),
+                inter_utterance_pause_duration_ms=getattr(
+                    settings,
+                    "playback_inter_utterance_pause_duration_ms",
+                    DEFAULT_INTER_UTTERANCE_PAUSE_DURATION_MS,
+                ),
             )
             async for ev in coordinator.run_stream(plan.utterances):
                 ev_type = ev["type"]
@@ -153,6 +164,14 @@ async def document_playback_websocket(
                             "duration_ms": ev["duration_ms"],
                         }
                     )
+                elif ev_type == "utterance_pause":
+                    await websocket.send_json(
+                        {
+                            "event": "utterance_pause",
+                            "scene_number": ev["scene_number"],
+                            "duration_ms": ev["duration_ms"],
+                        }
+                    )
                 elif ev_type == "audio_chunk":
                     b64_data = base64.b64encode(ev["data"]).decode("ascii")
                     await websocket.send_json(
@@ -161,6 +180,14 @@ async def document_playback_websocket(
                             "scene_number": ev["scene_number"],
                             "utterance_index": ev["utterance_index"],
                             "data": b64_data,
+                        }
+                    )
+                elif ev_type == "audio_segment_end":
+                    await websocket.send_json(
+                        {
+                            "event": "audio_segment_end",
+                            "scene_number": ev["scene_number"],
+                            "utterance_index": ev["utterance_index"],
                         }
                     )
                 elif ev_type == "utterance_end":

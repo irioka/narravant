@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from narravant.core.fountain import NARRATOR_SPEAKERS, FountainParser, normalize_speaker_name
+from narravant.core.fountain import (
+    NARRATOR_SPEAKERS,
+    FountainParser,
+    ParsedScript,
+    UtteranceItem,
+    normalize_speaker_name,
+)
 
 
 class PlaybackPlanError(Exception):
@@ -70,7 +76,7 @@ def build_playback_plan(
     source_fountain = document_data.get("source_fountain", "")
 
     parsed = FountainParser.parse(source_fountain)
-    raw_utterances = parsed.all_utterances()
+    raw_utterances = _playback_utterances(parsed)
 
     if not raw_utterances:
         raise PlaybackPlanError(
@@ -147,3 +153,39 @@ def build_playback_plan(
         utterances=filtered,
         total_utterances=len(all_planned),
     )
+
+
+def _playback_utterances(parsed: ParsedScript) -> list[UtteranceItem]:
+    """Add speakable scene-heading content to the playback-only utterance list."""
+    existing_utterances = parsed.all_utterances()
+    narrator_speaker = next(
+        (item.speaker for item in existing_utterances if item.target_type == "narrator"),
+        None,
+    )
+    if narrator_speaker is None:
+        has_japanese = any(
+            "\u3040" <= character <= "\u30ff" or "\u3400" <= character <= "\u9fff"
+            for character in parsed.source_fountain
+        )
+        narrator_speaker = "ナレーター" if has_japanese else "Narrator"
+
+    result: list[UtteranceItem] = []
+    for scene in parsed.scenes:
+        spoken_heading = FountainParser.spoken_scene_heading(scene.heading)
+        heading_offset = 0
+        if spoken_heading:
+            result.append(
+                UtteranceItem(
+                    scene_number=scene.scene_number,
+                    utterance_index=0,
+                    speaker=narrator_speaker,
+                    target_type="narrator",
+                    text=spoken_heading,
+                )
+            )
+            heading_offset = 1
+        result.extend(
+            replace(item, utterance_index=item.utterance_index + heading_offset)
+            for item in scene.utterances
+        )
+    return result

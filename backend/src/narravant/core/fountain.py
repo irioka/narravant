@@ -25,6 +25,10 @@ _SCENE_HEADING_REGEX = re.compile(
 
 # Scene number in trailing #number# pattern
 _SCENE_NUMBER_REGEX = re.compile(r"#(\d+)#\s*$")
+_SPOKEN_SCENE_HEADING_PREFIX_REGEX = re.compile(
+    r"^(?:INT\./EXT\.?|INT/EXT\.?|I/E\.?|INT\.?|EXT\.?|EST\.?)(?:\s+|$)",
+    re.IGNORECASE,
+)
 
 # Fountain files from Japanese writers commonly use full-width brackets for
 # parentheticals.  Keep the recognition in one place so parsing and generated
@@ -279,6 +283,13 @@ class FountainParser:
             clean_text = clean_text[1:].strip()
 
         return True, scene_num, clean_text
+
+    @staticmethod
+    def spoken_scene_heading(heading: str) -> str:
+        """Return the scene-heading content intended for narrator speech."""
+        without_number = _SCENE_NUMBER_REGEX.sub("", heading).strip()
+        without_classification = _SPOKEN_SCENE_HEADING_PREFIX_REGEX.sub("", without_number, count=1)
+        return without_classification.strip()
 
     @classmethod
     def parse(cls, content: str) -> ParsedScript:

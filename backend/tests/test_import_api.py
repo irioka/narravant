@@ -10,12 +10,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import BackgroundTasks, HTTPException
 from httpx import ASGITransport, AsyncClient
 from pypdf import PdfWriter
 
 from narravant.api.dependencies import CurrentUser
 from narravant.api.documents import save_import_draft
-from narravant.api.schemas import ImportDraftSaveRequest
+from narravant.api.emotion_arc import reanalyze_import_draft_emotion_arc
+from narravant.api.schemas import ImportDraftReanalyzeRequest, ImportDraftSaveRequest
 from narravant.db.database import DatabaseManager, DocumentRepository, TaskRepository
 from narravant.main import app
 from narravant.services.ingestion import (
@@ -29,6 +31,7 @@ from narravant.services.narrative_adaptation import (
     NarrativeAdaptationError,
     SourceKind,
 )
+from narravant.services.reanalysis import ImportDraftReanalysisService
 from narravant.services.tasks import EphemeralTaskEvents, TaskManager
 from narravant.services.vertex_analysis import CanonicalAnalysis
 from narravant.storage.gcs import InMemoryScriptStorageClient
@@ -211,6 +214,113 @@ def test_import_after_a_saved_document_always_creates_a_distinct_unsaved_draft()
     assert repository.list_documents(limit=10, offset=0)[1] == 1
     original, _ = storage.read_structured_script(original_document_id, 1)
     assert original["metadata"]["title"] == "Native"
+
+
+@pytest.mark.asyncio
+async def test_import_draft_reanalysis_api_is_owner_only_and_does_not_persist_editor_text() -> None:
+    service, _, _, tasks = _service()
+    content = _native_bytes()
+    imported = validate_import(
+        "native.json", content, 1024 * 1024, pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.70
+    )
+    import_task_id = service.start("owner-1", imported)
+    service.run(import_task_id, content)
+    source_fountain = "Title: Unsaved Native Edit\n\nINT. EDITED ROOM - NIGHT #1#\n\n@BOB\nSynthetic line."
+    request = ImportDraftReanalyzeRequest(source_fountain=source_fountain)
+    background = BackgroundTasks()
+
+    accepted = await reanalyze_import_draft_emotion_arc(
+        import_task_id=import_task_id,
+        background_tasks=background,
+        request=request,
+        user=CurrentUser("owner-1", "owner@example.test"),
+        drafts=service.drafts,
+        tasks=tasks,
+        analyzer=NoGeminiAnalyzer(),
+        settings=SimpleNamespace(emotion_arc_max_points=36),
+    )
+
+    queued = tasks.repository.get(accepted.task_id)
+    assert accepted.task_type == "emotion_arc_reanalysis"
+    assert queued is not None and queued["status"] == "queued"
+    assert source_fountain not in queued["payload_json"]
+    assert len(background.tasks) == 1
+    assert background.tasks[0].kwargs == {
+        "import_task_id": import_task_id,
+        "source_fountain": source_fountain,
+    }
+
+    with pytest.raises(HTTPException) as caught:
+        await reanalyze_import_draft_emotion_arc(
+            import_task_id=import_task_id,
+            background_tasks=BackgroundTasks(),
+            request=request,
+            user=CurrentUser("other-user", "other@example.test"),
+            drafts=service.drafts,
+            tasks=tasks,
+            analyzer=NoGeminiAnalyzer(),
+            settings=SimpleNamespace(emotion_arc_max_points=36),
+        )
+    assert caught.value.status_code == 404
+
+
+def test_import_draft_reanalysis_uses_editor_fountain_without_publishing_a_document() -> None:
+    from narravant.core.emotion_arc_resolution import scene_mapping_payload
+    from narravant.services.vertex_analysis import CanonicalAnalysis
+
+    import_service, repository, storage, tasks = _service()
+    content = _native_bytes()
+    imported = validate_import(
+        "native.json", content, 1024 * 1024, pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.70
+    )
+    import_task_id = import_service.start("owner-1", imported)
+    import_service.run(import_task_id, content)
+    draft = import_service.drafts.get(import_task_id)
+    assert draft is not None
+    original_draft = deepcopy(draft.structured)
+    source_fountain = "Title: Unsaved Native Edit\n\nINT. EDITED ROOM - NIGHT #1#\n\n@BOB\nSynthetic line."
+    analyzed_sources: list[str] = []
+
+    class Analyzer:
+        def analyze(self, fountain, _on_progress, *, expected_characters=None):
+            analyzed_sources.append(fountain)
+            assert expected_characters is None
+            return CanonicalAnalysis(
+                metadata={},
+                emotion_arc={
+                    "valence": [6],
+                    "tension": [1],
+                    "characters": {"BOB": [6]},
+                    "scene_mapping": scene_mapping_payload(1, 36),
+                },
+                characters=[{"name": "BOB"}],
+                turning_points=deepcopy(draft.structured["analysis"]["turning_points"]),
+            )
+
+    reanalysis = ImportDraftReanalysisService(
+        tasks,
+        import_service.drafts,
+        Analyzer(),
+        emotion_arc_max_points=36,
+    )
+    reanalysis_task_id = reanalysis.start("owner-1", draft)
+
+    reanalysis.run(
+        reanalysis_task_id,
+        import_task_id=import_task_id,
+        source_fountain=source_fountain,
+    )
+
+    task = tasks.repository.get(reanalysis_task_id)
+    completed = tasks.events_after(reanalysis_task_id, 0)[-1]
+    assert task is not None and task["status"] == "completed"
+    assert source_fountain not in task["payload_json"]
+    assert analyzed_sources == [source_fountain]
+    assert import_service.drafts.get(import_task_id).structured == original_draft  # type: ignore[union-attr]
+    assert repository.list_documents(limit=10, offset=0)[1] == 0
+    assert storage._objects == {}  # type: ignore[attr-defined]
+    assert completed.payload["reanalysis"]["emotion_arc"]["characters"] == {"BOB": [6]}
+    assert source_fountain not in json.dumps(completed.payload)
 
 
 def test_import_save_publishes_the_current_client_edited_draft_atomically() -> None:

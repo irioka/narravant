@@ -148,10 +148,13 @@ async def test_tts_coordinator_iterates_utterances_in_order(fake_tts: FakeTtsCli
         "utterance_start",
         "audio_chunk",
         "audio_chunk",
+        "audio_segment_end",
         "utterance_end",
+        "utterance_pause",
         "utterance_start",
         "audio_chunk",
         "audio_chunk",
+        "audio_segment_end",
         "utterance_end",
         "playback_complete",
     ]
@@ -162,9 +165,40 @@ async def test_tts_coordinator_iterates_utterances_in_order(fake_tts: FakeTtsCli
     assert events[0]["speaker"] == "ナレーター"
 
     # Verify second utterance start metadata
-    assert events[4]["scene_number"] == 1
-    assert events[4]["utterance_index"] == 1
-    assert events[4]["speaker"] == "アリス"
+    assert events[6]["scene_number"] == 1
+    assert events[6]["utterance_index"] == 1
+    assert events[6]["speaker"] == "アリス"
+
+
+@pytest.mark.asyncio
+async def test_tts_coordinator_synthesizes_each_sentence_as_its_own_segment(fake_tts: FakeTtsClient):
+    utterance = PlannedUtterance(
+        1, 0, "ナレーター", "narrator", "最初の文です。次の文です！", "voice-1", "穏やかに読む"
+    )
+
+    events = [event async for event in TtsPlaybackCoordinator(fake_tts).run_stream([utterance])]
+
+    assert [text for text, _voice in fake_tts.synthesized_utterances] == ["最初の文です。", "次の文です！"]
+    assert [voice for _text, voice in fake_tts.synthesized_utterances] == ["voice-1", "voice-1"]
+    assert fake_tts.synthesized_styles == ["穏やかに読む", "穏やかに読む"]
+    assert [event["type"] for event in events].count("utterance_start") == 1
+    assert [event["type"] for event in events].count("utterance_end") == 1
+    assert [event["type"] for event in events].count("audio_segment_end") == 2
+    segment_end = next(index for index, event in enumerate(events) if event["type"] == "audio_segment_end")
+    assert events[segment_end + 1] == {"type": "utterance_pause", "scene_number": 1, "duration_ms": 1000}
+    assert events[segment_end + 2]["type"] == "audio_chunk"
+
+
+@pytest.mark.asyncio
+async def test_tts_coordinator_splits_long_sentence_at_clause_punctuation(fake_tts: FakeTtsClient):
+    text = f"{'あ' * 130}、{'い' * 130}。"
+    utterance = PlannedUtterance(1, 0, "ナレーター", "narrator", text, "voice-1")
+
+    [event async for event in TtsPlaybackCoordinator(fake_tts).run_stream([utterance])]
+
+    pieces = [text for text, _voice in fake_tts.synthesized_utterances]
+    assert pieces == [f"{'あ' * 130}、", f"{'い' * 130}。"]
+    assert all(len(piece) <= 180 for piece in pieces)
 
 
 @pytest.mark.asyncio
@@ -178,7 +212,29 @@ async def test_tts_coordinator_inserts_a_pause_between_scenes(fake_tts: FakeTtsC
     pause_index = next(index for index, event in enumerate(events) if event["type"] == "scene_pause")
 
     assert events[pause_index] == {"type": "scene_pause", "scene_number": 2, "duration_ms": 3000}
+    assert events[pause_index - 1]["type"] == "utterance_end"
+    assert events[pause_index - 1]["scene_number"] == 1
     assert events[pause_index + 1]["type"] == "utterance_start"
+    assert events[pause_index + 1]["scene_number"] == 2
+
+
+@pytest.mark.asyncio
+async def test_tts_coordinator_pauses_between_same_scene_utterances_without_doubling_scene_pause(
+    fake_tts: FakeTtsClient,
+):
+    utterances = [
+        PlannedUtterance(1, 0, "アリス", "character", "聞こえる？", "voice-alice"),
+        PlannedUtterance(1, 1, "ボブ", "character", "ああ。", "voice-bob"),
+        PlannedUtterance(2, 0, "ナレーター", "narrator", "次の部屋。", "voice-narrator"),
+    ]
+
+    events = [event async for event in TtsPlaybackCoordinator(fake_tts).run_stream(utterances)]
+
+    pauses = [event for event in events if event["type"] in {"utterance_pause", "scene_pause"}]
+    assert pauses == [
+        {"type": "utterance_pause", "scene_number": 1, "duration_ms": 1000},
+        {"type": "scene_pause", "scene_number": 2, "duration_ms": 3000},
+    ]
 
 
 @pytest.mark.asyncio

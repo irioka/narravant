@@ -141,10 +141,30 @@ export function getValencePatterns(fetcher?: typeof fetch) {
   return apiRequest('/api/v1/emotion-arc/patterns', GetValencePatternsApiV1EmotionArcPatternsGetResponse, { fetcher })
 }
 
-export function reanalyzeEmotionArc(documentId: string) {
+export function reanalyzeEmotionArc(documentId: string, sourceFountain?: string, fetcher?: typeof fetch) {
   return apiRequest(
     `/api/v1/documents/${documentId}/emotion-arc/reanalyze`,
     ReanalyzeEmotionArcApiV1DocumentsDocIdEmotionArcReanalyzePostResponse,
-    { method: 'POST' },
+    {
+      method: 'POST',
+      ...(sourceFountain !== undefined ? {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_fountain: sourceFountain }),
+      } : {}),
+      fetcher,
+    },
+  )
+}
+
+export function reanalyzeImportDraftEmotionArc(importTaskId: string, sourceFountain: string, fetcher?: typeof fetch) {
+  return apiRequest(
+    `/api/v1/documents/import/${importTaskId}/emotion-arc/reanalyze`,
+    ReanalyzeEmotionArcApiV1DocumentsDocIdEmotionArcReanalyzePostResponse,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_fountain: sourceFountain }),
+      fetcher,
+    },
   )
 }

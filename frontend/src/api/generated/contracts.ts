@@ -3,7 +3,7 @@
  * Do not edit manually.
  * NARRAVANT API
  * Intelligent screenplay analysis and narrative arc workbench API
- * OpenAPI spec version: 0.1.2
+ * OpenAPI spec version: 0.1.3
  */
 import * as zod from 'zod';
 
@@ -62,6 +62,30 @@ export const importDocumentApiV1DocumentsImportPostResponseStatusDefault = `queu
 
 export const ImportDocumentApiV1DocumentsImportPostResponse = zod.object({
   "status": zod.string().default(importDocumentApiV1DocumentsImportPostResponseStatusDefault),
+  "task_id": zod.string(),
+  "task_type": zod.string()
+})
+
+
+/**
+ * Queue an owner-only Emotional Arc reanalysis for an unsaved Import draft.
+ * @summary Reanalyze Import Draft Emotion Arc
+ */
+export const ReanalyzeImportDraftEmotionArcApiV1DocumentsImportImportTaskIdEmotionArcReanalyzePostParams = zod.object({
+  "import_task_id": zod.string()
+})
+
+
+
+
+export const ReanalyzeImportDraftEmotionArcApiV1DocumentsImportImportTaskIdEmotionArcReanalyzePostBody = zod.object({
+  "source_fountain": zod.string().min(1)
+}).describe('Current editor text to analyze while an Import is still an ephemeral draft.')
+
+export const reanalyzeImportDraftEmotionArcApiV1DocumentsImportImportTaskIdEmotionArcReanalyzePostResponseStatusDefault = `queued`;
+
+export const ReanalyzeImportDraftEmotionArcApiV1DocumentsImportImportTaskIdEmotionArcReanalyzePostResponse = zod.object({
+  "status": zod.string().default(reanalyzeImportDraftEmotionArcApiV1DocumentsImportImportTaskIdEmotionArcReanalyzePostResponseStatusDefault),
   "task_id": zod.string(),
   "task_type": zod.string()
 })
@@ -620,6 +644,13 @@ export const UpdateDocumentApiV1DocumentsDocIdPutResponse = zod.object({
 export const ReanalyzeEmotionArcApiV1DocumentsDocIdEmotionArcReanalyzePostParams = zod.object({
   "doc_id": zod.string()
 })
+
+
+
+
+export const ReanalyzeEmotionArcApiV1DocumentsDocIdEmotionArcReanalyzePostBody = zod.union([zod.object({
+  "source_fountain": zod.union([zod.string().min(1),zod.null()]).optional()
+}).describe('Optional current editor text; omitted bodies keep saved-version behavior.'),zod.null()])
 
 export const reanalyzeEmotionArcApiV1DocumentsDocIdEmotionArcReanalyzePostResponseStatusDefault = `queued`;
 

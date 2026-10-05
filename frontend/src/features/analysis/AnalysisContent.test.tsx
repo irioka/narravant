@@ -119,6 +119,7 @@ describe('AnalysisContent 登場人物セクション', () => {
     expect(screen.queryByText('テーマ')).not.toBeInTheDocument()
     expect(screen.queryByText('A test theme.')).not.toBeInTheDocument()
     expect(screen.getByText('登場人物')).toBeInTheDocument()
+    expect(screen.queryByText(/追加したキャラクターの Emotional arc/)).not.toBeInTheDocument()
   })
 
   it('見出しの隣に全話者の声を生成ボタンを表示する', () => {
@@ -202,15 +203,144 @@ describe('AnalysisContent 登場人物セクション', () => {
 
   it('分析に含まれないが脚本で発話する話者も表示する', async () => {
     const user = userEvent.setup()
+    const onDraftChange = vi.fn()
     renderContent({
       ...mockDocument,
       source_fountain: `${FOUNTAIN}\n\n@専門の猟師\nここは危険だ。`,
-    })
+    }, onDraftChange)
 
     expect(screen.getByText('専門の猟師')).toBeInTheDocument()
     await user.click(screen.getByLabelText('専門の猟師を開く'))
     expect(screen.queryByText('自然な話し方の声')).not.toBeInTheDocument()
     expect(screen.queryByText('外的目標')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Add to Characters' }))
+    expect(onDraftChange).toHaveBeenCalledWith(expect.objectContaining({
+      analysis: expect.objectContaining({ characters: expect.arrayContaining([expect.objectContaining({ name: '専門の猟師' })]) }),
+      emotion_arc: expect.objectContaining({ characters: expect.objectContaining({ '専門の猟師': [0] }) }),
+    }))
+  })
+
+  it('キャラクター追加は人物と arc のキーだけを draft に加える', async () => {
+    const onDraftChange = vi.fn()
+    const user = userEvent.setup()
+    const turningPoints = [{
+      availability: 'identified' as const,
+      tp_number: 1,
+      label: '機会',
+      scene_number: 1,
+      change: '関係の変化',
+      involved_characters: [{ name: '履歴人物', goal: '望み', conflict: '対立', choice: '選択', action: '行動', change: '変化' }],
+    }]
+    const document = {
+      ...mockDocument,
+      analysis: { ...mockDocument.analysis, turning_points: turningPoints },
+    }
+    renderContent(document, onDraftChange)
+
+    await user.click(screen.getByRole('button', { name: 'キャラクターを追加' }))
+    await user.type(screen.getByRole('textbox', { name: 'キャラクター名' }), 'New Character')
+    await user.click(screen.getByRole('button', { name: '追加' }))
+
+    const update = onDraftChange.mock.calls[0][0]
+    expect(update.analysis.characters.map((character: { name: string }) => character.name)).toEqual(['Alice', 'New Character'])
+    expect(update.emotion_arc.characters).toEqual({ 'New Character': [0] })
+    expect(update.analysis.turning_points).toEqual(turningPoints)
+    expect(screen.queryByText(/追加したキャラクターの Emotional arc/)).not.toBeInTheDocument()
+  })
+
+  it('空名・重複名の追加と改名を受け付けない', async () => {
+    const onDraftChange = vi.fn()
+    const user = userEvent.setup()
+    const document: DocumentDetail = {
+      ...mockDocument,
+      analysis: {
+        ...mockDocument.analysis,
+        characters: [
+          ...mockDocument.analysis.characters,
+          { ...mockDocument.analysis.characters[0], name: 'Bob' },
+        ],
+      },
+      emotion_arc: { ...mockDocument.emotion_arc, characters: { Alice: [4], Bob: [2] } },
+    }
+    renderContent(document, onDraftChange)
+
+    await user.click(screen.getByRole('button', { name: 'キャラクターを追加' }))
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '追加' }))
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: 'キャラクター名' }), 'Bob')
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '追加' }))
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(onDraftChange).not.toHaveBeenCalled()
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'キャンセル' }))
+
+    await user.click(screen.getByLabelText('Aliceを開く'))
+    await user.click(screen.getByLabelText('Aliceを編集'))
+    const editor = screen.getByRole('dialog')
+    const name = within(editor).getByRole('textbox', { name: 'キャラクター名' })
+    await user.clear(name)
+    await user.click(within(editor).getByRole('button', { name: 'OK' }))
+    expect(within(editor).getByRole('alert')).toBeInTheDocument()
+    await user.type(name, 'Bob')
+    await user.click(within(editor).getByRole('button', { name: 'OK' }))
+    expect(within(editor).getByRole('alert')).toBeInTheDocument()
+    expect(onDraftChange).not.toHaveBeenCalled()
+  })
+
+  it('改名は arc の既存値を移し、転換点を変えない', async () => {
+    const onDraftChange = vi.fn()
+    const turningPoints = [{
+      availability: 'identified' as const,
+      tp_number: 1,
+      label: '機会',
+      scene_number: 1,
+      change: '関係の変化',
+      involved_characters: [{ name: 'Alice', goal: '望み', conflict: '対立', choice: '選択', action: '行動', change: '変化' }],
+    }]
+    const document: DocumentDetail = {
+      ...mockDocument,
+      analysis: { ...mockDocument.analysis, turning_points: turningPoints },
+      emotion_arc: { ...mockDocument.emotion_arc, characters: { Alice: [5] } },
+    }
+    const user = userEvent.setup()
+    renderContent(document, onDraftChange)
+    await user.click(screen.getByLabelText('Aliceを開く'))
+    await user.click(screen.getByLabelText('Aliceを編集'))
+    const dialog = screen.getByRole('dialog')
+    await user.clear(within(dialog).getByRole('textbox', { name: 'キャラクター名' }))
+    await user.type(within(dialog).getByRole('textbox', { name: 'キャラクター名' }), 'Renamed Alice')
+    await user.click(within(dialog).getByRole('button', { name: 'OK' }))
+
+    const update = onDraftChange.mock.calls[0][0]
+    expect(update.analysis.characters.map((character: { name: string }) => character.name)).toContain('Renamed Alice')
+    expect(update.emotion_arc.characters).toEqual({ 'Renamed Alice': [5] })
+    expect(update.analysis.turning_points).toEqual(turningPoints)
+  })
+
+  it('キャラクター削除は同名のプロフィールと arc キーだけを draft から除く', async () => {
+    const onDraftChange = vi.fn()
+    const user = userEvent.setup()
+    const turningPoints = [{
+      availability: 'identified' as const,
+      tp_number: 1,
+      label: '機会',
+      scene_number: 1,
+      change: '関係の変化',
+      involved_characters: [{ name: 'Alice', goal: '望み', conflict: '対立', choice: '選択', action: '行動', change: '変化' }],
+    }]
+    const document: DocumentDetail = {
+      ...mockDocument,
+      analysis: { ...mockDocument.analysis, turning_points: turningPoints, characters: [...mockDocument.analysis.characters, { ...mockDocument.analysis.characters[0], name: 'Bob' }] },
+      emotion_arc: { ...mockDocument.emotion_arc, characters: { Alice: [4], Bob: [0] } },
+    }
+    renderContent(document, onDraftChange)
+
+    await user.click(screen.getByRole('button', { name: 'Bob を Characters から削除' }))
+    await user.click(screen.getByRole('button', { name: '削除' }))
+
+    const update = onDraftChange.mock.calls[0][0]
+    expect(update.analysis.characters.map((character: { name: string }) => character.name)).toEqual(['Alice'])
+    expect(update.emotion_arc.characters).toEqual({ Alice: [4] })
+    expect(update.analysis.turning_points).toEqual(turningPoints)
   })
 })
 

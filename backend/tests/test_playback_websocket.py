@@ -121,6 +121,8 @@ def test_setup(fake_tts: FakeTtsClient):
     mock_settings = SimpleNamespace(
         gemini_api_key="fake",
         gemini_tts_model="gemini-3.8-flash-tts",
+        playback_scene_pause_duration_ms=1750,
+        playback_inter_utterance_pause_duration_ms=1000,
         emotion_arc_max_points=36,
         valence_max_arc_distance=1.0,
     )
@@ -162,9 +164,15 @@ def test_playback_ws_full_flow(test_setup):
         event_types = [e["event"] for e in events]
         assert "utterance_start" in event_types
         assert "scene_pause" in event_types
+        assert "utterance_pause" in event_types
         assert "audio_chunk" in event_types
+        assert "audio_segment_end" in event_types
         assert "utterance_end" in event_types
         assert event_types[-1] == "playback_complete"
+        pause = next(event for event in events if event["event"] == "scene_pause")
+        assert pause["duration_ms"] == 1750
+        utterance_pause = next(event for event in events if event["event"] == "utterance_pause")
+        assert utterance_pause["duration_ms"] == 1000
 
         # Check audio chunk contains valid base64
         audio_chunks = [e for e in events if e["event"] == "audio_chunk"]
@@ -188,14 +196,17 @@ def test_playback_ws_start_from_specific_position(test_setup):
                 break
 
         starts = [e for e in events if e["event"] == "utterance_start"]
-        # Scene 2 has 2 utterances (narration and BOB)
-        assert len(starts) == 2
+        # Scene 2 has the narrated heading, narration, and BOB dialogue.
+        assert len(starts) == 3
         assert starts[0]["scene_number"] == 2
         assert starts[0]["utterance_index"] == 0
         assert starts[0]["speaker"] == "Narrator"
         assert starts[1]["scene_number"] == 2
         assert starts[1]["utterance_index"] == 1
-        assert starts[1]["speaker"] == "BOB"
+        assert starts[1]["speaker"] == "Narrator"
+        assert starts[2]["scene_number"] == 2
+        assert starts[2]["utterance_index"] == 2
+        assert starts[2]["speaker"] == "BOB"
 
 
 def test_playback_ws_unassigned_voice_emits_error(test_setup):
@@ -216,7 +227,7 @@ def test_playback_ws_unassigned_voice_emits_error(test_setup):
         msg = ws.receive_json()
         assert msg["event"] == "error"
         assert msg["scene_number"] == 1
-        assert msg["utterance_index"] == 1
+        assert msg["utterance_index"] == 2
         assert "ALICE" in msg["message"]
 
 

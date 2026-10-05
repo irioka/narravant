@@ -50,6 +50,68 @@ def test_narrator_voice_assignments_remain_compatible_across_languages(source, a
     assert plan.utterances[0].voice_id == "voices/synthetic-narrator"
 
 
+def test_playback_narrates_scene_heading_without_classification_or_number():
+    source_fountain = """Title: Scene heading narration
+
+INT./EXT. HIGHWAY 66 - DAWN #12#
+
+A car appears.
+
+@MAYA
+Stop!
+
+.OLD RUINS #13#
+
+Dust rises.
+"""
+    plan = build_playback_plan(
+        {
+            "source_fountain": source_fountain,
+            "voice_assignments": [
+                {"speaker": "Narrator", "voice_id": "voices/synthetic-narrator"},
+                {"speaker": "MAYA", "voice_id": "voices/synthetic-maya"},
+            ],
+        }
+    )
+
+    assert [
+        (item.scene_number, item.utterance_index, item.speaker, item.target_type, item.text)
+        for item in plan.utterances
+    ] == [
+        (12, 0, "Narrator", "narrator", "HIGHWAY 66 - DAWN"),
+        (12, 1, "Narrator", "narrator", "A car appears."),
+        (12, 2, "MAYA", "character", "Stop!"),
+        (13, 0, "Narrator", "narrator", "OLD RUINS"),
+        (13, 1, "Narrator", "narrator", "Dust rises."),
+    ]
+    assert all(
+        marker not in item.text
+        for item in plan.utterances
+        for marker in ("INT./EXT.", "#12#", "#13#")
+    )
+
+
+@pytest.mark.parametrize(
+    ("classification", "location"),
+    [
+        ("INT.", "ROOM"),
+        ("EXT.", "ROAD"),
+        ("EST.", "CITY"),
+        ("INT/EXT", "TRAIN"),
+        ("I/E.", "SHIP"),
+    ],
+)
+def test_playback_strips_each_scene_heading_classification(classification, location):
+    plan = build_playback_plan(
+        {
+            "source_fountain": f"Title: Heading only\n\n{classification} {location} #7#\n",
+            "voice_assignments": [{"speaker": "Narrator", "voice_id": "voices/synthetic-narrator"}],
+        }
+    )
+
+    assert [(item.scene_number, item.utterance_index, item.text) for item in plan.utterances] == [(7, 0, location)]
+
+
 def test_build_playback_plan_success_ordering_and_speaker_types():
     """Verify playback plan establishes correct sequence, scene+index IDs, and voice assignments."""
     document_data = {
@@ -66,53 +128,74 @@ def test_build_playback_plan_success_ordering_and_speaker_types():
     plan = build_playback_plan(document_data)
     assert plan.document_id == "doc-test-1"
     assert plan.version_id == 1
-    assert plan.total_utterances == 6
-    assert len(plan.utterances) == 6
+    assert plan.total_utterances == 8
+    assert len(plan.utterances) == 8
 
-    # Scene 1, Utterance 0: Narration
+    # Scene 1, Utterance 0: Spoken scene heading
     u0 = plan.utterances[0]
     assert u0.scene_number == 1
     assert u0.utterance_index == 0
     assert u0.speaker == "Narrator"
     assert u0.target_type == "narrator"
-    assert u0.text == "The room is dark and silent."
+    assert u0.text == "STUDY - NIGHT"
     assert u0.voice_id == "voices/fake-narrator-1"
 
-    # Scene 1, Utterance 1: Alice dialogue
+    # Scene 1, Utterance 1: Narration
     u1 = plan.utterances[1]
     assert u1.scene_number == 1
     assert u1.utterance_index == 1
-    assert u1.speaker == "ALICE"
-    assert u1.target_type == "character"
-    assert u1.text == "Is someone there?"
-    assert u1.voice_id == "voices/fake-alice-2"
+    assert u1.speaker == "Narrator"
+    assert u1.target_type == "narrator"
+    assert u1.text == "The room is dark and silent."
+    assert u1.voice_id == "voices/fake-narrator-1"
 
-    # Scene 1, Utterance 2: Narration
+    # Scene 1, Utterance 2: Alice dialogue
     u2 = plan.utterances[2]
     assert u2.scene_number == 1
     assert u2.utterance_index == 2
-    assert u2.speaker == "Narrator"
-    assert u2.text == "The grandfather clock ticks."
+    assert u2.speaker == "ALICE"
+    assert u2.target_type == "character"
+    assert u2.text == "Is someone there?"
+    assert u2.voice_id == "voices/fake-alice-2"
 
-    # Scene 1, Utterance 3: Bob dialogue
+    # Scene 1, Utterance 3: Narration
     u3 = plan.utterances[3]
     assert u3.scene_number == 1
     assert u3.utterance_index == 3
-    assert u3.speaker == "BOB"
-    assert u3.voice_id == "voices/fake-bob-3"
+    assert u3.speaker == "Narrator"
+    assert u3.target_type == "narrator"
+    assert u3.text == "The grandfather clock ticks."
+    assert u3.voice_id == "voices/fake-narrator-1"
 
-    # Scene 2, Utterance 0: Narration
+    # Scene 1, Utterance 4: Bob dialogue
     u4 = plan.utterances[4]
-    assert u4.scene_number == 2
-    assert u4.utterance_index == 0
-    assert u4.speaker == "Narrator"
-    assert u4.text == "Morning sunlight fills the yard."
+    assert u4.scene_number == 1
+    assert u4.utterance_index == 4
+    assert u4.speaker == "BOB"
+    assert u4.target_type == "character"
+    assert u4.voice_id == "voices/fake-bob-3"
 
-    # Scene 2, Utterance 1: Alice dialogue
+    # Scene 2, Utterance 0: Spoken scene heading
     u5 = plan.utterances[5]
     assert u5.scene_number == 2
-    assert u5.utterance_index == 1
-    assert u5.speaker == "ALICE"
+    assert u5.utterance_index == 0
+    assert u5.speaker == "Narrator"
+    assert u5.text == "GARDEN - MORNING"
+
+    # Scene 2, Utterance 1: Narration
+    u6 = plan.utterances[6]
+    assert u6.scene_number == 2
+    assert u6.utterance_index == 1
+    assert u6.speaker == "Narrator"
+    assert u6.text == "Morning sunlight fills the yard."
+
+    # Scene 2, Utterance 2: Alice dialogue
+    u7 = plan.utterances[7]
+    assert u7.scene_number == 2
+    assert u7.utterance_index == 2
+    assert u7.speaker == "ALICE"
+    assert u7.target_type == "character"
+    assert u7.text == "We made it through the night."
 
 
 def test_build_playback_plan_with_start_position():
@@ -128,16 +211,16 @@ def test_build_playback_plan_with_start_position():
         ],
     }
 
-    # Start from Scene 1, Utterance 2 (Bob's previous line onwards)
-    plan = build_playback_plan(document_data, start_scene=1, start_utterance_index=2)
-    assert plan.total_utterances == 6
-    assert len(plan.utterances) == 4
+    # Start from Scene 1, Utterance 3 (the grandfather clock narration onwards)
+    plan = build_playback_plan(document_data, start_scene=1, start_utterance_index=3)
+    assert plan.total_utterances == 8
+    assert len(plan.utterances) == 5
     assert plan.utterances[0].scene_number == 1
-    assert plan.utterances[0].utterance_index == 2
+    assert plan.utterances[0].utterance_index == 3
 
     # Start from Scene 2, Utterance 0
     plan_s2 = build_playback_plan(document_data, start_scene=2, start_utterance_index=0)
-    assert len(plan_s2.utterances) == 2
+    assert len(plan_s2.utterances) == 3
     assert plan_s2.utterances[0].scene_number == 2
     assert plan_s2.utterances[0].utterance_index == 0
 
@@ -163,7 +246,7 @@ def test_build_playback_plan_unassigned_voice_detection():
     assert err.code == "UNASSIGNED_VOICE"
     assert err.speaker == "BOB"
     assert err.scene_number == 1
-    assert err.utterance_index == 3
+    assert err.utterance_index == 4
 
 
 def test_build_playback_plan_missing_speaker_in_assignments():
@@ -186,7 +269,7 @@ def test_build_playback_plan_missing_speaker_in_assignments():
     assert err.code == "UNASSIGNED_VOICE"
     assert err.speaker == "ALICE"
     assert err.scene_number == 1
-    assert err.utterance_index == 1
+    assert err.utterance_index == 2
 
 
 def test_build_playback_plan_empty_script_raises():
@@ -230,7 +313,7 @@ EXT. 深い山奥 - 昼 #1#
         }
     )
 
-    assert [item.speaker for item in plan.utterances] == ["ナレーター", "若い紳士A", "ナレーター"]
+    assert [item.speaker for item in plan.utterances] == ["ナレーター", "ナレーター", "若い紳士A", "ナレーター"]
     assert "紳士Aは犬の死体" in plan.utterances[-1].text
 
 

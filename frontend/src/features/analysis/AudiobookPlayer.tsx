@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Pause, RefreshCw, Volume2 } from 'lucide-react'
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, LoaderCircle, Pause, RefreshCw, Volume2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -226,6 +226,25 @@ export function AudiobookPlayer({
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
+    const enqueueCurrentAudioSegment = () => {
+      const chunks = currentChunksRef.current
+      currentChunksRef.current = []
+      const context = getAudioContext()
+      const meta = currentUtteranceMetaRef.current
+      if (chunks.length === 0 || !context || !meta) return
+
+      audioQueueRef.current.push({
+        kind: 'speech',
+        sceneNumber: meta.sceneNumber,
+        utteranceIndex: meta.utteranceIndex,
+        speaker: meta.speaker,
+        buffer: pcm16ToAudioBuffer(chunks, context, 24000),
+      })
+      if (!isPlayingQueueRef.current) {
+        playNextInQueue()
+      }
+    }
+
     ws.onopen = () => {
       if (wsRef.current !== ws) return
       ws.send(JSON.stringify({
@@ -249,7 +268,7 @@ export function AudiobookPlayer({
             sceneNumber: Number(msg.scene_number),
             utteranceIndex: Number(msg.utterance_index),
           }
-        } else if (ev === 'scene_pause') {
+        } else if (ev === 'scene_pause' || ev === 'utterance_pause') {
           const ctx = getAudioContext()
           if (ctx) {
             const rawDurationMs = Number(msg.duration_ms)
@@ -268,22 +287,11 @@ export function AudiobookPlayer({
           if (msg.data) {
             currentChunksRef.current.push(base64ToUint8Array(msg.data))
           }
+        } else if (ev === 'audio_segment_end') {
+          enqueueCurrentAudioSegment()
         } else if (ev === 'utterance_end') {
-          const ctx = getAudioContext()
-          if (currentChunksRef.current.length > 0 && ctx) {
-            const buffer = pcm16ToAudioBuffer(currentChunksRef.current, ctx, 24000)
-            audioQueueRef.current.push({
-              kind: 'speech',
-              sceneNumber: msg.scene_number,
-              utteranceIndex: msg.utterance_index,
-              speaker: currentUtteranceMetaRef.current?.speaker,
-              buffer,
-            })
-            if (!isPlayingQueueRef.current) {
-              playNextInQueue()
-            }
-          }
-          currentChunksRef.current = []
+          // audio_segment_end を送らない旧 backend とも再生できるよう、残りをここで flush する。
+          enqueueCurrentAudioSegment()
           currentUtteranceMetaRef.current = undefined
         } else if (ev === 'playback_complete') {
           // Playback finished streaming from server
@@ -434,6 +442,13 @@ export function AudiobookPlayer({
         </div>
 
         <div className="flex items-center gap-2">
+          {isPlaying && status === 'generating' && (
+            <div aria-live="polite" className="flex items-center gap-1.5 text-xs text-muted-foreground" role="status">
+              <LoaderCircle aria-hidden="true" className="size-4 animate-spin" />
+              <span>{t('analysis:player.preparing')}</span>
+            </div>
+          )}
+
           {isPlaying ? (
             <Button
               aria-label={t('analysis:player.stopAria')}

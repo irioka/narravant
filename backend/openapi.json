@@ -881,6 +881,22 @@
         "title": "IdentifiedTurningPointSchema",
         "type": "object"
       },
+      "ImportDraftReanalyzeRequest": {
+        "additionalProperties": false,
+        "description": "Current editor text to analyze while an Import is still an ephemeral draft.",
+        "properties": {
+          "source_fountain": {
+            "minLength": 1,
+            "title": "Source Fountain",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_fountain"
+        ],
+        "title": "ImportDraftReanalyzeRequest",
+        "type": "object"
+      },
       "ImportDraftResponse": {
         "description": "Ephemeral completed-import payload. It is never written to task_events.",
         "properties": {
@@ -1135,6 +1151,25 @@
           "emotion_arc"
         ],
         "title": "ReanalysisTaskResultEvent",
+        "type": "object"
+      },
+      "ReanalyzeEmotionArcRequest": {
+        "description": "Optional current editor text; omitted bodies keep saved-version behavior.",
+        "properties": {
+          "source_fountain": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Fountain"
+          }
+        },
+        "title": "ReanalyzeEmotionArcRequest",
         "type": "object"
       },
       "SceneSchema": {
@@ -1563,7 +1598,7 @@
   "info": {
     "description": "Intelligent screenplay analysis and narrative arc workbench API",
     "title": "NARRAVANT API",
-    "version": "0.1.2"
+    "version": "0.1.3"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -1858,6 +1893,119 @@
         "summary": "Import Document",
         "tags": [
           "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/import/{import_task_id}/emotion-arc/reanalyze": {
+      "post": {
+        "description": "Queue an owner-only Emotional Arc reanalysis for an unsaved Import draft.",
+        "operationId": "reanalyze_import_draft_emotion_arc_api_v1_documents_import__import_task_id__emotion_arc_reanalyze_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_task_id",
+            "required": true,
+            "schema": {
+              "title": "Import Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportDraftReanalyzeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAcceptedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Reanalyze Import Draft Emotion Arc",
+        "tags": [
+          "emotion-arc"
         ]
       }
     },
@@ -2409,6 +2557,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReanalyzeEmotionArcRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "content": {

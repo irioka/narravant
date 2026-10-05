@@ -9,7 +9,7 @@ export const ja = {
   documents: {
     search: { ariaLabel: 'タイトルで検索', placeholder: '文書タイトルで検索', valencePattern: 'Valenceパターン', sortHint: 'クリックで並べ替え、Shift+クリックで複数列を並べ替えます。' },
     table: { title: 'タイトル', owner: '所有者', shared: '共有数', savedAt: '保存日時', version: 'バージョン', valence: 'Valence', comparisonSource: '{{title}}をValence比較元にする', documentMenu: '{{title}}のメニュー' },
-    list: { rename: '名前を変更', renameAria: '「{{title}}」の名前を変更', titleInputAria: '文書タイトル', saveRename: 'タイトルを保存', cancelRename: 'キャンセル', sortBy: '{{column}}で並べ替え' },
+    list: { rename: '名前を変更', renameAria: '「{{title}}」の名前を変更', titleInputAria: '文書タイトル', saveRename: 'タイトルを保存', cancelRename: 'キャンセル', sortBy: '{{column}}で並べ替え', resizeColumn: '{{column}}列の幅を変更' },
     states: { loadFailed: '文書一覧を読み込めませんでした。APIが起動しているか確認してください。', renameFailed: 'タイトルを変更できませんでした。最新の状態を読み込んでから再試行してください。', noMatches: '条件に一致する文書はありません。', loadingMore: '読み込み中…' },
     preview: { title: '概要', loadFailed: '概要を読み込めませんでした。', select: '文書を選択して分析を表示します。', openWorkbench: '分析ワークベンチを開く' },
     delete: { title: '文書を削除しますか？', description: '「{{title}}」は完全に削除されます。' },
@@ -18,6 +18,7 @@ export const ja = {
   },
   analysis: {
     sections: { theme: 'テーマ', synopsis: 'あらすじ', emotionalArc: '感情アーク', turningPoints: '転換点', mainCharacters: '主要人物', characters: '登場人物', narrator: 'ナレーター' },
+    characterManagement: { add: 'キャラクターを追加', nameInput: 'キャラクター名', invalidName: '空の名前や登録済みの名前は使えません。', delete: '{{name}} を Characters から削除', deleteTitle: 'キャラクターを削除しますか？', deleteDescription: '「{{name}}」のプロフィールと感情アーク系列を削除します。転換点の記録は保持されます。', unregistered: '本文の話者・未登録', register: 'Add to Characters' },
     voices: {
       generateAll: '全話者の声を生成',
       generate: '生成',
@@ -45,6 +46,7 @@ export const ja = {
       utterancePosition: '(シーン {{scene}} 発話 #{{utterance}})',
       play: '再生',
       playAria: '再生開始',
+      preparing: '最初の音声を準備中…',
       stop: '停止',
       stopAria: '再生停止',
       retry: '再試行',

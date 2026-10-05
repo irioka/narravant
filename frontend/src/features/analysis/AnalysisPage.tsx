@@ -8,7 +8,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import type { DocumentDetail, Scene } from '@/api/contracts'
-import { deleteDocument, discardImportDraft, getDocument, getValenceSimilarities, getVersion, getVersions, importDocument, reanalyzeEmotionArc, saveImportDraft, updateDocument } from '@/api/documents'
+import { deleteDocument, discardImportDraft, getDocument, getValenceSimilarities, getVersion, getVersions, importDocument, reanalyzeEmotionArc, reanalyzeImportDraftEmotionArc, saveImportDraft, updateDocument } from '@/api/documents'
 import { cancelTask, streamTaskProgress } from '@/api/tasks'
 import { NarravantHeader } from '@/components/NarravantHeader'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
@@ -30,6 +30,7 @@ import { scrollTextRangeIntoView } from './script-scroll'
 import { TaskProgressDialog, type TaskProgressState } from './TaskProgressDialog'
 import { ValenceSimilarityDialog } from './ValenceSimilarityDialog'
 import { missingVoiceSpeakers } from './voice-assignments'
+import { applyReanalysisArc } from './reanalyze-draft'
 
 interface RuntimeErrorState { title: string; message: string }
 interface DraftState { base: DocumentDetail; value: DocumentDetail; pendingCurrentVersionId?: number; importTaskId?: string }
@@ -74,6 +75,7 @@ export function AnalysisPage() {
   const [historyTarget, setHistoryTarget] = useState<number | null>()
   const [historyConfirmOpen, setHistoryConfirmOpen] = useState(false)
   const [taskProgress, setTaskProgress] = useState<TaskProgressState>()
+  const hasActiveTask = taskProgress !== undefined && taskProgress.terminal === undefined
   const [exportOpen, setExportOpen] = useState(false)
   const [runtimeError, setRuntimeError] = useState<RuntimeErrorState>()
   const [progressClock, setProgressClock] = useState(() => Date.now())
@@ -85,6 +87,7 @@ export function AnalysisPage() {
   const [importTitleOpen, setImportTitleOpen] = useState(false)
   const [importTitle, setImportTitle] = useState('')
   const taskAbortRef = useRef<AbortController | undefined>(undefined)
+  const reanalysisSnapshotRef = useRef<{ documentId: string; currentVersionId: number; sourceFountain: string; importTaskId?: string } | undefined>(undefined)
   const stopPlayback = useCallback(() => {
     setPlaybackStopVersion((version) => version + 1)
     setIsPlaybackActive(false)
@@ -166,6 +169,7 @@ export function AnalysisPage() {
   })
 
   const requestSave = () => {
+    if (hasActiveTask) return
     stopPlayback()
     const draft = isDraftForRoute(draftState, documentId) ? draftState : undefined
     if (draft?.importTaskId) {
@@ -186,7 +190,14 @@ export function AnalysisPage() {
   const deleteMutation = useMutation({ mutationFn: () => { stopPlayback(); return deleteDocument(documentId!) }, onSuccess: () => { toast.success('Document deleted.'); navigate('/analysis/new') }, onError: (error) => toast.error(apiErrorMessage(errorT, error, localizeUiError(errorT, { code: 'DELETE_FAILED' }).message)) })
   const reanalyzeMutation = useMutation({
     mutationFn: async () => {
-      const accepted = await reanalyzeEmotionArc(documentId!)
+      const snapshot = reanalysisSnapshotRef.current
+      if (!snapshot) throw new Error('Reanalysis requires the active document draft.')
+      if (!snapshot.importTaskId && snapshot.documentId !== documentId) {
+        throw new Error('Reanalysis requires the active saved document snapshot.')
+      }
+      const accepted = snapshot.importTaskId
+        ? await reanalyzeImportDraftEmotionArc(snapshot.importTaskId, snapshot.sourceFountain)
+        : await reanalyzeEmotionArc(snapshot.documentId, snapshot.sourceFountain)
       const controller = new AbortController()
       taskAbortRef.current = controller
       setTaskProgress({
@@ -235,7 +246,16 @@ export function AnalysisPage() {
               : current,
           )
           const emotionArc = completed.reanalysis.emotion_arc
-          setDraftState((current) => current ? { ...current, value: { ...current.value, emotion_arc: emotionArc } } : current)
+          if (completed.document_id !== snapshot.documentId || completed.version_id !== snapshot.currentVersionId) return
+          setDraftState((current) => {
+            if (
+              !current
+              || current.base.document_id !== snapshot.documentId
+              || current.base.current_version_id !== snapshot.currentVersionId
+              || current.value.source_fountain !== snapshot.sourceFountain
+            ) return current
+            return { ...current, value: { ...current.value, ...applyReanalysisArc(current.value, emotionArc) } }
+          })
         },
         onError: (error) => {
           setTaskProgress((current) =>
@@ -284,6 +304,16 @@ export function AnalysisPage() {
     if (isPlaybackActive) stopPlayback()
     setDraftState((current) => current && isDraftForRoute(current, documentId) ? { ...current, value: { ...current.value, ...update, metadata: update.metadata ?? current.value.metadata, analysis: update.analysis ?? current.value.analysis, emotion_arc: update.emotion_arc ?? current.value.emotion_arc, source_fountain: update.source_fountain ?? current.value.source_fountain } } : current)
   }
+  const confirmReanalysis = () => {
+    if (!document) return
+    reanalysisSnapshotRef.current = {
+      documentId: document.document_id,
+      currentVersionId: document.current_version_id,
+      sourceFountain: document.source_fountain,
+      importTaskId: activeDraftState?.importTaskId,
+    }
+    reanalyzeMutation.mutate()
+  }
   const selectHistoryVersion = (versionId: number) => {
     stopPlayback()
     const target = versionId === documentQuery.data?.version_id ? null : versionId
@@ -312,15 +342,15 @@ export function AnalysisPage() {
   const selectedScene = useMemo(() => document?.scenes.find((scene) => scene.scene_number === activeSceneNumber), [activeSceneNumber, document?.scenes])
 
   useEffect(() => () => { taskAbortRef.current?.abort() }, [])
-  const hasActiveTask = taskProgress !== undefined && taskProgress.terminal === undefined
   useEffect(() => {
     if (!hasActiveTask) return
     const timer = window.setInterval(() => setProgressClock(Date.now()), PROGRESS_CLOCK_INTERVAL_MS)
     return () => window.clearInterval(timer)
   }, [hasActiveTask])
   const importFile = useCallback(async (file: File | undefined) => {
-    if (!file) return
+    if (!file || hasActiveTask) return
     stopPlayback()
+    const previousImportTaskId = activeDraftState?.importTaskId
     const startedAt = Date.now()
     setTaskProgress({ operation: 'import', phase: 'reading', percentage: 5, startedAt, terminal: undefined })
     try {
@@ -391,7 +421,14 @@ export function AnalysisPage() {
             shared_count: documentQuery.data?.shared_count ?? 0,
             gcs_uri: null,
             generation: null,
-            capabilities: documentQuery.data?.capabilities ?? { can_edit: true, can_share: false, can_delete: false },
+            capabilities: {
+              can_edit: documentQuery.data?.capabilities.can_edit ?? true,
+              can_share: false,
+              can_delete: false,
+            },
+          }
+          if (previousImportTaskId && previousImportTaskId !== accepted.task_id) {
+            void discardImportDraft(previousImportTaskId).catch(() => undefined)
           }
           setActiveSceneNumber(undefined)
           setSelectedVersionId(undefined)
@@ -431,7 +468,7 @@ export function AnalysisPage() {
       setTaskProgress(undefined)
       const startFailed = t('importExport:import.startFailed'); setRuntimeError({ title: startFailed, message: apiErrorMessage(errorT, error, startFailed) })
     }
-  }, [defaultImportTitle, documentId, documentQuery.data, errorT, navigate, stopPlayback, t])
+  }, [activeDraftState?.importTaskId, defaultImportTitle, documentId, documentQuery.data, errorT, hasActiveTask, navigate, stopPlayback, t])
 
   const cancelActiveTask = useCallback(async () => {
     const taskId = taskProgress?.taskId
@@ -463,15 +500,24 @@ export function AnalysisPage() {
     if (taskProgress?.terminal) setTaskProgress(undefined)
   }, [taskProgress?.terminal])
 
-  if (!documentId && !document) return <><EmptyAnalysis onImport={importFile} /><TaskProgressDialog now={progressClock} onCancel={cancelActiveTask} onDismiss={dismissTaskProgress} task={taskProgress} /><RuntimeErrorDialog error={runtimeError} onDismiss={() => setRuntimeError(undefined)} /></>
+  if (!documentId && !document) return <><EmptyAnalysis importDisabled={hasActiveTask} onImport={importFile} /><TaskProgressDialog now={progressClock} onCancel={cancelActiveTask} onDismiss={dismissTaskProgress} task={taskProgress} /><RuntimeErrorDialog error={runtimeError} onDismiss={() => setRuntimeError(undefined)} /></>
   if (!document && (documentQuery.isPending || (selectedVersionId !== undefined && versionQuery.isPending))) return <><main className="grid h-svh place-items-center bg-background text-sm text-muted-foreground">Loading document…</main><TaskProgressDialog now={progressClock} onCancel={cancelActiveTask} onDismiss={dismissTaskProgress} task={taskProgress} /><RuntimeErrorDialog error={runtimeError} onDismiss={() => setRuntimeError(undefined)} /></>
   if ((!activeDraftState && (documentQuery.isError || (selectedVersionId !== undefined && versionQuery.isError))) || !document) return <><main className="grid h-svh place-items-center bg-background"><div className="text-center"><p className="text-sm text-muted-foreground">Unable to load document.</p><Button asChild className="mt-4" variant="outline"><Link to="/analysis/new">{t('common:actions.retry')}</Link></Button></div></main><TaskProgressDialog now={progressClock} onCancel={cancelActiveTask} onDismiss={dismissTaskProgress} task={taskProgress} /><RuntimeErrorDialog error={runtimeError} onDismiss={() => setRuntimeError(undefined)} /></>
 
+  const canReanalyze = !selectedVersionId
+    && document.analysis.status === 'completed'
+    && document.capabilities.can_edit
+    && !isPlaybackActive
+    && Boolean(document.source_fountain.trim())
+    && !saveMutation.isPending
+    && !reanalyzeMutation.isPending
+    && !taskProgress
+
   return <main className="flex h-svh min-w-[1180px] flex-col overflow-hidden bg-background">
-    <NarravantHeader actions={<><IconAction disabled={!document.capabilities.can_edit || Boolean(activeDraftState?.importTaskId)} label={t('analysis:dialogs.importDocument')} onClick={() => { stopPlayback(); window.document.getElementById('analysis-document-import')?.click() }}><FileInput /></IconAction><IconAction label={t('importExport:export.title')} onClick={() => { stopPlayback(); setExportOpen(true) }}><FileOutput /></IconAction><IconAction disabled={!document.capabilities.can_delete} destructive label={t('common:actions.delete')} onClick={() => { stopPlayback(); setDeleteOpen(true) }}><Trash2 /></IconAction><input accept={IMPORT_FILE_ACCEPT} className="hidden" disabled={!document.capabilities.can_edit} onChange={(event) => { void importFile(event.target.files?.[0]); event.target.value = '' }} type="file" id="analysis-document-import" /></>} />
-    <Group className="flex-1" orientation="horizontal"><Panel defaultSize="30" minSize="24"><Group className="h-full" orientation="vertical"><Panel defaultSize="40" minSize="20"><aside className="h-full overflow-hidden border-b bg-card"><DocumentList activeDocumentId={documentId} onBeforeNavigate={stopPlayback} /></aside></Panel><Separator className="h-px bg-border hover:bg-primary/50" /><Panel defaultSize="60" minSize="20"><AnalysisTabsPanel activeSceneNumber={activeSceneNumber} document={document} onDraftChange={!isPlaybackActive ? updateDraft : undefined} onOpenSimilarities={() => setSimilarityOpen(true)} onReanalyze={!activeDraftState?.importTaskId && !selectedVersionId && !isDirty && document.capabilities.can_edit && !isPlaybackActive ? () => setReanalyzeOpen(true) : undefined} onSceneSelect={(sceneNumber) => { stopPlayback(); setActiveSceneNumber(sceneNumber); setSceneJumpVersion((version) => version + 1); setPlaybackStart({ documentId: document.document_id, sceneNumber, utteranceIndex: 0 }) }} onSelectVersion={selectHistoryVersion} titleMode={document.capabilities.can_edit && !isPlaybackActive ? 'editable' : 'readonly'} versions={versionsQuery.data?.items ?? []} /></Panel></Group></Panel><Separator className="w-px bg-border hover:bg-primary/50" /><Panel defaultSize="47" minSize="30"><EditorPane activeScene={selectedScene} editable={Boolean(document.capabilities.can_edit && !isPlaybackActive)} isSaving={saveMutation.isPending} onChange={(source_fountain) => updateDraft({ source_fountain })} onCursorPositionChange={(position) => setPlaybackStart(position ? { ...position, documentId: document.document_id } : undefined)} onSave={requestSave} playbackPosition={isPlaybackActive ? playbackPosition : undefined} player={<AudiobookPlayer documentId={document.document_id} draft={activeDraftState?.importTaskId ? { source_fountain: document.source_fountain, voice_assignments: document.voice_assignments ?? [] } : undefined} isPlaying={isPlaybackActive} onBeforePlay={() => { const missing = missingVoiceSpeakers(document); if (missing.length > 0) { setMissingVoices(missing); return false } return true }} onPlaybackPositionChange={setPlaybackPosition} onPlayingChange={setIsPlaybackActive} onSceneJump={(sceneNumber) => { stopPlayback(); setActiveSceneNumber(sceneNumber); setSceneJumpVersion((version) => version + 1); setPlaybackStart({ documentId: document.document_id, sceneNumber, utteranceIndex: 0 }) }} playbackStart={playbackStart?.documentId === document.document_id ? playbackStart : undefined} scenes={document.scenes} stopSignal={playbackStopVersion} />} saveEnabled={Boolean(document.capabilities.can_edit && isDirty && !isPlaybackActive)} sceneJumpVersion={sceneJumpVersion} value={document.source_fountain} /></Panel><Separator className="w-px bg-border hover:bg-primary/50" /><Panel defaultSize="23" minSize="18"><aside className="h-full overflow-hidden bg-card"><AnalysisContent document={document} isDraft={Boolean(activeDraftState?.importTaskId)} onDraftChange={!isPlaybackActive ? updateDraft : undefined} titleMode={document.capabilities.can_edit && !isPlaybackActive ? 'editable' : 'readonly'} /></aside></Panel></Group>
+    <NarravantHeader actions={<><IconAction disabled={!document.capabilities.can_edit || hasActiveTask} label={t('analysis:dialogs.importDocument')} onClick={() => { stopPlayback(); window.document.getElementById('analysis-document-import')?.click() }}><FileInput /></IconAction><IconAction label={t('importExport:export.title')} onClick={() => { stopPlayback(); setExportOpen(true) }}><FileOutput /></IconAction><IconAction disabled={!document.capabilities.can_delete} destructive label={t('common:actions.delete')} onClick={() => { stopPlayback(); setDeleteOpen(true) }}><Trash2 /></IconAction><input accept={IMPORT_FILE_ACCEPT} className="hidden" disabled={!document.capabilities.can_edit || hasActiveTask} onChange={(event) => { void importFile(event.target.files?.[0]); event.target.value = '' }} type="file" id="analysis-document-import" /></>} />
+    <Group className="flex-1" orientation="horizontal"><Panel defaultSize="30" minSize="24"><Group className="h-full" orientation="vertical"><Panel defaultSize="40" minSize="20"><aside className="h-full overflow-hidden border-b bg-card"><DocumentList activeDocumentId={documentId} onBeforeNavigate={stopPlayback} /></aside></Panel><Separator className="h-px bg-border hover:bg-primary/50" /><Panel defaultSize="60" minSize="20"><AnalysisTabsPanel activeSceneNumber={activeSceneNumber} document={document} onDraftChange={!isPlaybackActive ? updateDraft : undefined} onOpenSimilarities={() => setSimilarityOpen(true)} onReanalyze={canReanalyze ? () => setReanalyzeOpen(true) : undefined} onSceneSelect={(sceneNumber) => { stopPlayback(); setActiveSceneNumber(sceneNumber); setSceneJumpVersion((version) => version + 1); setPlaybackStart({ documentId: document.document_id, sceneNumber, utteranceIndex: 0 }) }} onSelectVersion={selectHistoryVersion} titleMode={document.capabilities.can_edit && !isPlaybackActive ? 'editable' : 'readonly'} versions={versionsQuery.data?.items ?? []} /></Panel></Group></Panel><Separator className="w-px bg-border hover:bg-primary/50" /><Panel defaultSize="47" minSize="30"><EditorPane activeScene={selectedScene} editable={Boolean(document.capabilities.can_edit && !isPlaybackActive)} isSaving={saveMutation.isPending} onChange={(source_fountain) => updateDraft({ source_fountain })} onCursorPositionChange={(position) => setPlaybackStart(position ? { ...position, documentId: document.document_id } : undefined)} onSave={requestSave} playbackPosition={isPlaybackActive ? playbackPosition : undefined} player={<AudiobookPlayer documentId={document.document_id} draft={activeDraftState?.importTaskId ? { source_fountain: document.source_fountain, voice_assignments: document.voice_assignments ?? [] } : undefined} isPlaying={isPlaybackActive} onBeforePlay={() => { const missing = missingVoiceSpeakers(document); if (missing.length > 0) { setMissingVoices(missing); return false } return true }} onPlaybackPositionChange={setPlaybackPosition} onPlayingChange={setIsPlaybackActive} onSceneJump={(sceneNumber) => { stopPlayback(); setActiveSceneNumber(sceneNumber); setSceneJumpVersion((version) => version + 1); setPlaybackStart({ documentId: document.document_id, sceneNumber, utteranceIndex: 0 }) }} playbackStart={playbackStart?.documentId === document.document_id ? playbackStart : undefined} scenes={document.scenes} stopSignal={playbackStopVersion} />} saveEnabled={Boolean(document.capabilities.can_edit && isDirty && !isPlaybackActive && !hasActiveTask)} sceneJumpVersion={sceneJumpVersion} value={document.source_fountain} /></Panel><Separator className="w-px bg-border hover:bg-primary/50" /><Panel defaultSize="23" minSize="18"><aside className="h-full overflow-hidden bg-card"><AnalysisContent document={document} isDraft={Boolean(activeDraftState?.importTaskId)} onDraftChange={!isPlaybackActive ? updateDraft : undefined} titleMode={document.capabilities.can_edit && !isPlaybackActive ? 'editable' : 'readonly'} /></aside></Panel></Group>
     <ValenceSimilarityDialog items={similaritiesQuery.data?.items.map((item) => ({ label: item.name, value: item.percentage.toFixed(2) })) ?? []} onOpenChange={setSimilarityOpen} open={similarityOpen} />
-    <ReanalyzeDialog isPending={reanalyzeMutation.isPending} onConfirm={() => reanalyzeMutation.mutate()} onOpenChange={setReanalyzeOpen} open={reanalyzeOpen} />
+    <ReanalyzeDialog isPending={reanalyzeMutation.isPending} onConfirm={confirmReanalysis} onOpenChange={setReanalyzeOpen} open={reanalyzeOpen} />
     <ImportTitleDialog isPending={saveMutation.isPending} onConfirm={confirmImportSave} onOpenChange={setImportTitleOpen} onTitleChange={setImportTitle} open={importTitleOpen} title={importTitle} />
     <AlertDialog onOpenChange={setHistoryConfirmOpen} open={historyConfirmOpen}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle><AlertDialogDescription>Choose a history version only after discarding the current unsaved draft.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => { void discardAndSwitchHistory() }}>Discard and switch</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     <AlertDialog onOpenChange={setDeleteOpen} open={deleteOpen}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{t('analysis:dialogs.deleteTitle')}</AlertDialogTitle><AlertDialogDescription>{t('analysis:dialogs.deleteDescription', { title: document.title })}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>{t('common:actions.cancel')}</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate()}>{t('common:actions.delete')}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
@@ -496,10 +542,10 @@ function ImportTitleDialog({ isPending, onConfirm, onOpenChange, onTitleChange, 
   return <Dialog onOpenChange={onOpenChange} open={open}><DialogContent><DialogHeader><DialogTitle>{t('analysis:dialogs.importSaveTitle')}</DialogTitle><DialogDescription>{t('analysis:dialogs.importSaveDescription')}</DialogDescription></DialogHeader><Input aria-label={t('analysis:dialogs.importSaveTitle')} autoFocus onChange={(event) => onTitleChange(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && title.trim()) onConfirm() }} value={title} /><DialogFooter><Button disabled={isPending} onClick={() => onOpenChange(false)} variant="outline">{t('common:actions.cancel')}</Button><Button disabled={isPending || !title.trim()} onClick={onConfirm}>{isPending ? t('analysis:editor.saving') : t('common:actions.save')}</Button></DialogFooter></DialogContent></Dialog>
 }
 
-export function EmptyAnalysis({ onImport }: { onImport: (file: File | undefined) => Promise<void> }) {
+export function EmptyAnalysis({ importDisabled = false, onImport }: { importDisabled?: boolean; onImport: (file: File | undefined) => Promise<void> }) {
   const { t } = useTranslation(['analysis', 'common', 'importExport'])
   const fileInputRef = useRef<HTMLInputElement>(null)
-  return <main className="flex h-svh min-w-[1180px] flex-col overflow-hidden bg-background"><NarravantHeader actions={<><IconAction label={t('analysis:dialogs.importDocument')} onClick={() => fileInputRef.current?.click()}><FileInput /></IconAction><IconAction disabled label={t('importExport:export.title')}><FileOutput /></IconAction><IconAction disabled destructive label={t('common:actions.delete')}><Trash2 /></IconAction></>} /><Group className="flex-1" orientation="horizontal"><Panel defaultSize="30" minSize="24"><Group className="h-full" orientation="vertical"><Panel defaultSize="40" minSize="20"><aside className="h-full overflow-hidden border-b bg-card"><DocumentList /></aside></Panel><Separator className="h-px bg-border" /><Panel defaultSize="60" minSize="20"><section className="grid h-full place-items-center bg-card p-6 text-center text-sm text-muted-foreground">{t('importExport:import.begin')}</section></Panel></Group></Panel><Separator className="w-px bg-border" /><Panel defaultSize="47" minSize="30"><section className="grid h-full place-items-center bg-background p-7 text-center text-sm text-muted-foreground"><input accept={IMPORT_FILE_ACCEPT} className="hidden" onChange={(event) => { void onImport(event.target.files?.[0]); event.target.value = '' }} ref={fileInputRef} type="file" /><div><FileInput className="mx-auto mb-3 size-6 text-primary" /><p>{IMPORT_FILE_DESCRIPTION}</p></div></section></Panel><Separator className="w-px bg-border" /><Panel defaultSize="23" minSize="18"><aside className="grid h-full place-items-center bg-card p-6 text-center text-sm text-muted-foreground"><div><Sparkles className="mx-auto mb-3 size-7 text-primary" /><p>{t('importExport:import.begin')}</p></div></aside></Panel></Group></main>
+  return <main className="flex h-svh min-w-[1180px] flex-col overflow-hidden bg-background"><NarravantHeader actions={<><IconAction disabled={importDisabled} label={t('analysis:dialogs.importDocument')} onClick={() => fileInputRef.current?.click()}><FileInput /></IconAction><IconAction disabled label={t('importExport:export.title')}><FileOutput /></IconAction><IconAction disabled destructive label={t('common:actions.delete')}><Trash2 /></IconAction></>} /><Group className="flex-1" orientation="horizontal"><Panel defaultSize="30" minSize="24"><Group className="h-full" orientation="vertical"><Panel defaultSize="40" minSize="20"><aside className="h-full overflow-hidden border-b bg-card"><DocumentList /></aside></Panel><Separator className="h-px bg-border" /><Panel defaultSize="60" minSize="20"><section className="grid h-full place-items-center bg-card p-6 text-center text-sm text-muted-foreground">{t('importExport:import.begin')}</section></Panel></Group></Panel><Separator className="w-px bg-border" /><Panel defaultSize="47" minSize="30"><section className="grid h-full place-items-center bg-background p-7 text-center text-sm text-muted-foreground"><input accept={IMPORT_FILE_ACCEPT} className="hidden" disabled={importDisabled} onChange={(event) => { void onImport(event.target.files?.[0]); event.target.value = '' }} ref={fileInputRef} type="file" /><div><FileInput className="mx-auto mb-3 size-6 text-primary" /><p>{IMPORT_FILE_DESCRIPTION}</p></div></section></Panel><Separator className="w-px bg-border" /><Panel defaultSize="23" minSize="18"><aside className="grid h-full place-items-center bg-card p-6 text-center text-sm text-muted-foreground"><div><Sparkles className="mx-auto mb-3 size-7 text-primary" /><p>{t('importExport:import.begin')}</p></div></aside></Panel></Group></main>
 }
 
 function downloadExport(filename: string, content: string, type: string): void {

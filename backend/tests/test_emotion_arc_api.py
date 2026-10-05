@@ -188,6 +188,10 @@ def test_reanalysis_returns_an_unsaved_arc_draft_without_publishing_a_new_versio
     from narravant.services.tasks import TaskManager
     from narravant.services.vertex_analysis import CanonicalAnalysis
 
+    draft_source_fountain = "Title: Unsaved draft\n\nINT. EDITED ROOM - NIGHT\n\nUnsaved synthetic revision."
+    saved_source_fountain = "Title: Original\n\nINT. ROOM - DAY #1#\n\nAction."
+    analyzed_source_fountains: list[str] = []
+
     class Analyzer:
         def convert_text_to_fountain(
             self,
@@ -207,7 +211,8 @@ def test_reanalysis_returns_an_unsaved_arc_draft_without_publishing_a_new_versio
             source_filename: str | None = None,
             expected_characters: list[str] | None = None,
         ) -> CanonicalAnalysis:
-            assert "INT. ROOM - DAY" in source_fountain
+            analyzed_source_fountains.append(source_fountain)
+            assert expected_characters == ["A"]
             return _completed_analysis()
 
     db = DatabaseManager(":memory:")
@@ -218,7 +223,7 @@ def test_reanalysis_returns_an_unsaved_arc_draft_without_publishing_a_new_versio
     tasks = TaskManager(TaskRepository(db))
     analyzer = Analyzer()
     document_id = "reanalysis-document"
-    source_fountain = "Title: Original\n\nINT. ROOM - DAY #1#\n\nAction."
+    source_fountain = saved_source_fountain
     initial = _completed_analysis()
     payload = {
         "schema_version": 1,
@@ -268,9 +273,11 @@ def test_reanalysis_returns_an_unsaved_arc_draft_without_publishing_a_new_versio
 
     reanalysis = ReanalysisService(documents, storage, tasks, analyzer, emotion_arc_max_points=36)
     task_id = reanalysis.start("owner-1", documents.get_document(document_id))  # type: ignore[arg-type]
-    reanalysis.run(task_id)
+    reanalysis.run(task_id, source_fountain=draft_source_fountain)
+    assert analyzed_source_fountains == [draft_source_fountain]
 
     task = tasks.repository.get(task_id)
+    assert task is not None and draft_source_fountain not in task["payload_json"]
     after, after_metadata = storage.read_structured_script(document_id, 1)
     assert task is not None and task["status"] == "completed"
     assert task["document_id"] == document_id
@@ -299,6 +306,7 @@ def test_reanalysis_returns_an_unsaved_arc_draft_without_publishing_a_new_versio
     conflicting_task_id = reanalysis.start("owner-1", documents.get_document(document_id))  # type: ignore[arg-type]
     documents.update_document(document_id, expected_version=1, title="Original (changed)")
     reanalysis.run(conflicting_task_id)
+    assert analyzed_source_fountains == [draft_source_fountain, saved_source_fountain]
 
     conflict = tasks.events_after(conflicting_task_id, 0)[-1]
     assert conflict.event_type == "error"
@@ -311,7 +319,7 @@ def test_reanalysis_returns_an_unsaved_arc_draft_without_publishing_a_new_versio
         storage.read_structured_script(document_id, 2)
 
 
-def test_reanalysis_aligns_character_names_when_llm_shortens_or_alters_them() -> None:
+def test_reanalysis_uses_fountain_speakers_instead_of_registered_character_names() -> None:
     from narravant.core.valence_vector import default_valence_vectorizer
     from narravant.db.database import TaskRepository
     from narravant.services.reanalysis import ReanalysisService
@@ -337,8 +345,8 @@ def test_reanalysis_aligns_character_names_when_llm_shortens_or_alters_them() ->
             source_filename: str | None = None,
             expected_characters: list[str] | None = None,
         ) -> CanonicalAnalysis:
-            assert expected_characters == ["茨城暦（宇賀貞治）"]
-            # LLM returned the shortened name "茨城暦"
+            assert "@茨城暦" in source_fountain
+            assert expected_characters is None
             return CanonicalAnalysis(
                 metadata={"title": "Test", "synopsis": "", "theme_setting": "根拠は第1シーン"},
                 emotion_arc={
@@ -385,7 +393,7 @@ def test_reanalysis_aligns_character_names_when_llm_shortens_or_alters_them() ->
     tasks = TaskManager(TaskRepository(db))
     analyzer = AbbreviatingAnalyzer()
     document_id = "reanalysis-character-name"
-    source_fountain = "Title: Original\n\nINT. ROOM - DAY #1#\n\nAction."
+    source_fountain = "Title: Original\n\nINT. ROOM - DAY #1#\n\n@茨城暦\n台詞。"
     payload = {
         "schema_version": 1,
         "document_id": document_id,
@@ -463,10 +471,7 @@ def test_reanalysis_aligns_character_names_when_llm_shortens_or_alters_them() ->
     assert task is not None and task["status"] == "completed"
     completed = tasks.events_after(task_id, 0)[-1]
     assert completed.event_type == "completed"
-    # The character arc must be mapped back to the canonical profile name "茨城暦（宇賀貞治）"
-    assert "茨城暦（宇賀貞治）" in completed.payload["reanalysis"]["emotion_arc"]["characters"]
-    assert completed.payload["reanalysis"]["emotion_arc"]["characters"]["茨城暦（宇賀貞治）"] == [5]
-    assert "茨城暦" not in completed.payload["reanalysis"]["emotion_arc"]["characters"]
+    assert completed.payload["reanalysis"]["emotion_arc"]["characters"] == {"茨城暦": [5]}
 
 
 @pytest.mark.asyncio
@@ -555,12 +560,30 @@ async def test_reanalysis_endpoint_queues_an_owner_task() -> None:
         tasks,
         Analyzer(),
         SimpleNamespace(emotion_arc_max_points=36),
+        SimpleNamespace(source_fountain="INT. UNSAVED ROOM - NIGHT\n\n@ALICE\nUnsaved synthetic line."),
     )
 
     queued = tasks.repository.get(accepted.task_id)
     assert accepted.task_type == "emotion_arc_reanalysis"
     assert queued is not None and queued["status"] == "queued"
     assert len(background.tasks) == 1
+    assert background.tasks[0].kwargs == {
+        "source_fountain": "INT. UNSAVED ROOM - NIGHT\n\n@ALICE\nUnsaved synthetic line."
+    }
+
+    legacy_background = BackgroundTasks()
+    legacy_accepted = await reanalyze_emotion_arc(
+        document_id,
+        legacy_background,
+        CurrentUser("owner-1", "owner@example.test"),
+        repo,
+        storage,
+        tasks,
+        Analyzer(),
+        SimpleNamespace(emotion_arc_max_points=36),
+    )
+    assert legacy_accepted.task_type == "emotion_arc_reanalysis"
+    assert legacy_background.tasks[0].kwargs == {"source_fountain": None}
 
     # Missing document gets 404
     with pytest.raises(ApiError) as caught_missing:

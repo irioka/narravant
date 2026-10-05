@@ -8,7 +8,7 @@ describe('narrator speaker identity', () => {
   it.each(['Narrator', 'NARRATOR', 'ナレーター'])('明示された %s を本文の文字種より優先する', (speaker) => {
     const source = `Title: 日本語のタイトル\n\nINT. ROOM - DAY\n\n@${speaker}\nHello.`
     expect(narratorSpeakerName(source)).toBe(speaker)
-    expect(firstUtteranceLine(source, 'ナレーター', 'ナレーター')).toBe('Hello.')
+    expect(firstUtteranceLine(source, 'ナレーター', 'ナレーター')).toBe('ROOM - DAY')
   })
 })
 
@@ -46,8 +46,8 @@ describe('firstUtteranceLine', () => {
     expect(firstUtteranceLine(FOUNTAIN, 'ディオニス', NARRATOR)).toBe('この短刀で何をする気だったのか。')
   })
 
-  it('ナレーターは見出し・タイトル行を除いた最初の地の文を返す', () => {
-    expect(firstUtteranceLine(FOUNTAIN, NARRATOR, NARRATOR)).toBe('南欧の陽光が降り注ぐ街並み。')
+  it('ナレーターは区分と番号を除いたシーン見出しを先に返す', () => {
+    expect(firstUtteranceLine(FOUNTAIN, NARRATOR, NARRATOR)).toBe('シラクスの市街 - 昼')
   })
 
   it('話者 cue 後の演技指示を飛ばして最初のセリフを返す', () => {
@@ -98,11 +98,12 @@ describe('playback source ranges', () => {
     '逃げて！',
   ].join('\n')
 
-  it('returns the scene heading and ordered utterance ranges', () => {
+  it('returns the spoken scene heading and ordered utterance ranges', () => {
     expect(source.slice(...Object.values(sceneHeadingRange(source, 1)!))).toBe('INT. ROOM - DAY #1#')
-    expect(source.slice(...Object.values(utteranceRange(source, 1, 0)!))).toBe('Narration.')
-    expect(source.slice(...Object.values(utteranceRange(source, 1, 1)!))).toBe('ここは危険だ。')
-    expect(source.slice(...Object.values(utteranceRange(source, 1, 2)!))).toBe('逃げて！')
+    expect(source.slice(...Object.values(utteranceRange(source, 1, 0)!))).toBe('ROOM - DAY')
+    expect(source.slice(...Object.values(utteranceRange(source, 1, 1)!))).toBe('Narration.')
+    expect(source.slice(...Object.values(utteranceRange(source, 1, 2)!))).toBe('ここは危険だ。')
+    expect(source.slice(...Object.values(utteranceRange(source, 1, 3)!))).toBe('逃げて！')
   })
 
   it('collects every spoken non-narrator cue', () => {
@@ -120,7 +121,7 @@ describe('playback source ranges', () => {
 
   it('maps a cursor inside a paragraph to that paragraph playback start', () => {
     const cursor = source.indexOf('危険') + 1
-    expect(playbackStartAtOffset(source, cursor)).toEqual({ sceneNumber: 1, utteranceIndex: 1 })
+    expect(playbackStartAtOffset(source, cursor)).toEqual({ sceneNumber: 1, utteranceIndex: 2 })
   })
 
   it('maps a cursor in a heading or blank line to the next utterance', () => {

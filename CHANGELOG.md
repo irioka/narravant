@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-10-05
+
+### Added
+
+- Allow resizing and restoring the document list's Version and Saved at columns.
+- Add and remove Characters while keeping turning point records and unrelated arc series intact.
+- Read Scene Headings with the narrator voice, omitting location prefixes and scene numbers.
+- Show a loading indicator while waiting for the first playback audio.
+- Split long TTS utterances into sentence-sized requests and add a configurable one-second pause between same-scene segments and utterances.
+
+### Fixed
+
+- Preserve analysis history when character names are absent from the current script or Characters list.
+- Use Fountain speakers as the source for Emotional Arc reanalysis and add missing speaker profiles when applying results.
+- Reanalyze the current unsaved script, including Import drafts, and save script and arc changes together.
+- Allow another Import before saving and disable Delete for unsaved Native JSON drafts.
+- Keep document-list resize handles moving in the drag direction.
+- Allow backend packaging and startup without a backend-specific README.
+
 ## [0.1.2] - 2026-10-04
 
 ### Fixed
