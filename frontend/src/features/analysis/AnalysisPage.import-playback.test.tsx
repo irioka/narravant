@@ -45,17 +45,21 @@ class DraftWebSocket {
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals() })
 
-it('Import直後にシーン移動し、生成した声で下書きを保存せず再生する', async () => {
+it.each([
+  { individualNarrator: false, savedDocument: false },
+  { individualNarrator: true, savedDocument: false },
+  { individualNarrator: true, savedDocument: true },
+])('生成した最新の声で保存せず再生する: $individualNarrator / 保存済み作品: $savedDocument', async ({ individualNarrator, savedDocument }) => {
   DraftWebSocket.instances = []
   vi.stubGlobal('WebSocket', DraftWebSocket)
   const draft = {
     document_id: 'unsaved-import', version_id: 1, expected_version: null, title: '合成サンプル',
-    source_fountain: 'INT. ROOM - DAY #1#\n\n@ナレーター\n最初の場面。\n\nINT. GARDEN - DAY #2#\n\n@ナレーター\n次の場面。',
+    source_fountain: 'INT. ROOM - DAY #1#\n\n@ナレーター\n最初の場面。\n\nINT. GARDEN - DAY #2#\n\n@ナレーター\n次の場面。\n\n@Alice\nHello.\n\n@Bob\nGood day.',
     scenes: [
       { scene_number: 1, heading: 'INT. ROOM - DAY', text: '', dialogues: [] },
       { scene_number: 2, heading: 'INT. GARDEN - DAY', text: '', dialogues: [] },
     ],
-    metadata: {}, analysis: { status: 'completed' as const, characters: [], turning_points: [] },
+    metadata: {}, analysis: { status: 'completed' as const, characters: [{ name: 'Alice', voice_traits: '明るい声' }, { name: 'Bob', voice_traits: '低い声' }], turning_points: [] },
     narrator: { voice_traits: '落ち着いた声' }, voice_assignments: [],
     emotion_arc: { valence: [], tension: [], characters: {}, scene_mapping: [], valence_vector: [] },
   }
@@ -64,18 +68,30 @@ it('Import直後にシーン移動し、生成した声で下書きを保存せ�
     callbacks.onCompleted?.({ import_draft: draft })
   })
   const assignment = { speaker: 'ナレーター', voice_id: 'voices/synthetic', voice_traits: '落ち着いた声' }
-  vi.mocked(createVoice).mockResolvedValue(assignment)
+  const alice = { speaker: 'Alice', voice_id: 'voices/alice', voice_traits: '明るい声' }
+  const bob = { speaker: 'Bob', voice_id: 'voices/bob', voice_traits: '低い声' }
+  vi.mocked(createVoice).mockResolvedValueOnce(assignment).mockResolvedValueOnce(alice).mockResolvedValueOnce(bob)
+  if (savedDocument) {
+    vi.mocked(getDocument).mockResolvedValue({
+      ...draft, is_saved: true, current_version_id: 1, expected_version: 1,
+      owner_user_id: 'local', owner_email: 'local@example.test', shared_count: 0,
+      created_at: '2026-10-15T00:00:00Z', updated_at: '2026-10-15T00:00:00Z',
+      capabilities: { can_edit: true, can_delete: true, can_share: false },
+    })
+    vi.mocked(getVersions).mockResolvedValue({ items: [] })
+  }
+  const route = savedDocument ? `/analysis/${draft.document_id}` : '/analysis/new'
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const { container } = render(
     <QueryClientProvider client={client}>
       <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
-        <MemoryRouter initialEntries={['/analysis/new']}>
-          <Routes><Route path="/analysis/new" element={<AnalysisPage />} /></Routes>
+        <MemoryRouter initialEntries={[route]}>
+          <Routes><Route path="/analysis/new" element={<AnalysisPage />} /><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes>
         </MemoryRouter>
       </LocaleProvider>
     </QueryClientProvider>,
   )
-  fireEvent.change(container.querySelector('input[type="file"]')!, {
+  if (!savedDocument) fireEvent.change(container.querySelector('input[type="file"]')!, {
     target: { files: [new File([draft.source_fountain], 'synthetic.fountain')] },
   })
   const sceneInput = await screen.findByRole('spinbutton', { name: '再生開始シーン番号' })
@@ -89,6 +105,13 @@ it('Import直後にシーン移動し、生成した声で下書きを保存せ�
   expect(await screen.findByText('声が作成されていません')).toBeInTheDocument()
   expect(DraftWebSocket.instances).toHaveLength(0)
   fireEvent.click(screen.getByRole('button', { name: '閉じる' }))
+  if (individualNarrator) {
+    fireEvent.click(screen.getByRole('button', { name: 'ナレーターを開く' }))
+    fireEvent.click(screen.getByRole('button', { name: 'ナレーターを編集' }))
+    fireEvent.click(screen.getByRole('button', { name: 'ナレーター 生成' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'ナレーター 再生' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+  }
   fireEvent.click(screen.getByRole('button', { name: '全話者の声を生成' }))
   await waitFor(() => expect(createVoice).toHaveBeenCalled())
   await waitFor(() => expect(screen.getByRole('button', { name: '全話者の声を生成' })).toBeEnabled())
@@ -98,10 +121,15 @@ it('Import直後にシーン移動し、生成した声で下書きを保存せ�
   expect(ws.url).toMatch(/\/api\/v1\/documents\/playback$/)
   expect(JSON.parse(ws.sentMessages[0])).toEqual({
     action: 'start', scene_number: 2, start_utterance_index: 0,
-    draft: { source_fountain: draft.source_fountain, voice_assignments: [assignment] },
+    draft: { source_fountain: draft.source_fountain, voice_assignments: [assignment, alice, bob] },
   })
-  expect(getDocument).not.toHaveBeenCalled()
-  expect(getVersions).not.toHaveBeenCalled()
+  expect(createVoice).toHaveBeenCalledTimes(3)
+  expect(vi.mocked(createVoice).mock.calls.map((call) => call[1].speaker)).toEqual(['ナレーター', 'Alice', 'Bob'])
+  expect(screen.queryByText('声が作成されていません')).not.toBeInTheDocument()
+  if (!savedDocument) {
+    expect(getDocument).not.toHaveBeenCalled()
+    expect(getVersions).not.toHaveBeenCalled()
+  }
   expect(saveImportDraft).not.toHaveBeenCalled()
   expect(updateDocument).not.toHaveBeenCalled()
   client.clear()
