@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -15,8 +16,11 @@ from narravant.api.dependencies import get_db_manager as get_db_manager
 from narravant.api.dependencies import get_storage_client as get_storage_client
 from narravant.core.emotion_arc_resolution import scene_mapping_payload
 from narravant.db.database import DatabaseManager, DocumentRepository
+from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.main import app
 from narravant.services.tts import FakeTtsClient
+from narravant.services.voice_design import FakeVoiceDesignClient
+from narravant.services.voice_models import ProviderVoice, StoredVoiceRecord, utc_iso
 from narravant.storage.gcs import InMemoryScriptStorageClient
 
 FOUNTAIN_TEXT = """Title: Audiobook WebSocket Test
@@ -43,12 +47,41 @@ def fake_tts() -> FakeTtsClient:
 
 
 @pytest.fixture
-def test_setup(fake_tts: FakeTtsClient):
+def test_setup(fake_tts: FakeTtsClient, monkeypatch: pytest.MonkeyPatch):
     db = DatabaseManager(":memory:")
     storage = InMemoryScriptStorageClient()
     db.init_schema()
     repo = DocumentRepository(db)
     repo.ensure_user(LOCAL_USER_ID, LOCAL_USER_EMAIL, LOCAL_USER_DISPLAY_NAME)
+    voice_provider = FakeVoiceDesignClient()
+    voice_registry = VoiceRegistryRepository(db)
+    for speaker, voice_id in (
+        ("ナレーター", "voice_fake_narrator"),
+        ("ALICE", "voice_fake_alice"),
+        ("BOB", "voice_fake_bob"),
+    ):
+        provider_voice = ProviderVoice(
+            voice_id=voice_id,
+            voice_type="prompted",
+            language_code="ja-JP",
+            expire_time=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+        voice_provider.voices[voice_id] = provider_voice
+        voice_registry.upsert(
+            StoredVoiceRecord(
+                owner_user_id=LOCAL_USER_ID,
+                voice_id=voice_id,
+                speaker_label=speaker,
+                voice_traits=None,
+                language_code="ja-JP",
+                created_at=None,
+                created_at_source="unknown",
+                registered_at=utc_iso(),
+                expire_time=None,
+                last_checked_at=None,
+                availability="unknown",
+            )
+        )
 
     doc_id = "doc-ws-test"
     stored = storage.write_structured_script(
@@ -100,9 +133,9 @@ def test_setup(fake_tts: FakeTtsClient):
             },
             "narrator": {"voice_traits": "ナレーター声"},
             "voice_assignments": [
-                {"speaker": "ナレーター", "voice_id": "voices/fake-narrator", "voice_traits": "t1"},
-                {"speaker": "ALICE", "voice_id": "voices/fake-alice", "voice_traits": "t2"},
-                {"speaker": "BOB", "voice_id": "voices/fake-bob", "voice_traits": "t3"},
+                {"speaker": "ナレーター", "voice_id": "voice_fake_narrator", "voice_traits": "t1"},
+                {"speaker": "ALICE", "voice_id": "voice_fake_alice", "voice_traits": "t2"},
+                {"speaker": "BOB", "voice_id": "voice_fake_bob", "voice_traits": "t3"},
             ],
         },
         if_generation_match=0,
@@ -129,6 +162,7 @@ def test_setup(fake_tts: FakeTtsClient):
     app.state.settings = mock_settings
     app.state.db_manager = db
     app.state.storage_client = storage
+    app.state.voice_management_owner_locks = {}
 
     # Register HTTP accessor overrides ONLY to signal main.lifespan to skip
     # production wiring (so it doesn't overwrite app.state). The WS route itself
@@ -138,12 +172,11 @@ def test_setup(fake_tts: FakeTtsClient):
 
     import narravant.api.playback as playback_module
 
-    original_build = playback_module._build_tts_client
-    playback_module._build_tts_client = lambda settings: fake_tts
+    monkeypatch.setattr(playback_module, "_build_tts_client", lambda settings: fake_tts)
+    monkeypatch.setattr(playback_module, "_build_voice_design_client", lambda settings: voice_provider)
 
     with TestClient(app) as client:
         yield client, storage, doc_id, fake_tts
-    playback_module._build_tts_client = original_build
     app.dependency_overrides.clear()
 
 
@@ -216,7 +249,7 @@ def test_playback_ws_unassigned_voice_emits_error(test_setup):
     # Overwrite script with unassigned voice for ALICE
     data, meta = storage.read_structured_script(doc_id, 1)
     data["voice_assignments"] = [
-        {"speaker": "ナレーター", "voice_id": "voices/fake-narrator"},
+        {"speaker": "ナレーター", "voice_id": "voice_fake_narrator"},
         # ALICE is omitted
     ]
     storage.write_structured_script(doc_id, 1, data, if_generation_match=meta.generation)
@@ -277,7 +310,10 @@ def test_playback_ws_duplicate_start_ignored(test_setup):
         assert len(complete_events) == 1
 
 
-def test_playback_ws_resolves_deps_without_request_override(fake_tts: FakeTtsClient):
+def test_playback_ws_resolves_deps_without_request_override(
+    fake_tts: FakeTtsClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
     """Regression: WebSocket DI must resolve get_db_manager/get_settings/get_storage_client
     from app.state via HTTPConnection (not Request). Only the TTS client and user are overridden;
     the connection-scoped accessors must work on a WebSocket connection.
@@ -316,7 +352,7 @@ def test_playback_ws_resolves_deps_without_request_override(fake_tts: FakeTtsCli
                 "valence_vector": [0.0] * 9 + [1.0],
             },
             "narrator": {"voice_traits": "ナレーター声"},
-            "voice_assignments": [{"speaker": "ナレーター", "voice_id": "voices/fake-narrator", "voice_traits": "t1"}],
+            "voice_assignments": [{"speaker": "ナレーター", "voice_id": "voice_fake_narrator", "voice_traits": "t1"}],
         },
         if_generation_match=0,
     )
@@ -338,10 +374,17 @@ def test_playback_ws_resolves_deps_without_request_override(fake_tts: FakeTtsCli
         emotion_arc_max_points=36,
         valence_max_arc_distance=1.0,
     )
+    voice_provider = FakeVoiceDesignClient()
+    voice_provider.voices["voice_fake_narrator"] = ProviderVoice(
+        voice_id="voice_fake_narrator",
+        voice_type="prompted",
+        language_code="ja-JP",
+        expire_time=datetime(2099, 1, 1, tzinfo=UTC),
+    )
     app.state.db_manager = db
     app.state.storage_client = storage
     # Resolve db/storage/settings/user from the real WebSocket connection
-    # (app.state). Only the external TTS client is faked. This reproduces the
+    # (app.state). External TTS and Voice Design clients use fakes. This reproduces the
     # runtime path that previously failed with `get_db_manager() missing 'request'`.
     # HTTP accessor overrides are registered solely to bypass lifespan wiring.
     app.dependency_overrides[get_db_manager] = lambda: db
@@ -349,8 +392,8 @@ def test_playback_ws_resolves_deps_without_request_override(fake_tts: FakeTtsCli
 
     import narravant.api.playback as playback_module
 
-    original_build = playback_module._build_tts_client
-    playback_module._build_tts_client = lambda settings: fake_tts
+    monkeypatch.setattr(playback_module, "_build_tts_client", lambda settings: fake_tts)
+    monkeypatch.setattr(playback_module, "_build_voice_design_client", lambda settings: voice_provider)
     try:
         with TestClient(app) as client:
             with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
@@ -363,6 +406,6 @@ def test_playback_ws_resolves_deps_without_request_override(fake_tts: FakeTtsCli
                         break
                 assert events[-1]["event"] == "playback_complete"
                 assert any(e["event"] == "utterance_start" for e in events)
+                assert voice_provider.get_call_count == 1
     finally:
-        playback_module._build_tts_client = original_build
         app.dependency_overrides.clear()

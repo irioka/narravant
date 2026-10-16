@@ -74,3 +74,27 @@ export async function apiRequest<T>(
     throw error
   }
 }
+
+/** Validate a JSON response while preserving headers needed by partial-success callers. */
+export async function apiRequestWithResponse<T>(
+  path: string,
+  schema: z.ZodType<T>,
+  { fetcher = fetch, headers, ...options }: RequestOptions = {},
+): Promise<{ data: T; response: Response }> {
+  const response = await fetcher(path, {
+    headers: { Accept: 'application/json', ...headers },
+    ...options,
+  })
+  const payload: unknown = response.status === 204 ? undefined : await response.json().catch(() => undefined)
+
+  if (!response.ok) throw apiErrorFromPayload(response.status, payload)
+
+  try {
+    return { data: schema.parse(payload), response }
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new ApiClientError(response.status, 'CONTRACT_MISMATCH', 'The API response shape does not match the contract.')
+    }
+    throw error
+  }
+}

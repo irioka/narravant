@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
 import type { DocumentDetail } from '@/api/contracts'
-import { missingVoiceSpeakers, upsertVoiceAssignment, voiceIdForSpeaker } from './voice-assignments'
+import { missingVoiceSpeakers, upsertVoiceAssignment, voiceIdForSpeaker, voiceLibraryKey } from './voice-assignments'
 
 describe('narrator voice compatibility', () => {
+  it('legacy resource names resolve to the canonical library ID', () => {
+    expect(voiceLibraryKey('voices/voice_saved_1')).toBe('voice_saved_1')
+    expect(voiceLibraryKey('voice_saved_1')).toBe('voice_saved_1')
+    expect(voiceLibraryKey('voices/Kore')).toBe('voices/Kore')
+  })
+
   it.each(['Narrator', 'NARRATOR', 'ナレーター'])('既存の日本語割当を %s の声として使う', (speaker) => {
     const assignments = [{ speaker: 'ナレーター', voice_id: 'voices/synthetic', voice_traits: '' }]
     expect(voiceIdForSpeaker(assignments, speaker)).toBe('voices/synthetic')

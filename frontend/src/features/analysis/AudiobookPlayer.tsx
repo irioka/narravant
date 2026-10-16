@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import type { DocumentDetail, Scene } from '@/api/contracts'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { localizeUiError, type KnownErrorCode } from '@/i18n/errors'
 import { base64ToUint8Array, pcm16ToAudioBuffer } from './audio-decoder'
 import type { PlaybackStartPosition } from './fountain-scenes'
 
@@ -51,6 +52,7 @@ export function AudiobookPlayer({
   stopSignal,
 }: AudiobookPlayerProps) {
   const { t } = useTranslation(['analysis'])
+  const { t: tErrors } = useTranslation('errors')
   const [status, setStatus] = useState<PlaybackStatus>('idle')
   const [errorMessage, setErrorMessage] = useState<string>()
   const [failedPosition, setFailedPosition] = useState<{ scene: number; utterance: number }>()
@@ -308,7 +310,10 @@ export function AudiobookPlayer({
         } else if (ev === 'error') {
           stopAudio()
           setStatus('error')
-          setErrorMessage(msg.message || t('analysis:player.genericError'))
+          const errorMessage = typeof msg.code === 'string' && msg.code.startsWith('VOICE_')
+            ? localizeUiError(tErrors, { code: msg.code as KnownErrorCode }).message
+            : msg.message || t('analysis:player.genericError')
+          setErrorMessage(errorMessage)
           if (msg.scene_number !== undefined && msg.utterance_index !== undefined) {
             setFailedPosition({
               scene: Number(msg.scene_number),
@@ -334,7 +339,7 @@ export function AudiobookPlayer({
     ws.onclose = () => {
       if (wsRef.current === ws) wsRef.current = null
     }
-  }, [documentId, draft, getAudioContext, onPlaybackPositionChange, onPlayingChange, playNextInQueue, stopAudio, t])
+  }, [documentId, draft, getAudioContext, onPlaybackPositionChange, onPlayingChange, playNextInQueue, stopAudio, t, tErrors])
 
   const stopPlayback = useCallback(() => {
     const ws = wsRef.current

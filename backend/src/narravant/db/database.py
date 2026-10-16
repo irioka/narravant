@@ -62,6 +62,22 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TEXT NOT NULL
 );
 
+-- Custom voice metadata is separate from document payloads and scoped to one user.
+CREATE TABLE IF NOT EXISTS voice_registry (
+    owner_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    voice_id TEXT NOT NULL,
+    speaker_label TEXT,
+    voice_traits TEXT,
+    language_code TEXT,
+    created_at TEXT,
+    created_at_source TEXT NOT NULL CHECK (created_at_source IN ('local_response', 'unknown')),
+    registered_at TEXT NOT NULL,
+    expire_time TEXT,
+    last_checked_at TEXT,
+    availability TEXT NOT NULL CHECK (availability IN ('available', 'missing', 'unknown')),
+    PRIMARY KEY (owner_user_id, voice_id)
+);
+
 -- Documents metadata table
 CREATE TABLE IF NOT EXISTS documents (
     document_id TEXT PRIMARY KEY,
@@ -235,6 +251,37 @@ class DatabaseManager:
             if "valence_vectorfloat[10]" not in vector_sql:
                 raise RuntimeError(
                     "SQLite valence_vectors schema is stale; recreate development data from the current v1 schema."
+                )
+
+            registry_info = list(conn.execute("PRAGMA table_info(voice_registry)"))
+            registry_columns = {row["name"] for row in registry_info}
+            required_registry_columns = {
+                "owner_user_id",
+                "voice_id",
+                "speaker_label",
+                "voice_traits",
+                "language_code",
+                "created_at",
+                "created_at_source",
+                "registered_at",
+                "expire_time",
+                "last_checked_at",
+                "availability",
+            }
+            registry_primary_key = tuple(
+                row["name"] for row in sorted(registry_info, key=lambda item: item["pk"]) if row["pk"]
+            )
+            registry_foreign_keys = {
+                (row["from"], row["table"], row["to"])
+                for row in conn.execute("PRAGMA foreign_key_list(voice_registry)")
+            }
+            if (
+                registry_columns != required_registry_columns
+                or registry_primary_key != ("owner_user_id", "voice_id")
+                or ("owner_user_id", "users", "user_id") not in registry_foreign_keys
+            ):
+                raise RuntimeError(
+                    "SQLite voice_registry schema is stale; recreate development data from the current v1 schema."
                 )
 
 

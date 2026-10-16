@@ -14,6 +14,7 @@ import httpx
 
 from narravant.core.settings import Settings
 from narravant.services.playback import PlannedUtterance
+from narravant.services.voice_models import canonical_voice_id
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ DEFAULT_INTER_UTTERANCE_PAUSE_DURATION_MS = 1000
 MAX_TTS_SEGMENT_CHARACTERS = 180
 _SENTENCE_ENDINGS = frozenset("。！？!?…")
 _CLAUSE_ENDINGS = frozenset("、，,;；:")
-_CLOSING_PUNCTUATION = frozenset("」』）)]}’”\"〉》")
+_CLOSING_PUNCTUATION = frozenset('」』）)]}’”"〉》')
 _NON_TERMINAL_ABBREVIATIONS = frozenset({"dr.", "mr.", "mrs.", "ms.", "prof.", "sr.", "jr.", "e.g.", "i.e."})
 
 
@@ -74,9 +75,7 @@ def _split_tts_text(text: str) -> list[str]:
         remaining = sentence
         while len(remaining) > MAX_TTS_SEGMENT_CHARACTERS:
             limit = MAX_TTS_SEGMENT_CHARACTERS
-            clause_positions = [
-                position for position, char in enumerate(remaining[:limit]) if char in _CLAUSE_ENDINGS
-            ]
+            clause_positions = [position for position, char in enumerate(remaining[:limit]) if char in _CLAUSE_ENDINGS]
             if clause_positions:
                 end = clause_positions[-1] + 1
             else:
@@ -149,6 +148,13 @@ class TtsClient(Protocol):
         ...
 
 
+def _normalize_tts_voice_id(voice_id: str) -> str:
+    """Translate a legacy resource name to the canonical synthesis ID."""
+    if voice_id.startswith(("voice_", "voices/")):
+        return canonical_voice_id(voice_id)
+    return voice_id
+
+
 class GeminiTtsClient:
     """Production client calling Google Gemini TTS (gemini-3.8-flash-tts).
 
@@ -182,6 +188,11 @@ class GeminiTtsClient:
     ) -> AsyncIterator[bytes]:
         if not self._api_key:
             raise TtsError("GEMINI_API_KEY is not configured.")
+
+        try:
+            voice_id = _normalize_tts_voice_id(voice_id)
+        except ValueError as exc:
+            raise TtsError("Invalid custom voice ID") from exc
 
         selected_model = model or self._default_model
         # A custom Voice Design ID (voice_...) is referenced via
@@ -283,6 +294,7 @@ class FakeTtsClient:
         model: str | None = None,
         style: str = "",
     ) -> AsyncIterator[bytes]:
+        voice_id = _normalize_tts_voice_id(voice_id)
         idx = self.call_count
         self.call_count += 1
         self.synthesized_utterances.append((text, voice_id))

@@ -11,13 +11,18 @@ import pytest
 from fastapi import FastAPI
 
 from narravant.api import playback
+from narravant.api.dependencies import LOCAL_USER_DISPLAY_NAME, LOCAL_USER_EMAIL, LOCAL_USER_ID
+from narravant.db.database import DatabaseManager, DocumentRepository
+from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.services.tts import FakeTtsClient
+from narravant.services.voice_design import FakeVoiceDesignClient
+from narravant.services.voice_models import ProviderVoice, StoredVoiceRecord, parse_provider_datetime, utc_iso
 
 DRAFT = {
     "source_fountain": "INT. ROOM - DAY #1#\n\n@Narrator\nFirst.\n\n@ALICE\nSecond.\n",
     "voice_assignments": [
-        {"speaker": "Narrator", "voice_id": "voices/synthetic-narrator"},
-        {"speaker": "ALICE", "voice_id": "voices/synthetic-alice"},
+        {"speaker": "Narrator", "voice_id": "voice_synthetic_narrator"},
+        {"speaker": "ALICE", "voice_id": "voice_synthetic_alice"},
     ],
 }
 
@@ -25,16 +30,50 @@ DRAFT = {
 @pytest.fixture
 def draft_connection(monkeypatch):
     tts = FakeTtsClient()
+    provider = FakeVoiceDesignClient()
+    db = DatabaseManager(":memory:")
+    db.init_schema()
+    DocumentRepository(db).ensure_user(LOCAL_USER_ID, LOCAL_USER_EMAIL, LOCAL_USER_DISPLAY_NAME)
+    registry = VoiceRegistryRepository(db)
+    for speaker, voice_id in (
+        ("Narrator", "voice_synthetic_narrator"),
+        ("ALICE", "voice_synthetic_alice"),
+    ):
+        provider.voices[voice_id] = ProviderVoice(
+            voice_id=voice_id,
+            voice_type="prompted",
+            language_code="ja-JP",
+            expire_time=parse_provider_datetime("2099-01-01T00:00:00Z"),
+        )
+        registry.upsert(
+            StoredVoiceRecord(
+                owner_user_id=LOCAL_USER_ID,
+                voice_id=voice_id,
+                speaker_label=speaker,
+                voice_traits=None,
+                language_code="ja-JP",
+                created_at=None,
+                created_at_source="unknown",
+                registered_at=utc_iso(),
+                expire_time=None,
+                last_checked_at=None,
+                availability="unknown",
+            )
+        )
     monkeypatch.setattr(playback, "_build_tts_client", lambda settings: tts)
+    monkeypatch.setattr(playback, "_build_voice_design_client", lambda settings: provider)
     app = FastAPI()
     app.include_router(playback.router)
-    # DB / storage を置かず、下書き経路で永続リソースに触れないことも確認する。
+    # Draft playback may read the owner-scoped voice registry, but never a saved
+    # document or script object.
     app.state.settings = SimpleNamespace(playback_scene_pause_duration_ms=0)
+    app.state.db_manager = db
+    app.state.storage_client = SimpleNamespace()
 
     @asynccontextmanager
     async def connect(path="/api/v1/documents/playback"):
         if path != "/api/v1/documents/playback":
-            app.state.db_manager = object()
+            app.state.db_manager = db
             app.state.storage_client = SimpleNamespace(read_structured_script=lambda *_args: (DRAFT, None))
         incoming = asyncio.Queue()
         outgoing = asyncio.Queue()
@@ -102,9 +141,9 @@ async def test_unsaved_draft_plays_scene_heading_without_persisting(draft_connec
             ("ALICE", 2),
         ]
         assert tts.calls == [
-            {"text": "ROOM - DAY", "voice_id": "voices/synthetic-narrator"},
-            {"text": "First.", "voice_id": "voices/synthetic-narrator"},
-            {"text": "Second.", "voice_id": "voices/synthetic-alice"},
+            {"text": "ROOM - DAY", "voice_id": "voice_synthetic_narrator"},
+            {"text": "First.", "voice_id": "voice_synthetic_narrator"},
+            {"text": "Second.", "voice_id": "voice_synthetic_alice"},
         ]
 
 
@@ -120,7 +159,7 @@ async def test_unsaved_draft_resume_starts_from_selected_position_without_persis
         assert events[-1]["event"] == "playback_complete"
         starts = [event for event in events if event["event"] == "utterance_start"]
         assert [(event["speaker"], event["utterance_index"]) for event in starts] == [("ALICE", 2)]
-        assert tts.calls == [{"text": "Second.", "voice_id": "voices/synthetic-alice"}]
+        assert tts.calls == [{"text": "Second.", "voice_id": "voice_synthetic_alice"}]
 
 
 async def test_draft_missing_voice_fails_before_synthesis(draft_connection):
@@ -130,6 +169,34 @@ async def test_draft_missing_voice_fails_before_synthesis(draft_connection):
         assert event["event"] == "error"
         assert "ALICE" in event["message"]
         assert event["utterance_index"] == 2
+        assert tts.calls == []
+
+
+async def test_draft_deleted_custom_voice_fails_before_synthesis(draft_connection):
+    async with draft_connection() as (incoming, outgoing, tts):
+        # Provider state no longer contains Alice's registered voice.
+        app_provider = playback._build_voice_design_client(None)
+        app_provider.voices.pop("voice_synthetic_alice")
+        await send_start(incoming, DRAFT, start_utterance_index=2)
+        event = await receive_event(outgoing)
+        assert event["event"] == "error"
+        assert event["code"] == "VOICE_NOT_FOUND"
+        assert tts.calls == []
+
+
+async def test_draft_expired_custom_voice_fails_before_synthesis(draft_connection):
+    async with draft_connection() as (incoming, outgoing, tts):
+        provider = playback._build_voice_design_client(None)
+        provider.voices["voice_synthetic_alice"] = ProviderVoice(
+            voice_id="voice_synthetic_alice",
+            voice_type="prompted",
+            language_code="ja-JP",
+            expire_time=parse_provider_datetime("2000-01-01T00:00:00Z"),
+        )
+        await send_start(incoming, DRAFT, start_utterance_index=2)
+        event = await receive_event(outgoing)
+        assert event["event"] == "error"
+        assert event["code"] == "VOICE_EXPIRED"
         assert tts.calls == []
 
 
@@ -175,7 +242,11 @@ async def test_draft_stop_and_disconnect_cancel_synthesis(draft_connection, monk
 
 
 async def test_saved_document_still_plays_without_a_draft(draft_connection, monkeypatch):
-    repo = SimpleNamespace(ensure_user=lambda *args: None, get_document=lambda _id: {"current_version_id": 1})
+    repo = SimpleNamespace(
+        ensure_user=lambda *args: None,
+        get_document=lambda _id: {"current_version_id": 1},
+        list_documents=lambda **_kwargs: ([], 0),
+    )
     monkeypatch.setattr(playback, "DocumentRepository", lambda db: repo)
     # 同じ ASGI fixture の app を保存済み経路にも使う。
     async with draft_connection("/api/v1/documents/saved/playback") as (incoming, outgoing, tts):
@@ -188,6 +259,6 @@ async def test_saved_document_still_plays_without_a_draft(draft_connection, monk
                 break
         assert events[-1]["event"] == "playback_complete"
         assert tts.calls == [
-            {"text": "First.", "voice_id": "voices/synthetic-narrator"},
-            {"text": "Second.", "voice_id": "voices/synthetic-alice"},
+            {"text": "First.", "voice_id": "voice_synthetic_narrator"},
+            {"text": "Second.", "voice_id": "voice_synthetic_alice"},
         ]

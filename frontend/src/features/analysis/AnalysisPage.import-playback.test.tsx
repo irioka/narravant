@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { getDocument, getVersions, importDocument, saveImportDraft, updateDocument } from '@/api/documents'
@@ -51,6 +52,7 @@ it.each([
   { individualNarrator: true, savedDocument: true },
 ])('生成した最新の声で保存せず再生する: $individualNarrator / 保存済み作品: $savedDocument', async ({ individualNarrator, savedDocument }) => {
   DraftWebSocket.instances = []
+  const user = userEvent.setup()
   vi.stubGlobal('WebSocket', DraftWebSocket)
   const draft = {
     document_id: 'unsaved-import', version_id: 1, expected_version: null, title: '合成サンプル',
@@ -112,9 +114,13 @@ it.each([
     await waitFor(() => expect(screen.getByRole('button', { name: 'ナレーター 再生' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'OK' }))
   }
-  fireEvent.click(screen.getByRole('button', { name: '全話者の声を生成' }))
+  await user.click(screen.getByRole('button', { name: '話者の操作メニュー' }))
+  await user.click(screen.getByRole('menuitem', { name: '全話者の声を生成' }))
   await waitFor(() => expect(createVoice).toHaveBeenCalled())
-  await waitFor(() => expect(screen.getByRole('button', { name: '全話者の声を生成' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: '話者の操作メニュー' }))
+  const generateAllItem = await screen.findByRole('menuitem', { name: '全話者の声を生成' })
+  await waitFor(() => expect(generateAllItem).not.toHaveAttribute('aria-disabled', 'true'))
+  await user.keyboard('{Escape}')
   fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
   await waitFor(() => expect(DraftWebSocket.instances[0]?.sentMessages).toHaveLength(1))
   const ws = DraftWebSocket.instances[0]

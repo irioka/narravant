@@ -63,13 +63,13 @@ async def test_fake_tts_synthesize_stream_returns_chunks(fake_tts: FakeTtsClient
         chunk
         async for chunk in fake_tts.synthesize_stream(
             text="こんにちは。",
-            voice_id="voices/fake-voice-1",
+            voice_id="voice_fake_1",
         )
     ]
     assert len(chunks) == 2
     assert all(isinstance(c, bytes) and len(c) > 0 for c in chunks)
     assert fake_tts.call_count == 1
-    assert fake_tts.synthesized_utterances[0] == ("こんにちは。", "voices/fake-voice-1")
+    assert fake_tts.synthesized_utterances[0] == ("こんにちは。", "voice_fake_1")
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_fake_tts_failure_injection(fake_tts: FakeTtsClient):
     with pytest.raises(TtsError, match="Simulated TTS failure"):
         async for _ in fake_tts.synthesize_stream(
             text="この台詞は失敗する台詞です。",
-            voice_id="voices/fake-voice-1",
+            voice_id="voice_fake_1",
         ):
             pass
 
@@ -125,7 +125,7 @@ async def test_tts_coordinator_iterates_utterances_in_order(fake_tts: FakeTtsCli
             speaker="ナレーター",
             target_type="narrator",
             text="静かな部屋。",
-            voice_id="voices/fake-narrator",
+            voice_id="voice_fake_narrator",
         ),
         PlannedUtterance(
             scene_number=1,
@@ -133,7 +133,7 @@ async def test_tts_coordinator_iterates_utterances_in_order(fake_tts: FakeTtsCli
             speaker="アリス",
             target_type="character",
             text="誰かいるの？",
-            voice_id="voices/fake-alice",
+            voice_id="voice_fake_alice",
         ),
     ]
 
@@ -249,7 +249,7 @@ async def test_tts_coordinator_stops_immediately_on_failure(fake_tts: FakeTtsCli
             speaker="ナレーター",
             target_type="narrator",
             text="最初の台詞。",
-            voice_id="voices/fake-narrator",
+            voice_id="voice_fake_narrator",
         ),
         PlannedUtterance(
             scene_number=1,
@@ -257,7 +257,7 @@ async def test_tts_coordinator_stops_immediately_on_failure(fake_tts: FakeTtsCli
             speaker="アリス",
             target_type="character",
             text="ここで失敗する。",
-            voice_id="voices/fake-alice",
+            voice_id="voice_fake_alice",
         ),
         PlannedUtterance(
             scene_number=1,
@@ -265,7 +265,7 @@ async def test_tts_coordinator_stops_immediately_on_failure(fake_tts: FakeTtsCli
             speaker="ボブ",
             target_type="character",
             text="実行されてはならない台詞。",
-            voice_id="voices/fake-bob",
+            voice_id="voice_fake_bob",
         ),
     ]
 
@@ -297,7 +297,7 @@ async def test_tts_coordinator_cancellation_cancels_active_task(fake_tts: FakeTt
             speaker=f"Speaker{i}",
             target_type="character",
             text=f"台詞番号 {i}",
-            voice_id=f"voices/fake-{i}",
+            voice_id=f"voice_fake_{i}",
         )
         for i in range(10)
     ]

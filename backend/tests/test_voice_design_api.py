@@ -25,6 +25,21 @@ def fake_voice_client() -> FakeVoiceDesignClient:
     return FakeVoiceDesignClient()
 
 
+@pytest.mark.asyncio
+async def test_fake_voice_design_client_keeps_identical_trait_creations_distinct() -> None:
+    provider = FakeVoiceDesignClient()
+
+    first = await provider.create_voice("Alice", "Warm, clear voice", display_name="Book ; Alice")
+    second = await provider.create_voice("Bob", "Warm, clear voice", display_name="Book ; Bob")
+
+    assert first.voice_id.startswith("voice_fake_")
+    assert second.voice_id.startswith("voice_fake_")
+    assert first.voice_id != second.voice_id
+    assert len((await provider.list_voices()).voices) == 2
+    assert (await provider.get_voice(first.voice_id)).display_name == "Book ; Alice"
+    assert (await provider.get_voice(second.voice_id)).display_name == "Book ; Bob"
+
+
 @pytest.fixture
 def client(fake_voice_client: FakeVoiceDesignClient) -> TestClient:
     db = DatabaseManager(":memory:")
@@ -187,7 +202,7 @@ def test_create_voice_success_and_does_not_advance_version(
     assert response.status_code == 200
     data = response.json()
     assert data["speaker"] == "ナレーター"
-    assert "voices/fake-ナレーター-" in data["voice_id"]
+    assert data["voice_id"].startswith("voice_fake_")
     assert data["voice_traits"] == "落ち着いた男性の声"
     created_voice_id = data["voice_id"]
 
@@ -292,8 +307,8 @@ def test_create_voice_different_traits_produce_different_ids(
     voice_id_2 = resp2.json()["voice_id"]
 
     assert voice_id_1 != voice_id_2
-    assert "アリス" in voice_id_1
-    assert "アリス" in voice_id_2
+    assert voice_id_1.startswith("voice_fake_")
+    assert voice_id_2.startswith("voice_fake_")
 
 
 @pytest.mark.asyncio
@@ -324,7 +339,7 @@ async def test_gemini_voice_design_client_request_shape(monkeypatch):
         voice_traits="深みのある朗読調の声",
     )
 
-    assert voice_id == "voice_real_style_id_789"
+    assert voice_id.voice_id == "voice_real_style_id_789"
     assert len(captured_requests) == 1
     req = captured_requests[0]
     assert "https://generativelanguage.googleapis.com/v1beta/voices" in req["url"]
@@ -343,6 +358,45 @@ async def test_gemini_voice_design_client_request_shape(monkeypatch):
     assert json_body["voice"]["language_code"] == "ja-JP"
     # Q-2: voice_traits is passed as-is in Japanese without translation
     assert json_body["voice"]["prompted"]["input"] == "深みのある朗読調の声"
+
+
+@pytest.mark.asyncio
+async def test_gemini_voice_design_client_sends_optional_display_name(monkeypatch) -> None:
+    import httpx
+
+    from narravant.services.voice_design import GeminiVoiceDesignClient
+
+    captured_payloads: list[dict[str, object]] = []
+
+    async def mock_post(self, url, *args, **kwargs):
+        captured_payloads.append(kwargs["json"])
+        return httpx.Response(
+            status_code=200,
+            json={"id": "voice_display_name_test"},
+            request=httpx.Request("POST", str(url)),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+    display_name = "The Wonderful Wizard of Oz - III. How Dorothy Saved the Scarecrow ; Narrator"
+
+    await GeminiVoiceDesignClient(api_key="synthetic-key").create_voice(
+        speaker="Narrator",
+        voice_traits="Warm, articulate storybook narrator",
+        display_name=display_name,
+    )
+
+    assert captured_payloads == [
+        {
+            "store": True,
+            "voice": {
+                "type": "prompted",
+                "prompted": {"input": "Warm, articulate storybook narrator"},
+                "model": "gemini-3.8-flash-tts",
+                "language_code": "ja-JP",
+                "display_name": display_name,
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -402,7 +456,7 @@ async def test_gemini_voice_design_retries_invalid_optional_fields_with_minimal_
         voice_traits="知ったかぶりをする理屈っぽいトーンの中低音",
     )
 
-    assert voice_id == "voice_after_fallback"
+    assert voice_id.voice_id == "voice_after_fallback"
     assert captured_payloads[0]["voice"]["model"] == "gemini-3.8-flash-tts"
     assert captured_payloads[0]["voice"]["language_code"] == "ja-JP"
     assert captured_payloads[1] == {
@@ -445,7 +499,7 @@ async def test_gemini_voice_design_retries_with_provider_safe_prompt_after_promp
         voice_traits="70代女性のかすれた声質。獣の鳴き声のように震える語り口。",
     )
 
-    assert voice_id == "voice_after_safe_prompt"
+    assert voice_id.voice_id == "voice_after_safe_prompt"
     assert len(captured_payloads) == 3
     assert captured_payloads[1]["voice"]["prompted"]["input"].startswith("70代女性")
     safe_input = captured_payloads[2]["voice"]["prompted"]["input"]
@@ -482,7 +536,7 @@ async def test_gemini_voice_design_client_uses_the_configured_read_timeout(monke
         async def post(self, *_: object, **__: object) -> httpx.Response:
             return httpx.Response(
                 status_code=200,
-                json={"id": "voices/test"},
+                json={"id": "voice_test"},
                 request=httpx.Request("POST", "https://example.test/voices"),
             )
 
@@ -544,7 +598,7 @@ async def test_gemini_voice_design_retries_transient_unavailable_then_succeeds(m
     client = GeminiVoiceDesignClient(api_key="test-api-key-123")
     voice_id = await client.create_voice(speaker="ナレーター", voice_traits="落ち着いた声")
 
-    assert voice_id == "voice_after_transient_retry"
+    assert voice_id.voice_id == "voice_after_transient_retry"
     assert len(attempts) == 2
 
 

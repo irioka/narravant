@@ -3,7 +3,7 @@
  * Do not edit manually.
  * NARRAVANT API
  * Intelligent screenplay analysis and narrative arc workbench API
- * OpenAPI spec version: 0.1.4
+ * OpenAPI spec version: 0.2.0
  */
 import * as zod from 'zod';
 
@@ -863,6 +863,7 @@ export const createDocumentVoiceApiV1DocumentsDocumentIdVoicesPostBodyLanguageCo
 
 
 export const CreateDocumentVoiceApiV1DocumentsDocumentIdVoicesPostBody = zod.object({
+  "display_name": zod.union([zod.string(),zod.null()]).optional().describe('Optional display name for the stored voice'),
   "language_code": zod.string().default(createDocumentVoiceApiV1DocumentsDocumentIdVoicesPostBodyLanguageCodeDefault).describe('Language code'),
   "speaker": zod.string().min(1).describe('Speaker name (narrator or character)'),
   "voice_traits": zod.string().min(1).describe('Natural language voice description')
@@ -953,6 +954,30 @@ export const GetVersionApiV1VersionGetResponse = zod.record(zod.string(), zod.st
 
 
 /**
+ * Return the current user's reconciled custom voice library.
+ * @summary List Stored Voices
+ */
+export const ListStoredVoicesApiV1VoicesGetResponse = zod.object({
+  "checked_at": zod.union([zod.string(),zod.null()]),
+  "complete": zod.boolean(),
+  "voices": zod.array(zod.object({
+  "availability": zod.enum(['available', 'missing', 'unknown']),
+  "created_at": zod.union([zod.string(),zod.null()]),
+  "created_at_source": zod.enum(['local_response', 'unknown']),
+  "display_name": zod.union([zod.string(),zod.null()]).optional(),
+  "expire_time": zod.union([zod.string(),zod.null()]),
+  "expiry_state": zod.enum(['valid', 'expiring', 'expired', 'stale', 'unknown']),
+  "language_code": zod.union([zod.string(),zod.null()]),
+  "last_checked_at": zod.union([zod.string(),zod.null()]),
+  "speaker_label": zod.union([zod.string(),zod.null()]),
+  "usage_count": zod.union([zod.int(),zod.null()]),
+  "voice_id": zod.string(),
+  "voice_traits": zod.union([zod.string(),zod.null()])
+}))
+})
+
+
+/**
  * Create a voice for an unsaved import draft without creating a document.
  * @summary Create Draft Voice
  */
@@ -961,6 +986,7 @@ export const createDraftVoiceApiV1VoicesPostBodyLanguageCodeDefault = `ja-JP`;
 
 
 export const CreateDraftVoiceApiV1VoicesPostBody = zod.object({
+  "display_name": zod.union([zod.string(),zod.null()]).optional().describe('Optional display name for the stored voice'),
   "language_code": zod.string().default(createDraftVoiceApiV1VoicesPostBodyLanguageCodeDefault).describe('Language code'),
   "speaker": zod.string().min(1).describe('Speaker name (narrator or character)'),
   "voice_traits": zod.string().min(1).describe('Natural language voice description')
@@ -992,6 +1018,59 @@ export const PreviewDraftVoiceApiV1VoicesPreviewPostBody = zod.object({
 }).describe('Request payload to synthesize a short sample line with an existing voice.')
 
 export const PreviewDraftVoiceApiV1VoicesPreviewPostResponse = zod.unknown()
+
+
+/**
+ * Delete a known custom voice without modifying any document payload.
+ * @summary Delete Stored Voice
+ */
+export const DeleteStoredVoiceApiV1VoicesVoiceIdDeleteParams = zod.object({
+  "voice_id": zod.string()
+})
+
+export const DeleteStoredVoiceApiV1VoicesVoiceIdDeleteResponse = zod.void()
+
+
+/**
+ * Refresh and return one known custom voice's provider state.
+ * @summary Get Stored Voice
+ */
+export const GetStoredVoiceApiV1VoicesVoiceIdGetParams = zod.object({
+  "voice_id": zod.string()
+})
+
+export const GetStoredVoiceApiV1VoicesVoiceIdGetResponse = zod.object({
+  "availability": zod.enum(['available', 'missing', 'unknown']),
+  "created_at": zod.union([zod.string(),zod.null()]),
+  "created_at_source": zod.enum(['local_response', 'unknown']),
+  "display_name": zod.union([zod.string(),zod.null()]).optional(),
+  "expire_time": zod.union([zod.string(),zod.null()]),
+  "expiry_state": zod.enum(['valid', 'expiring', 'expired', 'stale', 'unknown']),
+  "language_code": zod.union([zod.string(),zod.null()]),
+  "last_checked_at": zod.union([zod.string(),zod.null()]),
+  "speaker_label": zod.union([zod.string(),zod.null()]),
+  "usage_count": zod.union([zod.int(),zod.null()]),
+  "voice_id": zod.string(),
+  "voice_traits": zod.union([zod.string(),zod.null()])
+})
+
+
+/**
+ * Return current-version document assignments that use this voice.
+ * @summary Get Stored Voice Usages
+ */
+export const GetStoredVoiceUsagesApiV1VoicesVoiceIdUsagesGetParams = zod.object({
+  "voice_id": zod.string()
+})
+
+export const GetStoredVoiceUsagesApiV1VoicesVoiceIdUsagesGetResponse = zod.object({
+  "complete": zod.boolean(),
+  "usages": zod.array(zod.object({
+  "document_id": zod.string(),
+  "speaker": zod.string(),
+  "title": zod.string()
+}))
+})
 
 
 /**

@@ -52,9 +52,9 @@ Google. **Text-to-speech generation (TTS)** and **Generating content: SpeechMeta
 
 Google. **Voice design.**
 
-- Source: [Voice Design guide](https://ai.google.dev/gemini-api/docs/voice-design).
-- Use: custom voices with persistent traits such as perceived age, timbre, and accent. Situational acting instructions are handled separately through TTS style.
-- Limits: specifying a trait does not establish that the generated voice expresses it successfully. Perceived age and other voice qualities require listening evaluation.
+- Sources: [Voice Design guide](https://ai.google.dev/gemini-api/docs/voice-design), [Speech generation guide](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation).
+- Use: custom voices with persistent traits such as perceived age, timbre, and accent. Stateful custom voices are retained for one year after their last use; synthesizing speech with a voice or using it as a remix base resets the retention period. Situational acting instructions are handled separately through TTS style.
+- Limits: specifying a trait does not establish that the generated voice expresses it successfully. Perceived age and other voice qualities require listening evaluation. Retention policy and API behavior can change; check Google's current documentation when updating the integration.
 
 ## Numerical methods
 

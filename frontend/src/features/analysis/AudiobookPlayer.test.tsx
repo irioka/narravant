@@ -88,6 +88,23 @@ class MockAudioContext {
 }
 
 describe('AudiobookPlayer', () => {
+  it('server voice errors use the current locale and preserve the failed state', async () => {
+    const onPlayingChange = vi.fn()
+    renderPlayer({ disabled: false, documentId: 'doc-voice-expired', isPlaying: false, onPlayingChange, scenes })
+
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1))
+    MockWebSocket.instances[0].emitMessage({
+      event: 'error',
+      code: 'VOICE_EXPIRED',
+      scene_number: null,
+      utterance_index: null,
+      message: 'provider message should not drive UI locale',
+    })
+
+    expect(await screen.findByText('この声の有効期限が切れています。別の声を割り当ててください。')).toBeInTheDocument()
+  })
+
   const scenes: Scene[] = [
     { scene_number: 1, heading: 'INT. ROOM - NIGHT', text: '...', dialogues: [] },
     { scene_number: 2, heading: 'INT. GARDEN - DAY', text: '...', dialogues: [] },

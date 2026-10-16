@@ -39,6 +39,8 @@ from narravant.services.ingestion import (
 )
 from narravant.services.tasks import EphemeralTaskEvents, TaskManager
 from narravant.services.tts import FakeTtsClient
+from narravant.services.voice_design import FakeVoiceDesignClient
+from narravant.services.voice_models import ProviderVoice
 from narravant.storage.gcs import InMemoryScriptStorageClient
 
 
@@ -75,14 +77,32 @@ def _playback_ws_env(db: DatabaseManager, storage: InMemoryScriptStorageClient, 
     )
     app.state.db_manager = db
     app.state.storage_client = storage
+    voice_provider = FakeVoiceDesignClient()
+    for voice_id in (
+        "voice_fake_narrator",
+        "voice_fake_nar",
+        "voice_fake_alice",
+        "voice_fake_bob",
+        "voice_fake_alice_old",
+        "voice_fake_alice_new",
+    ):
+        voice_provider.voices[voice_id] = ProviderVoice(
+            voice_id=voice_id,
+            voice_type="prompted",
+            language_code="ja-JP",
+            expire_time=None,
+        )
     app.dependency_overrides[get_db_manager] = lambda: db
     app.dependency_overrides[get_storage_client] = lambda: storage
     original_build = playback_module._build_tts_client
+    original_voice_build = playback_module._build_voice_design_client
     playback_module._build_tts_client = lambda settings: fake_tts
+    playback_module._build_voice_design_client = lambda settings: voice_provider
     try:
         yield
     finally:
         playback_module._build_tts_client = original_build
+        playback_module._build_voice_design_client = original_voice_build
         app.dependency_overrides.clear()
 
 
@@ -213,8 +233,8 @@ def test_scenario_a2_edit_save_to_local_db_and_reload(
             },
             "narrator": {"voice_traits": "落ち着いた語り"},
             "voice_assignments": [
-                {"speaker": "ナレーター", "voice_id": "voices/v-narrator", "voice_traits": "落ち着いた語り"},
-                {"speaker": "HERO", "voice_id": "voices/v-hero", "voice_traits": "力強い若者"},
+                {"speaker": "ナレーター", "voice_id": "voice_fake_narrator", "voice_traits": "落ち着いた語り"},
+                {"speaker": "HERO", "voice_id": "voice_fake_hero", "voice_traits": "力強い若者"},
             ],
         },
     )
@@ -235,8 +255,8 @@ def test_scenario_a2_edit_save_to_local_db_and_reload(
     updated_data["source_fountain"] = updated_fountain
     updated_data["scenes"] = [s.to_dict() for s in updated_parsed.scenes]
     updated_data["voice_assignments"] = [
-        {"speaker": "ナレーター", "voice_id": "voices/v-narrator", "voice_traits": "落ち着いた語り"},
-        {"speaker": "HERO", "voice_id": "voices/v-hero-updated", "voice_traits": "より決意ある若者"},
+        {"speaker": "ナレーター", "voice_id": "voice_fake_narrator", "voice_traits": "落ち着いた語り"},
+        {"speaker": "HERO", "voice_id": "voice_fake_hero_updated", "voice_traits": "より決意ある若者"},
     ]
     in_memory_storage.write_structured_script(doc_id, 2, updated_data)
     repo.update_document(
@@ -259,7 +279,7 @@ def test_scenario_a2_edit_save_to_local_db_and_reload(
     assert reloaded_data["source_fountain"] == updated_fountain
     assert reloaded_data["voice_assignments"][1] == {
         "speaker": "HERO",
-        "voice_id": "voices/v-hero-updated",
+        "voice_id": "voice_fake_hero_updated",
         "voice_traits": "より決意ある若者",
     }
     assert len(reloaded_data["analysis"]["turning_points"]) == 5
@@ -327,10 +347,10 @@ def test_scenario_a3_native_json_export_and_import_roundtrip() -> None:
             "voice_assignments": [
                 {
                     "speaker": "ナレーター",
-                    "voice_id": "voices/narrator-3",
+                    "voice_id": "voice_fake_narrator_3",
                     "voice_traits": "淡々としたハードボイルドな語り口",
                 },
-                {"speaker": "DETECTIVE", "voice_id": "voices/det-3", "voice_traits": "冷徹で明瞭な中低音"},
+                {"speaker": "DETECTIVE", "voice_id": "voice_fake_detective_3", "voice_traits": "冷徹で明瞭な中低音"},
             ],
         },
     }
@@ -350,8 +370,12 @@ def test_scenario_a3_native_json_export_and_import_roundtrip() -> None:
     assert structured["document_id"] == "doc-a3"
     assert structured["narrator"] == {"voice_traits": "淡々としたハードボイルドな語り口"}
     assert structured["voice_assignments"] == [
-        {"speaker": "ナレーター", "voice_id": "voices/narrator-3", "voice_traits": "淡々としたハードボイルドな語り口"},
-        {"speaker": "DETECTIVE", "voice_id": "voices/det-3", "voice_traits": "冷徹で明瞭な中低音"},
+        {
+            "speaker": "ナレーター",
+            "voice_id": "voice_fake_narrator_3",
+            "voice_traits": "淡々としたハードボイルドな語り口",
+        },
+        {"speaker": "DETECTIVE", "voice_id": "voice_fake_detective_3", "voice_traits": "冷徹で明瞭な中低音"},
     ]
     assert structured["analysis"]["characters"][0]["voice_traits"] == "冷徹で明瞭な中低音"
     assert len(structured["analysis"]["turning_points"]) == 5
@@ -424,9 +448,9 @@ INT. SALON - NIGHT #1#
             },
             "narrator": {"voice_traits": "ナレーター声"},
             "voice_assignments": [
-                {"speaker": "ナレーター", "voice_id": "voices/v-narrator", "voice_traits": "t-nar"},
-                {"speaker": "ALICE", "voice_id": "voices/v-alice", "voice_traits": "t-alice"},
-                {"speaker": "BOB", "voice_id": "voices/v-bob", "voice_traits": "t-bob"},
+                {"speaker": "ナレーター", "voice_id": "voice_fake_narrator", "voice_traits": "t-nar"},
+                {"speaker": "ALICE", "voice_id": "voice_fake_alice", "voice_traits": "t-alice"},
+                {"speaker": "BOB", "voice_id": "voice_fake_bob", "voice_traits": "t-bob"},
             ],
         },
     )
@@ -463,11 +487,11 @@ INT. SALON - NIGHT #1#
         # TTS 呼び出し履歴の voice_id が割当と一致
         assert len(fake_tts.calls) == 5
         assert [c["voice_id"] for c in fake_tts.calls] == [
-            "voices/v-narrator",
-            "voices/v-narrator",
-            "voices/v-alice",
-            "voices/v-bob",
-            "voices/v-narrator",
+            "voice_fake_narrator",
+            "voice_fake_narrator",
+            "voice_fake_alice",
+            "voice_fake_bob",
+            "voice_fake_narrator",
         ]
 
 
@@ -538,9 +562,9 @@ INT. ROOM - DAY #1#
             },
             "narrator": {"voice_traits": "nar"},
             "voice_assignments": [
-                {"speaker": "ナレーター", "voice_id": "voices/v-nar", "voice_traits": "t1"},
-                {"speaker": "ALICE", "voice_id": "voices/v-alice", "voice_traits": "t2"},
-                {"speaker": "BOB", "voice_id": "voices/v-bob", "voice_traits": "t3"},
+                {"speaker": "ナレーター", "voice_id": "voice_fake_nar", "voice_traits": "t1"},
+                {"speaker": "ALICE", "voice_id": "voice_fake_alice", "voice_traits": "t2"},
+                {"speaker": "BOB", "voice_id": "voice_fake_bob", "voice_traits": "t3"},
             ],
         },
     )
@@ -640,8 +664,8 @@ def test_scenario_a6_script_and_voice_edits_reflect_immediately(
             },
             "narrator": {"voice_traits": "nar"},
             "voice_assignments": [
-                {"speaker": "ナレーター", "voice_id": "voices/v-narrator", "voice_traits": "nar"},
-                {"speaker": "ALICE", "voice_id": "voices/v-alice-old", "voice_traits": "old"},
+                {"speaker": "ナレーター", "voice_id": "voice_fake_narrator", "voice_traits": "nar"},
+                {"speaker": "ALICE", "voice_id": "voice_fake_alice_old", "voice_traits": "old"},
             ],
         },
     )
@@ -693,8 +717,8 @@ def test_scenario_a6_script_and_voice_edits_reflect_immediately(
             },
             "narrator": {"voice_traits": "nar"},
             "voice_assignments": [
-                {"speaker": "ナレーター", "voice_id": "voices/v-narrator", "voice_traits": "nar"},
-                {"speaker": "ALICE", "voice_id": "voices/v-alice-new", "voice_traits": "new"},
+                {"speaker": "ナレーター", "voice_id": "voice_fake_narrator", "voice_traits": "nar"},
+                {"speaker": "ALICE", "voice_id": "voice_fake_alice_new", "voice_traits": "new"},
             ],
         },
     )
@@ -719,9 +743,9 @@ def test_scenario_a6_script_and_voice_edits_reflect_immediately(
                     break
 
         assert len(fake_tts.calls) == 2
-        assert fake_tts.calls[0] == {"text": "ROOM - DAY", "voice_id": "voices/v-narrator"}
+        assert fake_tts.calls[0] == {"text": "ROOM - DAY", "voice_id": "voice_fake_narrator"}
         assert fake_tts.calls[1]["text"] == "New brand-new line."
-        assert fake_tts.calls[1]["voice_id"] == "voices/v-alice-new"
+        assert fake_tts.calls[1]["voice_id"] == "voice_fake_alice_new"
 
 
 # ---------------------------------------------------------------------------

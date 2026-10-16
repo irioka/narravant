@@ -1,5 +1,16 @@
-import { ApiClientError, apiErrorFromPayload, apiRequest } from './client'
-import { CreateDocumentVoiceApiV1DocumentsDocumentIdVoicesPostResponse } from './generated/contracts'
+import { ApiClientError, apiErrorFromPayload, apiRequest, apiRequestWithResponse } from './client'
+import {
+  CreateDocumentVoiceApiV1DocumentsDocumentIdVoicesPostResponse,
+  DeleteStoredVoiceApiV1VoicesVoiceIdDeleteResponse,
+  GetStoredVoiceApiV1VoicesVoiceIdGetResponse,
+  GetStoredVoiceUsagesApiV1VoicesVoiceIdUsagesGetResponse,
+  ListStoredVoicesApiV1VoicesGetResponse,
+} from './generated/contracts'
+import { z } from 'zod'
+
+export type VoiceSummary = z.infer<typeof GetStoredVoiceApiV1VoicesVoiceIdGetResponse>
+export type VoiceList = z.infer<typeof ListStoredVoicesApiV1VoicesGetResponse>
+export type VoiceUsageList = z.infer<typeof GetStoredVoiceUsagesApiV1VoicesVoiceIdUsagesGetResponse>
 
 /** Distinguishable error code for the voice-creation quota limit. */
 export const VOICE_LIMIT_EXCEEDED = 'VOICE_LIMIT_EXCEEDED'
@@ -11,12 +22,14 @@ export interface CreateVoiceInput {
   speaker: string
   voice_traits: string
   language_code?: string
+  display_name?: string
 }
 
 export interface CreateVoiceResult {
   speaker: string
   voice_id: string
   voice_traits: string
+  registry_sync_pending?: boolean
 }
 
 export interface PreviewVoiceInput {
@@ -40,7 +53,7 @@ export async function createVoice(
   draft = false,
 ): Promise<CreateVoiceResult> {
   try {
-    return await apiRequest(
+    const { data, response } = await apiRequestWithResponse(
       draft ? '/api/v1/voices' : `/api/v1/documents/${documentId}/voices`,
       CreateDocumentVoiceApiV1DocumentsDocumentIdVoicesPostResponse,
       {
@@ -50,10 +63,14 @@ export async function createVoice(
           speaker: input.speaker,
           voice_traits: input.voice_traits,
           language_code: input.language_code ?? 'ja-JP',
+          display_name: input.display_name,
         }),
         fetcher,
       },
     )
+    return response.headers.get('X-Voice-Registry-Sync') === 'pending'
+      ? { ...data, registry_sync_pending: true }
+      : data
   } catch (error) {
     if (isVoiceLimitExceeded(error)) {
       throw new ApiClientError(409, VOICE_LIMIT_EXCEEDED, error.message, error.context)
@@ -63,6 +80,34 @@ export async function createVoice(
     }
     throw error
   }
+}
+
+export function listVoices(fetcher?: typeof fetch): Promise<VoiceList> {
+  return apiRequest('/api/v1/voices', ListStoredVoicesApiV1VoicesGetResponse, { fetcher })
+}
+
+export function getVoice(voiceId: string, fetcher?: typeof fetch): Promise<VoiceSummary> {
+  return apiRequest(
+    `/api/v1/voices/${encodeURIComponent(voiceId)}`,
+    GetStoredVoiceApiV1VoicesVoiceIdGetResponse,
+    { fetcher },
+  )
+}
+
+export function getVoiceUsages(voiceId: string, fetcher?: typeof fetch): Promise<VoiceUsageList> {
+  return apiRequest(
+    `/api/v1/voices/${encodeURIComponent(voiceId)}/usages`,
+    GetStoredVoiceUsagesApiV1VoicesVoiceIdUsagesGetResponse,
+    { fetcher },
+  )
+}
+
+export function deleteVoice(voiceId: string, fetcher?: typeof fetch): Promise<void> {
+  return apiRequest(
+    `/api/v1/voices/${encodeURIComponent(voiceId)}`,
+    DeleteStoredVoiceApiV1VoicesVoiceIdDeleteResponse,
+    { method: 'DELETE', fetcher },
+  )
 }
 
 function isVoiceLimitExceeded(error: unknown): error is ApiClientError {

@@ -1,10 +1,10 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiClientError } from '@/api/client'
 import type { DocumentDetail } from '@/api/contracts'
-import { VOICE_LIMIT_EXCEEDED } from '@/api/voices'
+import { VOICE_LIMIT_EXCEEDED, type VoiceSummary } from '@/api/voices'
 import { createLocaleRuntime, LocaleProvider } from '@/i18n/LocaleProvider'
 import { AnalysisContent, type AnalysisDraftUpdate } from './AnalysisContent'
 
@@ -14,6 +14,10 @@ vi.mock('@/api/voices', async () => {
   return {
     ...actual,
     createVoice: vi.fn(),
+    deleteVoice: vi.fn(),
+    getVoice: vi.fn(),
+    getVoiceUsages: vi.fn(),
+    listVoices: vi.fn(),
     previewVoice: vi.fn(),
   }
 })
@@ -24,7 +28,7 @@ vi.mock('./audio-decoder', async () => {
   return { ...actual, playPcm16: vi.fn().mockResolvedValue(undefined) }
 })
 
-import { createVoice, previewVoice } from '@/api/voices'
+import { createVoice, getVoice, listVoices, previewVoice } from '@/api/voices'
 import { playPcm16 } from './audio-decoder'
 
 const FOUNTAIN = [
@@ -98,12 +102,31 @@ const mockDocument: DocumentDetail = {
 function documentWithVoice(): DocumentDetail {
   return {
     ...mockDocument,
-    voice_assignments: [{ speaker: 'Alice', voice_id: 'voice-abc', voice_traits: '勇敢な少女声' }],
+    voice_assignments: [{ speaker: 'Alice', voice_id: 'voice_abc', voice_traits: '勇敢な少女声' }],
+  }
+}
+
+function availableVoice(voice_id: string): VoiceSummary {
+  return {
+    voice_id,
+    speaker_label: 'Synthetic speaker',
+    voice_traits: 'Synthetic traits',
+    language_code: 'ja-JP',
+    created_at: null,
+    created_at_source: 'unknown',
+    expire_time: null,
+    availability: 'available',
+    expiry_state: 'unknown',
+    last_checked_at: null,
+    usage_count: null,
   }
 }
 
 afterEach(() => cleanup())
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  vi.mocked(getVoice).mockImplementation(async (voiceId) => availableVoice(voiceId))
+})
 
 function renderContent(document: DocumentDetail = mockDocument, onDraftChange?: (update: AnalysisDraftUpdate) => void) {
   return render(
@@ -111,6 +134,17 @@ function renderContent(document: DocumentDetail = mockDocument, onDraftChange?: 
       <AnalysisContent document={document} onDraftChange={onDraftChange ?? (() => undefined)} titleMode="editable" />
     </LocaleProvider>,
   )
+}
+
+async function getVoiceActionMenuItem(user: ReturnType<typeof userEvent.setup>, label: string) {
+  const existingItem = screen.queryByRole('menuitem', { name: label })
+  if (existingItem) return existingItem
+  await user.click(screen.getByRole('button', { name: '話者の操作メニュー' }))
+  return screen.findByRole('menuitem', { name: label })
+}
+
+async function clickVoiceActionMenuItem(user: ReturnType<typeof userEvent.setup>, label: string) {
+  await user.click(await getVoiceActionMenuItem(user, label))
 }
 
 describe('AnalysisContent 登場人物セクション', () => {
@@ -122,9 +156,16 @@ describe('AnalysisContent 登場人物セクション', () => {
     expect(screen.queryByText(/追加したキャラクターの Emotional arc/)).not.toBeInTheDocument()
   })
 
-  it('見出しの隣に全話者の声を生成ボタンを表示する', () => {
+  it('登場人物の三点メニューに声の一覧・キャラクター追加・一括生成をまとめる', async () => {
+    const user = userEvent.setup()
     renderContent()
-    expect(screen.getByRole('button', { name: '全話者の声を生成' })).toBeInTheDocument()
+
+    expect(screen.getByRole('button', { name: '話者の操作メニュー' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '話者の操作メニュー' }))
+    expect(screen.getByRole('menuitem', { name: '作成済みの声' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'キャラクターを追加' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '全話者の声を生成' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '全話者の声を生成' })).not.toBeInTheDocument()
   })
 
   it('登場人物見出しと一括生成は右ペインの先頭に固定する', () => {
@@ -140,7 +181,7 @@ describe('AnalysisContent 登場人物セクション', () => {
     const user = userEvent.setup()
     renderContent()
 
-    await user.click(screen.getByRole('button', { name: '全話者の声を生成' }))
+    await clickVoiceActionMenuItem(user, '全話者の声を生成')
 
     expect(await screen.findByRole('status')).toHaveTextContent('ナレーターの声を生成中（1/2）')
     completeNarrator?.({ speaker: 'ナレーター', voice_id: 'voice-narrator', voice_traits: '知的な語り手' })
@@ -152,11 +193,107 @@ describe('AnalysisContent 登場人物セクション', () => {
     const user = userEvent.setup()
     renderContent(documentWithVoice())
 
-    await user.click(screen.getByRole('button', { name: '全話者の声を生成' }))
+    const generateButton = await getVoiceActionMenuItem(user, '全話者の声を生成')
+    await waitFor(() => expect(generateButton).not.toHaveAttribute('aria-disabled', 'true'))
+    await user.click(generateButton)
 
     await waitFor(() => expect(createVoice).toHaveBeenCalledTimes(1))
-    expect(createVoice).toHaveBeenCalledWith('doc-test-1', { speaker: 'ナレーター', voice_traits: '知的な語り手' })
-    expect(createVoice).not.toHaveBeenCalledWith('doc-test-1', { speaker: 'Alice', voice_traits: '勇敢な少女声' })
+    expect(createVoice).toHaveBeenCalledWith('doc-test-1', { speaker: 'ナレーター', voice_traits: '知的な語り手', display_name: 'Test Script ; ナレーター' })
+    expect(createVoice).not.toHaveBeenCalledWith('doc-test-1', { speaker: 'Alice', voice_traits: '勇敢な少女声', display_name: 'Test Script ; Alice' })
+  })
+
+  it('既存割当の状態を初期確認し、失効していれば明示操作の生成対象にする', async () => {
+    let resolveVoice: ((voice: VoiceSummary) => void) | undefined
+    vi.mocked(getVoice).mockImplementationOnce(() => new Promise((resolve) => {
+      resolveVoice = resolve
+    }))
+    vi.mocked(createVoice)
+      .mockResolvedValueOnce({ speaker: 'ナレーター', voice_id: 'voice-narrator', voice_traits: '知的な語り手' })
+      .mockResolvedValueOnce({ speaker: 'Alice', voice_id: 'voice-alice', voice_traits: '勇敢な少女声' })
+    const user = userEvent.setup()
+    renderContent(documentWithVoice())
+
+    const generateButton = await getVoiceActionMenuItem(user, '全話者の声を生成')
+    expect(generateButton).toHaveAttribute('aria-disabled', 'true')
+    expect(createVoice).not.toHaveBeenCalled()
+    resolveVoice?.({
+      ...availableVoice('voice_abc'),
+      expire_time: '2000-01-01T00:00:00+00:00',
+      expiry_state: 'expired',
+    })
+    await waitFor(() => expect(getVoice).toHaveBeenCalledWith('voice_abc'))
+    await waitFor(() => expect(generateButton).not.toHaveAttribute('aria-disabled', 'true'))
+    await user.click(generateButton)
+
+    await waitFor(() => expect(createVoice).toHaveBeenCalledTimes(2))
+    expect(createVoice).toHaveBeenCalledWith('doc-test-1', { speaker: 'Alice', voice_traits: '勇敢な少女声', display_name: 'Test Script ; Alice' })
+  })
+
+  it('既存割当を確認できないときは一括生成を止め、再確認を案内する', async () => {
+    vi.mocked(getVoice).mockRejectedValueOnce(new Error('provider unavailable'))
+    const user = userEvent.setup()
+    renderContent(documentWithVoice())
+
+    const generateButton = await getVoiceActionMenuItem(user, '全話者の声を生成')
+    await waitFor(() => expect(getVoice).toHaveBeenCalledWith('voice_abc'))
+    expect(generateButton).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText('割当済みの声を確認できませんでした。作成済みの声の一覧を開いて、状態を再確認してください。')).toBeInTheDocument()
+    expect(createVoice).not.toHaveBeenCalled()
+  })
+
+  it('所有者境界を隠す404も未確認として扱い、一括生成で置き換えない', async () => {
+    vi.mocked(getVoice).mockRejectedValueOnce(Object.assign(new Error('not found'), { code: 'VOICE_NOT_FOUND' }))
+    vi.mocked(listVoices).mockResolvedValue({ voices: [], checked_at: null, complete: true })
+    const user = userEvent.setup()
+    renderContent(documentWithVoice())
+
+    const generateButton = await getVoiceActionMenuItem(user, '全話者の声を生成')
+    await waitFor(() => expect(getVoice).toHaveBeenCalledWith('voice_abc'))
+    expect(generateButton).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText('割当済みの声を確認できませんでした。作成済みの声の一覧を開いて、状態を再確認してください。')).toBeInTheDocument()
+    expect(createVoice).not.toHaveBeenCalled()
+
+    await clickVoiceActionMenuItem(user, '作成済みの声')
+    expect(await screen.findByRole('heading', { name: '作成済みの声' })).toBeInTheDocument()
+    expect(screen.getByText('割当済みの声を確認できませんでした。作成済みの声の一覧を開いて、状態を再確認してください。')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '閉じる' }))
+    expect(await getVoiceActionMenuItem(user, '全話者の声を生成')).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('新しい Get 結果を古い一覧応答で利用可能へ戻さない', async () => {
+    let resolveGet: ((voice: VoiceSummary) => void) | undefined
+    let resolveList: ((result: Awaited<ReturnType<typeof listVoices>>) => void) | undefined
+    vi.mocked(getVoice).mockImplementationOnce(() => new Promise((resolve) => { resolveGet = resolve }))
+    vi.mocked(listVoices).mockImplementationOnce(() => new Promise((resolve) => { resolveList = resolve }))
+    vi.mocked(createVoice)
+      .mockResolvedValueOnce({ speaker: 'ナレーター', voice_id: 'voice-narrator', voice_traits: '知的な語り手' })
+      .mockResolvedValueOnce({ speaker: 'Alice', voice_id: 'voice-alice', voice_traits: '勇敢な少女声' })
+    const user = userEvent.setup()
+    renderContent(documentWithVoice())
+
+    await getVoiceActionMenuItem(user, '全話者の声を生成')
+    await clickVoiceActionMenuItem(user, '作成済みの声')
+    await waitFor(() => expect(listVoices).toHaveBeenCalledTimes(1))
+    resolveGet?.({
+      ...availableVoice('voice_abc'),
+      availability: 'missing',
+      expiry_state: 'unknown',
+      last_checked_at: '2026-10-15T10:00:02+00:00',
+    })
+    await user.click(screen.getByRole('button', { name: '閉じる' }))
+    const generateButton = await getVoiceActionMenuItem(user, '全話者の声を生成')
+    await waitFor(() => expect(generateButton).not.toHaveAttribute('aria-disabled', 'true'))
+    await act(async () => {
+      resolveList?.({
+        voices: [{ ...availableVoice('voice_abc'), last_checked_at: '2026-10-15T10:00:01+00:00' }],
+        checked_at: '2026-10-15T10:00:01+00:00',
+        complete: true,
+      })
+    })
+
+    await user.click(generateButton)
+    await waitFor(() => expect(createVoice).toHaveBeenCalledTimes(2))
+    expect(createVoice).toHaveBeenCalledWith('doc-test-1', { speaker: 'Alice', voice_traits: '勇敢な少女声', display_name: 'Test Script ; Alice' })
   })
 
   it('脚本で発話しない分析上の人物は一括生成と再生前チェックの対象にしない', async () => {
@@ -175,10 +312,10 @@ describe('AnalysisContent 登場人物セクション', () => {
       },
     })
 
-    await user.click(screen.getByRole('button', { name: '全話者の声を生成' }))
+    await clickVoiceActionMenuItem(user, '全話者の声を生成')
 
     await waitFor(() => expect(createVoice).toHaveBeenCalledTimes(2))
-    expect(createVoice).not.toHaveBeenCalledWith('doc-test-1', { speaker: '言及だけの人物', voice_traits: '静かな声' })
+    expect(createVoice).not.toHaveBeenCalledWith('doc-test-1', { speaker: '言及だけの人物', voice_traits: '静かな声', display_name: 'Test Script ; 言及だけの人物' })
   })
 
   it('キャラクター詳細を展開すると voice_traits の行を表示する', async () => {
@@ -237,7 +374,7 @@ describe('AnalysisContent 登場人物セクション', () => {
     }
     renderContent(document, onDraftChange)
 
-    await user.click(screen.getByRole('button', { name: 'キャラクターを追加' }))
+    await clickVoiceActionMenuItem(user, 'キャラクターを追加')
     await user.type(screen.getByRole('textbox', { name: 'キャラクター名' }), 'New Character')
     await user.click(screen.getByRole('button', { name: '追加' }))
 
@@ -264,7 +401,7 @@ describe('AnalysisContent 登場人物セクション', () => {
     }
     renderContent(document, onDraftChange)
 
-    await user.click(screen.getByRole('button', { name: 'キャラクターを追加' }))
+    await clickVoiceActionMenuItem(user, 'キャラクターを追加')
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '追加' }))
     expect(screen.getByRole('alert')).toBeInTheDocument()
     await user.type(screen.getByRole('textbox', { name: 'キャラクター名' }), 'Bob')
@@ -376,7 +513,7 @@ describe('AnalysisContent 編集ダイアログの声コントロール', () => 
 
     await user.click(playButton)
 
-    await waitFor(() => expect(previewVoice).toHaveBeenCalledWith('doc-test-1', { voice_id: 'voice-abc', text: 'I will save this town.' }))
+    await waitFor(() => expect(previewVoice).toHaveBeenCalledWith('doc-test-1', { voice_id: 'voice_abc', text: 'I will save this town.' }))
     await waitFor(() => expect(playPcm16).toHaveBeenCalled())
   })
 
@@ -389,7 +526,7 @@ describe('AnalysisContent 編集ダイアログの声コントロール', () => 
     await user.type(checkText, 'Custom line.')
     await user.click(within(dialog).getByRole('button', { name: 'Alice 再生' }))
 
-    await waitFor(() => expect(previewVoice).toHaveBeenCalledWith('doc-test-1', { voice_id: 'voice-abc', text: 'Custom line.' }))
+    await waitFor(() => expect(previewVoice).toHaveBeenCalledWith('doc-test-1', { voice_id: 'voice_abc', text: 'Custom line.' }))
   })
 
   it('生成ボタンで createVoice を呼び、割当を下書きへ反映する', async () => {
@@ -403,7 +540,7 @@ describe('AnalysisContent 編集ダイアログの声コントロール', () => 
 
     await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
 
-    await waitFor(() => expect(createVoice).toHaveBeenCalledWith('doc-test-1', { speaker: 'Alice', voice_traits: '勇敢な少女声' }))
+    await waitFor(() => expect(createVoice).toHaveBeenCalledWith('doc-test-1', { speaker: 'Alice', voice_traits: '勇敢な少女声', display_name: 'Test Script ; Alice' }))
     await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith({ voice_assignments: [{ speaker: 'Alice', voice_id: 'voice-new', voice_traits: '勇敢な少女声' }] }))
   })
 
@@ -427,7 +564,7 @@ describe('AnalysisContent 編集ダイアログの声コントロール', () => 
     const user = userEvent.setup()
     renderContent(mockDocument, onDraftChange)
 
-    await user.click(screen.getByRole('button', { name: '全話者の声を生成' }))
+    await clickVoiceActionMenuItem(user, '全話者の声を生成')
 
     await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith({
       voice_assignments: [{ speaker: 'ナレーター', voice_id: 'voice-narrator', voice_traits: '知的な語り手' }],
@@ -442,13 +579,51 @@ describe('AnalysisContent 声の上限エラー', () => {
     const user = userEvent.setup()
     renderContent()
 
-    await user.click(screen.getByRole('button', { name: '全話者の声を生成' }))
+    await clickVoiceActionMenuItem(user, '全話者の声を生成')
 
     await waitFor(() =>
       expect(
         screen.getByText('作成できる声の上限に達しました。不要な古い声を削除してください。'),
       ).toBeInTheDocument(),
     )
+
+    vi.mocked(listVoices).mockResolvedValue({ voices: [], checked_at: null, complete: true })
+    await user.click(screen.getByRole('button', { name: '声の一覧を開く' }))
+    expect(await screen.findByRole('heading', { name: '作成済みの声' })).toBeInTheDocument()
+  })
+
+  it('別ドキュメントの作成済みの声を話者へ割り当て、Create を呼ばない', async () => {
+    const voice = {
+      voice_id: 'voice-shared',
+      speaker_label: 'Shared speaker',
+      voice_traits: '暖かく落ち着いた声',
+      language_code: 'ja-JP',
+      created_at: null,
+      created_at_source: 'unknown' as const,
+      expire_time: null,
+      availability: 'available' as const,
+      expiry_state: 'unknown' as const,
+      last_checked_at: null,
+      usage_count: 1,
+    }
+    vi.mocked(listVoices).mockResolvedValue({ voices: [voice], checked_at: null, complete: true })
+    vi.mocked(getVoice).mockResolvedValue(voice)
+    const onDraftChange = vi.fn()
+    const user = userEvent.setup()
+    renderContent(mockDocument, onDraftChange)
+
+    await user.click(screen.getByLabelText('Aliceを開く'))
+    await user.click(screen.getByLabelText('Aliceを編集'))
+    const editor = screen.getByRole('dialog')
+    await user.click(within(editor).getByRole('button', { name: '割り当てる' }))
+    const library = await screen.findByRole('dialog', { name: '作成済みの声' })
+    await user.click(within(library).getByRole('button', { name: '割り当てる' }))
+
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith({
+      voice_assignments: [{ speaker: 'Alice', voice_id: 'voice-shared', voice_traits: '暖かく落ち着いた声' }],
+    }))
+    expect(getVoice).toHaveBeenCalledWith('voice-shared')
+    expect(createVoice).not.toHaveBeenCalled()
   })
 
   it('通常の声作成失敗では安全な再試行メッセージを表示する', async () => {
@@ -456,7 +631,7 @@ describe('AnalysisContent 声の上限エラー', () => {
     const user = userEvent.setup()
     renderContent()
 
-    await user.click(screen.getByRole('button', { name: '全話者の声を生成' }))
+    await clickVoiceActionMenuItem(user, '全話者の声を生成')
 
     expect(await screen.findByText('声を作成できませんでした。声の特徴とGemini APIの設定を確認して、再試行してください。')).toBeInTheDocument()
   })

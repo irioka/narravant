@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { ApiClientError } from './client'
-import { createVoice, previewVoice, VOICE_LIMIT_EXCEEDED } from './voices'
+import { createVoice, deleteVoice, getVoice, getVoiceUsages, listVoices, previewVoice, VOICE_LIMIT_EXCEEDED } from './voices'
 
 describe('createVoice', () => {
   it('作成済みの voice_id を返す', async () => {
@@ -28,6 +28,21 @@ describe('createVoice', () => {
     expect(fetcher).toHaveBeenCalledWith('/api/v1/voices', expect.objectContaining({ method: 'POST' }))
   })
 
+  it('レジストリ同期だけが失敗した場合は作成成功と保留状態を返す', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ speaker: 'Alice', voice_id: 'voice-a', voice_traits: '勇敢' }), {
+        status: 200,
+        headers: { 'X-Voice-Registry-Sync': 'pending' },
+      }),
+    )
+
+    await expect(createVoice('doc-1', { speaker: 'Alice', voice_traits: '勇敢' }, fetcher)).resolves.toMatchObject({
+      voice_id: 'voice-a',
+      registry_sync_pending: true,
+    })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
   it('声の上限エラー(409)を VOICE_LIMIT_EXCEEDED コードにマップする', async () => {
     const fetcher = vi.fn().mockResolvedValue(
       new Response(
@@ -50,6 +65,43 @@ describe('createVoice', () => {
     await expect(createVoice('doc-1', { speaker: 'Alice', voice_traits: '勇敢' }, fetcher)).rejects.toMatchObject({
       code: 'INTERNAL_ERROR',
     })
+  })
+})
+
+describe('voice library API', () => {
+  const voice = {
+    voice_id: 'voice-a',
+    speaker_label: 'Alice',
+    voice_traits: 'warm',
+    language_code: 'ja-JP',
+    created_at: null,
+    created_at_source: 'unknown',
+    expire_time: null,
+    availability: 'available',
+    expiry_state: 'unknown',
+    last_checked_at: null,
+    usage_count: 1,
+  }
+
+  it('一覧・詳細・利用先を取得し、Delete は一度だけ送る', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ voices: [voice], checked_at: null, complete: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(voice), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ usages: [{ document_id: 'doc-a', title: 'Story', speaker: 'Alice' }], complete: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    await expect(listVoices(fetcher)).resolves.toMatchObject({ voices: [{ voice_id: 'voice-a' }], complete: true })
+    await expect(getVoice('voice-a', fetcher)).resolves.toMatchObject({ availability: 'available' })
+    await expect(getVoiceUsages('voice-a', fetcher)).resolves.toMatchObject({ usages: [{ document_id: 'doc-a' }], complete: true })
+    await expect(deleteVoice('voice-a', fetcher)).resolves.toBeUndefined()
+
+    expect(fetcher.mock.calls.map(([path, init]) => [path, init?.method ?? 'GET'])).toEqual([
+      ['/api/v1/voices', 'GET'],
+      ['/api/v1/voices/voice-a', 'GET'],
+      ['/api/v1/voices/voice-a/usages', 'GET'],
+      ['/api/v1/voices/voice-a', 'DELETE'],
+    ])
+    expect(fetcher).toHaveBeenCalledTimes(4)
   })
 })
 

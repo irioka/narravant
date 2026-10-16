@@ -13,6 +13,7 @@ from narravant.db.database import (
     DocumentRepository,
     TaskRepository,
 )
+from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.services.ingestion import ImportDraftStore
 from narravant.services.narrative_adaptation import (
     NarrativeAdaptationConfig,
@@ -20,11 +21,12 @@ from narravant.services.narrative_adaptation import (
 )
 from narravant.services.tasks import TaskManager
 from narravant.services.vertex_analysis import VertexDocumentAnalyzer
+from narravant.services.voice_design import VoiceDesignClient, create_voice_design_client
+from narravant.services.voice_management import VoiceManagementService
 from narravant.storage.gcs import ScriptStorageClient
 
 if TYPE_CHECKING:
     from narravant.services.tts import TtsClient
-    from narravant.services.voice_design import VoiceDesignClient
 
 LOCAL_USER_ID = "local-user"
 LOCAL_USER_EMAIL = "local@narravant.local"
@@ -60,6 +62,12 @@ def get_document_repo(
     db: Annotated[DatabaseManager, Depends(get_db_manager)],
 ) -> DocumentRepository:
     return DocumentRepository(db)
+
+
+def get_voice_registry_repo(
+    db: Annotated[DatabaseManager, Depends(get_db_manager)],
+) -> VoiceRegistryRepository:
+    return VoiceRegistryRepository(db)
 
 
 def get_task_repo(
@@ -128,9 +136,29 @@ def get_voice_design_client(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> VoiceDesignClient:
     """Provide the VoiceDesignClient instance."""
-    from narravant.services.voice_design import create_voice_design_client
-
     return create_voice_design_client(settings)
+
+
+def get_voice_management_service(
+    request: Request,
+    provider: Annotated[VoiceDesignClient, Depends(get_voice_design_client)],
+    registry: Annotated[VoiceRegistryRepository, Depends(get_voice_registry_repo)],
+    documents: Annotated[DocumentRepository, Depends(get_document_repo)],
+    storage: Annotated[ScriptStorageClient, Depends(get_storage_client)],
+) -> VoiceManagementService:
+    """Provide management orchestration with app-scoped owner locks."""
+    owner_locks = getattr(request.app.state, "voice_management_owner_locks", None)
+    if owner_locks is None:
+        owner_locks = {}
+        request.app.state.voice_management_owner_locks = owner_locks
+    return VoiceManagementService(
+        provider,
+        registry,
+        documents,
+        storage,
+        local_owner_id=LOCAL_USER_ID,
+        owner_locks=owner_locks,
+    )
 
 
 def get_tts_client(

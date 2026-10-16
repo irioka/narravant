@@ -3,6 +3,11 @@ import { isNarratorSpeaker, narratorSpeakerName, spokenCharacterNames } from './
 
 export type VoiceAssignment = NonNullable<DocumentDetail['voice_assignments']>[number]
 
+/** Normalize the legacy Gemini resource-name form for library status lookups. */
+export function voiceLibraryKey(voiceId: string): string {
+  return voiceId.startsWith('voices/voice_') ? voiceId.slice('voices/'.length) : voiceId
+}
+
 /**
  * Fallback narrator speaker name for Japanese scripts.
  * Prefer `narratorSpeakerName(document.source_fountain)` when the Fountain

@@ -18,6 +18,7 @@ from narravant.api.dependencies import (
 )
 from narravant.api.schemas import VoiceAssignmentSchema
 from narravant.db.database import DocumentRepository
+from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.services.playback import (
     PlaybackPlanError,
     build_playback_plan,
@@ -27,6 +28,8 @@ from narravant.services.tts import (
     TtsPlaybackCoordinator,
     create_tts_client,
 )
+from narravant.services.voice_design import VoiceDesignClient, create_voice_design_client
+from narravant.services.voice_management import VoiceManagementError, VoiceManagementService
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,28 @@ def _build_tts_client(settings):
     (WebSocket routes cannot use FastAPI dependency overrides for this).
     """
     return create_tts_client(settings)
+
+
+def _build_voice_design_client(settings) -> VoiceDesignClient:
+    """Construct provider access for pre-playback custom voice verification."""
+    return create_voice_design_client(settings)
+
+
+def _build_voice_management_service(websocket: WebSocket, settings) -> VoiceManagementService:
+    """Create a WebSocket-scoped service sharing app-level owner locks."""
+    app_state = websocket.app.state
+    owner_locks = getattr(app_state, "voice_management_owner_locks", None)
+    if owner_locks is None:
+        owner_locks = {}
+        app_state.voice_management_owner_locks = owner_locks
+    return VoiceManagementService(
+        provider=_build_voice_design_client(settings),
+        registry=VoiceRegistryRepository(app_state.db_manager),
+        documents=DocumentRepository(app_state.db_manager),
+        storage=app_state.storage_client,
+        local_owner_id=LOCAL_USER_ID,
+        owner_locks=owner_locks,
+    )
 
 
 @router.websocket("/playback")
@@ -134,6 +159,15 @@ async def document_playback_websocket(
                 start_scene=start_scene,
                 start_utterance_index=start_utterance_index,
             )
+
+            planned_voice_ids = [utterance.voice_id for utterance in plan.utterances]
+            if any(voice_id.startswith(("voice_", "voices/")) for voice_id in planned_voice_ids):
+                voice_service = _build_voice_management_service(websocket, settings)
+                await voice_service.validate_voice_ids(
+                    LOCAL_USER_ID,
+                    planned_voice_ids,
+                    allow_current_assignment=draft is None,
+                )
 
             coordinator = TtsPlaybackCoordinator(
                 tts_client=tts_client,
@@ -220,6 +254,16 @@ async def document_playback_websocket(
                     "scene_number": plan_err.scene_number,
                     "utterance_index": plan_err.utterance_index,
                     "message": plan_err.message,
+                }
+            )
+        except VoiceManagementError as voice_err:
+            await websocket.send_json(
+                {
+                    "event": "error",
+                    "code": voice_err.code,
+                    "scene_number": None,
+                    "utterance_index": None,
+                    "message": voice_err.message,
                 }
             )
         except asyncio.CancelledError:
