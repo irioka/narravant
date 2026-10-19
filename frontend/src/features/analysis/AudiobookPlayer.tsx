@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { localizeUiError, type KnownErrorCode } from '@/i18n/errors'
 import { base64ToUint8Array, pcm16ToAudioBuffer } from './audio-decoder'
-import type { PlaybackStartPosition } from './fountain-scenes'
+import { playbackSourceAtPosition, type PlaybackStartPosition } from './fountain-scenes'
 
 export type PlaybackStatus = 'idle' | 'generating' | 'playing' | 'stopped' | 'error' | 'completed'
 
@@ -17,7 +17,7 @@ export interface AudiobookPlayerProps {
   isPlaying: boolean
   onPlayingChange: (playing: boolean) => void
   disabled?: boolean
-  /** Import直後の下書きは、本文と声の割り当てを保存せず再生する。 */
+  /** 保存せずに再生する本文・声割当。文途中からの再開にも使う。 */
   draft?: Pick<DocumentDetail, 'source_fountain' | 'voice_assignments'>
   /** Optional guard run before playback starts; return false to block playback. */
   onBeforePlay?: () => boolean
@@ -35,6 +35,7 @@ interface QueuedAudio {
   sceneNumber: number
   utteranceIndex?: number
   speaker?: string
+  sourceOffset?: number
   buffer: AudioBuffer
 }
 
@@ -62,7 +63,8 @@ export function AudiobookPlayer({
 
   const wsRef = useRef<WebSocket | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
-  const activeSourceRef = useRef<AudioBufferSourceNode | null>(null)
+  const scheduledSourcesRef = useRef(new Map<AudioBufferSourceNode, { highlightTimer?: ReturnType<typeof setTimeout> }>())
+  const scheduledEndRef = useRef(0)
   const audioQueueRef = useRef<QueuedAudio[]>([])
   const isPlayingQueueRef = useRef<boolean>(false)
   const streamCompleteRef = useRef(false)
@@ -137,14 +139,18 @@ export function AudiobookPlayer({
   }, [])
 
   const stopAudio = useCallback(() => {
-    if (activeSourceRef.current) {
+    for (const [source, scheduled] of scheduledSourcesRef.current) {
+      if (scheduled.highlightTimer !== undefined) clearTimeout(scheduled.highlightTimer)
+      source.onended = null
       try {
-        activeSourceRef.current.stop()
+        source.stop()
       } catch {
-        // already stopped
+        // 終了済みsourceは停止不要。
       }
-      activeSourceRef.current = null
+      source.disconnect()
     }
+    scheduledSourcesRef.current.clear()
+    scheduledEndRef.current = 0
     audioQueueRef.current = []
     isPlayingQueueRef.current = false
     streamCompleteRef.current = false
@@ -164,18 +170,6 @@ export function AudiobookPlayer({
       isPlayingQueueRef.current = true
       setStatus('playing')
 
-      if (item.kind === 'speech' && item.utteranceIndex !== undefined) {
-        setCurrentSpeaker(item.speaker)
-        setCurrentSceneNumber(item.sceneNumber)
-        setCurrentUtteranceIndex(item.utteranceIndex)
-        onPlaybackPositionChange?.({ sceneNumber: item.sceneNumber, utteranceIndex: item.utteranceIndex })
-      } else {
-        setCurrentSpeaker(undefined)
-        setCurrentSceneNumber(undefined)
-        setCurrentUtteranceIndex(undefined)
-        onPlaybackPositionChange?.(undefined)
-      }
-
       const ctx = getAudioContext()
       if (!ctx) {
         // In non-audio environment (e.g. tests), advance to next item
@@ -186,18 +180,57 @@ export function AudiobookPlayer({
         const source = ctx.createBufferSource()
         source.buffer = item.buffer
         source.connect(ctx.destination)
+        // onendedはメインスレッドで遅延するため、音声の接続時刻には使わない。
+        const startAt = Math.max(ctx.currentTime, scheduledEndRef.current)
         source.onended = () => {
-          activeSourceRef.current = null
+          const scheduled = scheduledSourcesRef.current.get(source)
+          if (!scheduled) return
+          if (scheduled.highlightTimer !== undefined) clearTimeout(scheduled.highlightTimer)
+          scheduledSourcesRef.current.delete(source)
+          source.disconnect()
           playNextRef.current()
         }
-        activeSourceRef.current = source
-        source.start(0)
-        return
+        source.start(startAt)
+        scheduledEndRef.current = startAt + item.buffer.length / item.buffer.sampleRate
+        const scheduled: { highlightTimer?: ReturnType<typeof setTimeout> } = {}
+        scheduledSourcesRef.current.set(source, scheduled)
+
+        const showPosition = () => {
+          if (!scheduledSourcesRef.current.has(source)) return
+          // timerの発火時刻ではなく音声時計で確認し、出力停止中に先走らない。
+          const remainingMs = (startAt - ctx.currentTime) * 1000
+          if (remainingMs > 0) {
+            scheduled.highlightTimer = setTimeout(showPosition, Math.max(1, remainingMs))
+            return
+          }
+          if (item.kind === 'speech' && item.utteranceIndex !== undefined) {
+            setCurrentSpeaker(item.speaker)
+            setCurrentSceneNumber(item.sceneNumber)
+            setCurrentUtteranceIndex(item.utteranceIndex)
+            onPlaybackPositionChange?.({
+              sceneNumber: item.sceneNumber, utteranceIndex: item.utteranceIndex,
+              ...(item.sourceOffset === undefined ? {} : { sourceOffset: item.sourceOffset }),
+            })
+          } else {
+            setCurrentSpeaker(undefined)
+            setCurrentSceneNumber(undefined)
+            setCurrentUtteranceIndex(undefined)
+            onPlaybackPositionChange?.(undefined)
+          }
+        }
+        // 先行予約した次発話のハイライトを、受信時に進めない。
+        const delayMs = (startAt - ctx.currentTime) * 1000
+        if (delayMs > 0) {
+          scheduled.highlightTimer = setTimeout(showPosition, delayMs)
+        } else {
+          showPosition()
+        }
       } catch {
         continue
       }
     }
-    isPlayingQueueRef.current = false
+    isPlayingQueueRef.current = scheduledSourcesRef.current.size > 0
+    if (isPlayingQueueRef.current) return
     if (streamCompleteRef.current && audioQueueRef.current.length === 0) {
       streamCompleteRef.current = false
       setStatus('completed')
@@ -213,7 +246,7 @@ export function AudiobookPlayer({
     playNextRef.current = playNextInQueue
   }, [playNextInQueue])
 
-  const startPlayback = useCallback((sceneNumber: number, utteranceIndex = 0) => {
+  const startPlayback = useCallback((sceneNumber: number, utteranceIndex = 0, sourceOffset?: number) => {
     stopAudio()
     // ボタン操作中に出力を起動する。音声の到着まで待つと再生制限に掛かる場合がある。
     getAudioContext()
@@ -222,29 +255,45 @@ export function AudiobookPlayer({
     setStatus('generating')
     onPlayingChange(true)
 
+    const playbackPosition = sourceOffset === undefined
+      ? { sceneNumber, utteranceIndex }
+      : { sceneNumber, utteranceIndex, sourceOffset }
+    const playbackDraft = draft && sourceOffset !== undefined
+      ? { ...draft, source_fountain: playbackSourceAtPosition(draft.source_fountain, playbackPosition) }
+      : draft
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const path = draft ? '/api/v1/documents/playback' : `/api/v1/documents/${documentId}/playback`
+    const path = playbackDraft ? '/api/v1/documents/playback' : `/api/v1/documents/${documentId}/playback`
     const wsUrl = `${protocol}//${window.location.host}${path}`
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
     const enqueueCurrentAudioSegment = () => {
       const chunks = currentChunksRef.current
-      currentChunksRef.current = []
       const context = getAudioContext()
       const meta = currentUtteranceMetaRef.current
-      if (chunks.length === 0 || !context || !meta) return
+      const byteLength = chunks.reduce((total, chunk) => total + chunk.byteLength, 0)
+      if (byteLength < 2 || !context || !meta) return
 
+      // PCM16のサンプル境界を保ち、分割された末尾1byteだけ次のchunkへ渡す。
+      const bytes = new Uint8Array(byteLength)
+      let offset = 0
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset)
+        offset += chunk.byteLength
+      }
+      const playableLength = byteLength - byteLength % 2
+      currentChunksRef.current = playableLength < byteLength ? [bytes.slice(playableLength)] : []
       audioQueueRef.current.push({
         kind: 'speech',
         sceneNumber: meta.sceneNumber,
         utteranceIndex: meta.utteranceIndex,
         speaker: meta.speaker,
-        buffer: pcm16ToAudioBuffer(chunks, context, 24000),
+        // 切り詰めた最初の発話だけ、元原稿での再開位置を表示へ引き継ぐ。
+        sourceOffset: playbackDraft && meta.sceneNumber === sceneNumber && meta.utteranceIndex === utteranceIndex
+          ? sourceOffset : undefined,
+        buffer: pcm16ToAudioBuffer([bytes.subarray(0, playableLength)], context, 24000),
       })
-      if (!isPlayingQueueRef.current) {
-        playNextInQueue()
-      }
+      playNextInQueue()
     }
 
     ws.onopen = () => {
@@ -253,7 +302,7 @@ export function AudiobookPlayer({
         action: 'start',
         scene_number: sceneNumber,
         start_utterance_index: utteranceIndex,
-        ...(draft ? { draft } : {}),
+        ...(playbackDraft ? { draft: playbackDraft } : {}),
       }))
     }
 
@@ -281,13 +330,12 @@ export function AudiobookPlayer({
               sceneNumber: Number(msg.scene_number),
               buffer: ctx.createBuffer(1, frameCount, ctx.sampleRate),
             })
-            if (!isPlayingQueueRef.current) {
-              playNextInQueue()
-            }
+            playNextInQueue()
           }
         } else if (ev === 'audio_chunk') {
           if (msg.data) {
             currentChunksRef.current.push(base64ToUint8Array(msg.data))
+            enqueueCurrentAudioSegment()
           }
         } else if (ev === 'audio_segment_end') {
           enqueueCurrentAudioSegment()
@@ -374,7 +422,7 @@ export function AudiobookPlayer({
   const handlePlayClick = useCallback(() => {
     if (onBeforePlay && !onBeforePlay()) return
     const start = playbackStart ?? { sceneNumber: defaultSceneNumber, utteranceIndex: 0 }
-    startPlayback(start.sceneNumber, start.utteranceIndex)
+    startPlayback(start.sceneNumber, start.utteranceIndex, start.sourceOffset)
   }, [defaultSceneNumber, onBeforePlay, playbackStart, startPlayback])
 
   const retryPlayback = useCallback(() => {
@@ -382,7 +430,7 @@ export function AudiobookPlayer({
       startPlayback(failedPosition.scene, failedPosition.utterance)
     } else {
       const start = playbackStart ?? { sceneNumber: defaultSceneNumber, utteranceIndex: 0 }
-      startPlayback(start.sceneNumber, start.utteranceIndex)
+      startPlayback(start.sceneNumber, start.utteranceIndex, start.sourceOffset)
     }
   }, [defaultSceneNumber, failedPosition, playbackStart, startPlayback])
 

@@ -12,6 +12,8 @@ from narravant.core.fountain import (
     UtteranceItem,
     normalize_speaker_name,
 )
+from narravant.core.speech_notation import SpeechNotation, parse_speech_notation
+from narravant.services.speech_segments import SegmentVoice
 
 
 class PlaybackPlanError(Exception):
@@ -44,6 +46,8 @@ class PlannedUtterance:
     text: str
     voice_id: str
     performance_direction: str = ""  # Fountain parenthetical, sent to TTS as guidance
+    notation: SpeechNotation | None = None
+    listener_voice: SegmentVoice | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,26 @@ def build_playback_plan(
                 utterance_index=u.utterance_index,
             )
 
+        notation = u.speech_notation or parse_speech_notation(u.text, u.listener)
+        listener_voice = None
+        if notation.listener and any(token.kind == "reaction" for token in notation.tokens):
+            listener_speaker = notation.listener
+            listener_voice_id = voice_map.get(listener_speaker) or normalized_voice_map.get(
+                normalize_speaker_name(listener_speaker)
+            )
+            if not listener_voice_id:
+                raise PlaybackPlanError(
+                    code="UNASSIGNED_VOICE",
+                    message=(
+                        f"Listener '{listener_speaker}' is not assigned a voice "
+                        f"in scene {u.scene_number}"
+                    ),
+                    speaker=listener_speaker,
+                    scene_number=u.scene_number,
+                    utterance_index=u.utterance_index,
+                )
+            listener_voice = SegmentVoice(listener_speaker, listener_voice_id)
+
         all_planned.append(
             PlannedUtterance(
                 scene_number=u.scene_number,
@@ -136,6 +160,8 @@ def build_playback_plan(
                 text=u.text,
                 voice_id=voice_id,
                 performance_direction=getattr(u, "performance_direction", "") or "",
+                notation=notation,
+                listener_voice=listener_voice,
             )
         )
 

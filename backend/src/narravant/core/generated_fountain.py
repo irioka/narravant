@@ -9,7 +9,12 @@ from narravant.core.fountain import (
     NARRATOR_SPEAKERS,
     FountainParser,
     is_parenthetical_line,
+    normalize_speaker_name,
     sanitize_fountain_text,
+)
+from narravant.core.speech_notation import (
+    SpeechNotationError,
+    validate_generated_speech_notation,
 )
 
 if TYPE_CHECKING:
@@ -17,13 +22,21 @@ if TYPE_CHECKING:
 
 
 class GeneratedFountainCueError(ValueError):
-    """Raised when generated Fountain contains invalid speaker cues."""
+    """Raised when generated Fountain contains invalid speaker cues or notation."""
 
-    def __init__(self, reason: str, *, line_number: int | None = None, scene_number: int | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        line_number: int | None = None,
+        scene_number: int | None = None,
+        offset: int | None = None,
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.line_number = line_number
         self.scene_number = scene_number
+        self.offset = offset
 
 
 _SENTENCE_IN_CUE_REGEX = re.compile(
@@ -46,11 +59,7 @@ def validate_generated_fountain_cues(
     sanitized = sanitize_fountain_text(fountain)
     lines = sanitized.splitlines()
 
-    known_normalized = {
-        _ASCII_EXTENSION_REGEX.sub("", name).strip()
-        for name in known_source_speakers
-        if name
-    }
+    known_normalized = {normalize_speaker_name(name) for name in known_source_speakers if name}
     known_exact = {name.strip() for name in known_source_speakers if name}
 
     in_title_page = True
@@ -116,6 +125,9 @@ def validate_generated_fountain_cues(
             pending_cue_has_speech = True
             continue
 
+        if stripped.startswith("[["):
+            continue
+
         if stripped.startswith("@"):
             if not pending_cue_has_speech:
                 raise GeneratedFountainCueError(
@@ -154,3 +166,70 @@ def validate_generated_fountain_cues(
         raise GeneratedFountainCueError(
             "cue_without_speech", line_number=pending_cue_line, scene_number=pending_cue_scene
         )
+
+    try:
+        parsed = FountainParser.parse(sanitized)
+    except SpeechNotationError as exc:
+        raise GeneratedFountainCueError(
+            exc.reason,
+            line_number=exc.line_number,
+            scene_number=exc.scene_number,
+            offset=exc.offset,
+        ) from exc
+
+    for utterance in parsed.all_utterances():
+        try:
+            validate_generated_speech_notation(utterance.text, utterance.listener)
+        except SpeechNotationError as exc:
+            raise GeneratedFountainCueError(
+                exc.reason,
+                line_number=utterance.source_line,
+                scene_number=utterance.scene_number,
+                offset=exc.offset,
+            ) from exc
+        if strict_speaker_names and utterance.listener is not None:
+            normalized_listener = normalize_speaker_name(utterance.listener)
+            if normalized_listener not in known_normalized and utterance.listener not in known_exact:
+                raise GeneratedFountainCueError(
+                    "unknown_listener",
+                    line_number=utterance.source_line,
+                    scene_number=utterance.scene_number,
+                )
+
+
+def combined_speaker_passages(
+    fountain: str, known_source_speakers: Sequence[str] = (),
+) -> tuple[tuple[int, int], ...]:
+    """複合話者の疑いがある生成cueの発話範囲を返す。話者の割当は推測しない。"""
+    names = {normalize_speaker_name(name) for name in known_source_speakers if name}
+    lines = fountain.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    spans = []
+    for index, line in enumerate(lines):
+        if not line.strip().startswith("@"):
+            continue
+        name = _ASCII_EXTENSION_REGEX.sub("", line.strip()[1:]).strip()
+        english_pair = bool(re.search(r"\s+and\s+|\s*&\s*", name, re.IGNORECASE))
+        japanese_pair = any(
+            left and right and (
+                left in names or right in names
+                or (re.search(r"[一-龯ァ-ヶ]", left) and re.search(r"[一-龯ァ-ヶ]", right))
+            )
+            for left, separator, right in [name.partition("と")]
+            if separator
+        )
+        if not english_pair and not japanese_pair:
+            continue
+        end = index + 1
+        while end < len(lines):
+            candidate = lines[end].strip()
+            if not candidate or candidate.startswith("@") or FountainParser.parse_scene_heading(candidate)[0]:
+                break
+            end += 1
+        end_offset = offsets[end]
+        while end_offset > offsets[index] and fountain[end_offset - 1] in "\r\n":
+            end_offset -= 1
+        spans.append((offsets[index], end_offset))
+    return tuple(spans)

@@ -350,3 +350,50 @@ EXT. 深い山奥 - 昼 #1#
     character_utterance = next(item for item in plan.utterances if item.target_type == "character")
     assert character_utterance.speaker == "奥の声（山猫たち）"
     assert character_utterance.voice_id == "voices/fake-okunokoe"
+
+
+def test_build_playback_plan_resolves_listener_voice_before_tts() -> None:
+    source_fountain = """INT. ROOM - DAY #1#
+
+@旅人
+[[listener:案内人]]
+わかる？ |うん|
+"""
+    plan = build_playback_plan(
+        {
+            "source_fountain": source_fountain,
+            "voice_assignments": [
+                {"speaker": "ナレーター", "voice_id": "voice_test_narrator"},
+                {"speaker": "旅人", "voice_id": "voice_test_primary"},
+                {"speaker": "案内人", "voice_id": "voice_test_listener"},
+            ],
+        }
+    )
+
+    reaction_utterance = next(item for item in plan.utterances if item.speaker == "旅人")
+    assert reaction_utterance.notation.listener == "案内人"
+    assert reaction_utterance.listener_voice.speaker == "案内人"
+    assert reaction_utterance.listener_voice.voice_id == "voice_test_listener"
+
+
+def test_build_playback_plan_rejects_unassigned_listener_voice_before_tts() -> None:
+    source_fountain = """INT. ROOM - DAY #1#
+
+@旅人
+[[listener:案内人]]
+わかる？ |うん|
+"""
+
+    with pytest.raises(PlaybackPlanError) as exc_info:
+        build_playback_plan(
+            {
+                "source_fountain": source_fountain,
+                "voice_assignments": [
+                    {"speaker": "ナレーター", "voice_id": "voice_test_narrator"},
+                    {"speaker": "旅人", "voice_id": "voice_test_primary"},
+                ],
+            }
+        )
+
+    assert exc_info.value.code == "UNASSIGNED_VOICE"
+    assert exc_info.value.speaker == "案内人"

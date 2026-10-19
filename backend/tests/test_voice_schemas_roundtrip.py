@@ -1,4 +1,4 @@
-"""Tests for Task 8 (B1): Voice schemas, narrator, voice_assignments, and roundtrip preservation."""
+"""声スキーマ、ナレーター、声割当と往復変換の検証。"""
 
 from __future__ import annotations
 

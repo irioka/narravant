@@ -1,4 +1,4 @@
-"""Tests for Gemini Developer API client switching and safe error handling (Task 5 / A5)."""
+"""Gemini Developer API のクライアント切替と安全なエラー処理の検証。"""
 
 from __future__ import annotations
 

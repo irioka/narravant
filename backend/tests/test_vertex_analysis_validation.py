@@ -1,15 +1,30 @@
 """Synthetic validation tests for the restructured Vertex analysis contract."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from narravant.core.fountain import FountainParser
 from narravant.core.valence_vector import default_valence_vectorizer
+from narravant.services.narrative_adaptation import (
+    CausalEdge,
+    CausalPlotGraph,
+    CharacterKnowledge,
+    SourceAnchor,
+    SourceContext,
+    SourceUnit,
+    StoryEvent,
+)
 from narravant.services.vertex_analysis import (
     TURNING_POINT_LABELS,
     GeneratedAnalysis,
+    IdentifiedSourceTurningPointResult,
+    NotApplicableSourceTurningPointResult,
+    PlannedSceneResult,
+    PlannedScenesResult,
+    PlannedStoryPlanResult,
     VertexDocumentAnalyzer,
     generated_analysis_json_schema,
 )
@@ -203,6 +218,37 @@ def test_analysis_prompt_names_the_runtime_character_cap():
     assert "up to 2 retained speaking characters" in prompt
 
 
+def test_analysis_prompt_uses_only_stable_source_character_traits_for_voice_profile():
+    from narravant.services.narrative_adaptation import CharacterKnowledge
+
+    source_card = CharacterKnowledge(
+        character_name="NOBU",
+        evidence_event_ids=["event1"],
+        defining_traits=["年齢が明記された老職人。低くかすれた声。"],
+        state_by_event={"event1": "この場面では怒っている"},
+        knowledge_by_event={"event1": "秘密を知った"},
+    )
+
+    prompt = VertexDocumentAnalyzer._analysis_prompt(
+        _parsed_stub(),
+        expected_characters=["NOBU"],
+        max_main_characters=6,
+        source_character_cards=[source_card],
+    )
+    unrelated_prompt = VertexDocumentAnalyzer._analysis_prompt(
+        _parsed_stub(),
+        expected_characters=["MAYA"],
+        max_main_characters=6,
+        source_character_cards=[source_card],
+    )
+
+    assert "年齢が明記された老職人" in prompt
+    assert "この場面では怒っている" not in prompt
+    assert "秘密を知った" not in prompt
+    assert "Do not assert a concrete age unless it is supported by the source character information" in prompt
+    assert "年齢が明記された老職人" not in unrelated_prompt
+
+
 def test_validation_requires_every_retained_speaking_character_profile():
     payload = make_valid_generated()
     with pytest.raises(ValueError, match="character profiles missing"):
@@ -240,6 +286,241 @@ def test_vertex_usage_audit_combines_candidate_and_thought_tokens_only():
     assert VertexDocumentAnalyzer._combined_output_tokens(20, 4) == 24
     assert VertexDocumentAnalyzer._combined_output_tokens(20, None) is None
 
+
+def test_source_plan_requires_five_ordered_turning_point_dispositions() -> None:
+    with pytest.raises(ValidationError):
+        NotApplicableSourceTurningPointResult(
+            tp_number=2,
+            label=TURNING_POINT_LABELS[2],
+        )
+
+    turning_points = [
+        IdentifiedSourceTurningPointResult(
+            tp_number=1,
+            label=TURNING_POINT_LABELS[1],
+            availability="identified",
+            event_ids=["ev_1"],
+            change="主人公が冒険に踏み出す。",
+        ),
+        *[
+            NotApplicableSourceTurningPointResult(
+                tp_number=tp_number,
+                label=TURNING_POINT_LABELS[tp_number],
+                availability="not_applicable",
+                reason="この短い原作には独立した該当イベントがない。",
+            )
+            for tp_number in range(2, 6)
+        ],
+    ]
+    base = {
+        "turning_points": turning_points,
+        "important_event_ids": ["ev_1"],
+        "central_theme": "好奇心",
+        "intended_outcome": "主人公が旅を始める。",
+        "presentation_order_event_ids": ["ev_1"],
+    }
+    assert len(PlannedStoryPlanResult(**base).turning_points) == 5
+    with pytest.raises(ValidationError):
+        PlannedStoryPlanResult(**{**base, "turning_points": list(reversed(turning_points))})
+
+
+def test_source_plan_normalizes_known_turning_point_availability_aliases() -> None:
+    turning_points = [
+        {
+            "tp_number": 1,
+            "label": TURNING_POINT_LABELS[1],
+            "availability": "available",
+            "event_ids": ["ev_1"],
+            "change": "主人公が行動を起こす。",
+        },
+        *[
+            {
+                "tp_number": tp_number,
+                "label": TURNING_POINT_LABELS[tp_number],
+                "availability": "not_available",
+                "reason": "原作に独立した該当イベントがない。",
+            }
+            for tp_number in range(2, 6)
+        ],
+    ]
+
+    result = PlannedStoryPlanResult(
+        turning_points=turning_points,
+        important_event_ids=["ev_1"],
+        central_theme="自立",
+        intended_outcome="主人公が行動を続ける。",
+        presentation_order_event_ids=["ev_1"],
+    )
+
+    assert [point.availability for point in result.turning_points] == ["identified"] + [
+        "not_applicable"
+    ] * 4
+
+
+def test_plan_schema_requires_evidence_for_identified_turning_points() -> None:
+    schema = PlannedScenesResult.model_json_schema()
+    turning_point = schema["$defs"]["PlannedStoryPlanResult"]["properties"]["turning_points"]["items"]
+
+    def resolve(reference: dict) -> dict:
+        while "$ref" in reference:
+            definition_name = reference["$ref"].rsplit("/", 1)[-1]
+            reference = schema["$defs"][definition_name]
+        return reference
+
+    variants = turning_point.get("oneOf") or turning_point.get("anyOf")
+    assert variants is not None
+    identified = next(
+        resolve(variant)
+        for variant in variants
+        if resolve(variant)["properties"]["availability"].get("const") == "identified"
+        or "identified" in resolve(variant)["properties"]["availability"].get("enum", [])
+    )
+    not_applicable = next(
+        resolve(variant)
+        for variant in variants
+        if resolve(variant)["properties"]["availability"].get("const") == "not_applicable"
+        or "not_applicable" in resolve(variant)["properties"]["availability"].get("enum", [])
+    )
+
+    assert {"event_ids", "change"} <= set(identified["required"])
+    assert identified["properties"]["event_ids"].get("minItems", 0) >= 1
+    assert identified["properties"]["change"].get("minLength", 0) >= 1
+    assert "reason" in not_applicable["required"]
+    assert not_applicable["properties"]["event_ids"].get("maxItems") == 0
+
+
+def test_plan_scenes_prompt_receives_source_maps_and_keeps_reader_order() -> None:
+    source_context = SourceContext.from_text(
+        "abcdefghijkl",
+        [SourceUnit(unit_id="su_1", source_anchor=SourceAnchor.text(0, 12))],
+    )
+    first = StoryEvent(
+        event_id="ev_1",
+        summary="主人公が扉を見る",
+        source_anchor=SourceAnchor.text(0, 3),
+        character_states={"主人公": "立ち止まる"},
+    )
+    second = StoryEvent(
+        event_id="ev_2",
+        summary="主人公が扉を開ける",
+        source_anchor=SourceAnchor.text(7, 10),
+        knowledge_changes={"主人公": "奥に人がいると知る"},
+    )
+    dag = CausalPlotGraph(
+        events=[first, second],
+        edges=[CausalEdge(from_node_id="ev_2", to_node_id="ev_1", strength="high")],
+    )
+    character = CharacterKnowledge(
+        character_name="主人公",
+        evidence_event_ids=["ev_1", "ev_2"],
+        state_by_event={"ev_1": "立ち止まる"},
+        knowledge_by_event={"ev_2": "奥に人がいると知る"},
+    )
+    turning_points = [
+        {
+            "tp_number": 1,
+            "label": TURNING_POINT_LABELS[1],
+            "availability": "identified",
+            "event_ids": ["ev_1"],
+            "change": "主人公が進む機会を得る。",
+        },
+        *[
+            {
+                "tp_number": tp_number,
+                "label": TURNING_POINT_LABELS[tp_number],
+                "availability": "not_applicable",
+                "reason": "この短い原作には独立した該当イベントがない。",
+            }
+            for tp_number in range(2, 6)
+        ],
+    ]
+    response = PlannedScenesResult(
+        story_plan={
+            "turning_points": turning_points,
+            "important_event_ids": ["ev_1", "ev_2"],
+            "character_motivations": {"主人公": "扉の向こうを知りたい"},
+            "central_theme": "好奇心",
+            "intended_outcome": "主人公が真実を知る。",
+            "presentation_order_event_ids": ["ev_1", "ev_2"],
+        },
+        character_knowledge=[character],
+        scenes=[
+            PlannedSceneResult(
+                scene_number=1,
+                heading="INT. ROOM - DAY #1#",
+                source_unit_ids=["su_1"],
+                retained_event_ids=["ev_1"],
+                purpose="扉に気づく",
+                characters=["主人公"],
+                causal_notes="主人公は扉を見つける。",
+            ),
+            PlannedSceneResult(
+                scene_number=2,
+                heading="INT. ROOM - DAY #2#",
+                source_unit_ids=["su_1"],
+                retained_event_ids=["ev_2"],
+                purpose="扉を開く",
+                characters=["主人公"],
+                causal_notes="先の場面の後に扉を開く。",
+                dependency_scene_numbers=[1],
+            ),
+        ],
+    )
+    captured: list[str] = []
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    analyzer.planning_max_output_tokens = 1024
+
+    def collect(*, contents, **_kwargs):
+        captured.append(contents)
+        return SimpleNamespace(text=response.model_dump_json())
+
+    analyzer._collect_stream_text = collect
+    result = VertexDocumentAnalyzer.plan_scenes(
+        analyzer,
+        dag,
+        source_context,
+        [character],
+        source_language="ja",
+    )
+
+    assert result.story_plan.presentation_order_event_ids == ["ev_1", "ev_2"]
+    assert '"unit_id": "su_1"' in captured[0]
+    assert '"character_name": "主人公"' in captured[0]
+    assert 'CHARACTER NAME LITERALS:\n["主人公"]' in captured[0]
+    assert '"knowledge_by_event": {"ev_2": "奥に人がいると知る"}' in captured[0]
+    assert '"from_event_id": "ev_2", "to_event_id": "ev_1"' in captured[0]
+    assert 'EXPECTED PRESENTATION ORDER EVENT IDS:\n["ev_1", "ev_2"]' in captured[0]
+    assert captured[0].index('"event_id": "ev_1"') < captured[0].index('"event_id": "ev_2"')
+    required_plan_literals = [
+        *[
+            f'"tp_number": {number}, "label": "{label}"'
+            for number, label in TURNING_POINT_LABELS.items()
+        ],
+        "#<scene_number>#",
+    ]
+    missing_plan_literals = [value for value in required_plan_literals if value not in captured[0]]
+    assert missing_plan_literals == []
+
+
+def test_reader_keeps_individual_speaker_identities_for_shared_events() -> None:
+    """共同動作・会話の組合せを新しい人物名へ昇格させない。"""
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    analyzer.reader_max_output_tokens = 1024
+    requests = []
+
+    def collect(**kwargs):
+        requests.append(kwargs)
+        return SimpleNamespace(text='{"events": []}')
+
+    analyzer._collect_stream_text = collect
+    source = "アヤは旅人に尋ねた。旅人が答え、後でアヤとレンは一緒に礼を言った。"
+    analyzer.read_text_window(source, SourceAnchor.text(0, len(source)), source_language="ja")
+
+    prompt = requests[0]["contents"]
+    assert "Use one individual character per mapping key" in prompt
+    assert "Do not turn a relationship pair or jointly acting people into a character name" in prompt
+    assert "Keep unnamed speakers identifiable by their source role" in prompt
+    assert "For relationship_changes, key by the individual" in prompt
 
 def test_turning_points_must_be_exactly_five_in_order():
     payload = make_valid_generated()

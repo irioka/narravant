@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from copy import deepcopy
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,7 +29,9 @@ from narravant.services.ingestion import (
     validate_import,
 )
 from narravant.services.narrative_adaptation import (
+    AdaptationResult,
     NarrativeAdaptationError,
+    SourceContext,
     SourceKind,
 )
 from narravant.services.reanalysis import ImportDraftReanalysisService
@@ -524,6 +527,33 @@ def test_transient_vertex_failure_logs_safe_summary_without_sdk_traceback(
     assert "upstream-only diagnostic" not in caplog.text
 
 
+@pytest.mark.parametrize("response_model", ["reader", "plan"])
+def test_invalid_generated_response_does_not_log_source_or_intermediate_input(caplog, response_model):
+    from narravant.services.vertex_analysis import PlannedScenesResult, ReaderEventsResult
+
+    marker = "SYNTHETIC_PRIVATE_SOURCE_MARKER"
+    model = ReaderEventsResult if response_model == "reader" else PlannedScenesResult
+    adapter = FakeNarrativeAdapter(text_kind=SourceKind.NARRATIVE_PROSE)
+    service, _, _, tasks = _service_with_adapter(adapter)
+
+    def fail(*_args, **_kwargs):
+        model.model_validate({"events": [{"summary": marker}], "story_plan": marker})
+
+    adapter.adapt_text = fail
+    content = "合成した物語を読み取る検証です。".encode()
+    imported = validate_import(
+        "synthetic.txt", content, 1024 * 1024,
+        pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.7,
+    )
+    task_id = service.start("owner-1", imported)
+    with caplog.at_level(logging.ERROR):
+        service.run(task_id, content)
+    assert marker not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+    assert tasks.events_after(task_id, 0)[-1].event_type == "error"
+    assert service.drafts.get(task_id) is None
+
+
 @pytest.mark.parametrize(
     ("filename", "content", "max_size", "expected_status"),
     [
@@ -568,6 +598,9 @@ class FakeNarrativeAdapter:
         self.calls: list[str] = []
         self.fountain = "Title: Adapted\n\nINT. ROOM - DAY #1#\n\nAdapted scene.\n"
         self.adapt_languages: list[str] = []
+        self.initial_analyses: list[dict[str, object]] = []
+        self.revised_fountain: str | None = None
+        self.fail_final_verification = False
 
     def classify_text(self, text: str, on_progress=None, deadline=None) -> SourceKind:
         self.calls.append("classify_text")
@@ -589,12 +622,15 @@ class FakeNarrativeAdapter:
         deadline=None,
         *,
         source_language: str = "und",
-    ) -> str:
+    ) -> AdaptationResult:
         self.calls.append("adapt_text")
         self.adapt_languages.append(source_language)
         if on_progress:
             on_progress("reading", 1)
-        return self.fountain
+        return AdaptationResult(
+            fountain=self.fountain,
+            source_context=SourceContext.from_text(text, ()),
+        )
 
     def adapt_pdf(
         self,
@@ -602,17 +638,40 @@ class FakeNarrativeAdapter:
         on_progress=None,
         ensure_not_cancelled=None,
         deadline=None,
-    ) -> str:
+    ) -> AdaptationResult:
         self.calls.append("adapt_pdf")
         if on_progress:
             on_progress("reading", 1)
-        return self.fountain
+        return AdaptationResult(
+            fountain=self.fountain,
+            source_context=SourceContext.from_pdf(pdf_bytes, ()),
+        )
+
+    def verify_after_analysis(
+        self,
+        result: AdaptationResult,
+        analysis_context: dict[str, object],
+        on_progress=None,
+        ensure_not_cancelled=None,
+        deadline=None,
+        *,
+        allow_revision: bool = True,
+        source_language: str = "und",
+    ) -> AdaptationResult:
+        self.calls.append("verify_after_analysis")
+        self.initial_analyses.append(analysis_context)
+        if self.fail_final_verification and not allow_revision:
+            raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+        if self.revised_fountain is not None and allow_revision:
+            return replace(result, fountain=self.revised_fountain)
+        return result
 
 
 class FakeDocumentAnalyzer:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.fountain = "Title: Normalized\n\nINT. ROOM - DAY #1#\n\nNormalized scene.\n"
+        self.analyzed_fountains: list[str] = []
         self.normalize_languages: list[str] = []
         self.analyze_languages: list[str] = []
 
@@ -643,6 +702,7 @@ class FakeDocumentAnalyzer:
         source_language: str = "und",
     ) -> CanonicalAnalysis:
         self.calls.append("analyze")
+        self.analyzed_fountains.append(fountain)
         self.analyze_languages.append(source_language)
         from narravant.services.vertex_analysis import CanonicalAnalysis
 
@@ -814,8 +874,65 @@ def test_import_routes_screenplay_and_prose_correctly() -> None:
     )
     task_id = service.start("owner-1", imported)
     service.run(task_id, prose_content)
-    assert adapter.calls == ["classify_text", "adapt_text"]
+    assert adapter.calls == ["classify_text", "adapt_text", "verify_after_analysis"]
     assert analyzer.calls == ["analyze"]
+    assert adapter.initial_analyses[0]["metadata"]
+
+
+def test_import_reanalyzes_only_revised_novel_and_verifies_final_analysis_before_publish() -> None:
+    adapter = FakeNarrativeAdapter()
+    adapter.revised_fountain = "Title: Revised\n\nINT. ROOM - DAY #1#\n\nRevised scene.\n"
+    analyzer = FakeDocumentAnalyzer()
+    service, repository, storage, tasks = _service_with_adapter(adapter, analyzer)
+    content = "原作小説本文。".encode()
+    imported = validate_import(
+        "novel.txt",
+        content,
+        1024 * 1024,
+        pdf_max_pages=100,
+        fdx_max_depth=32,
+        txt_minimum_confidence=0.7,
+    )
+
+    task_id = service.start("owner-1", imported)
+    service.run(task_id, content)
+
+    assert analyzer.calls == ["analyze", "analyze"]
+    assert analyzer.analyzed_fountains == [adapter.fountain, adapter.revised_fountain]
+    assert len(adapter.initial_analyses) == 2
+    assert adapter.calls == ["classify_text", "adapt_text", "verify_after_analysis", "verify_after_analysis"]
+    draft = service.drafts.get(task_id)
+    assert draft is not None
+    assert "Revised scene." in draft.structured["source_fountain"]
+    assert "Adapted scene." not in draft.structured["source_fountain"]
+    assert repository.list_documents(limit=10, offset=0)[1] == 0
+    assert storage._objects == {}
+    assert tasks.events_after(task_id, 0)[-1].event_type == "completed"
+
+
+def test_import_does_not_publish_when_final_analysis_verification_fails() -> None:
+    adapter = FakeNarrativeAdapter()
+    adapter.revised_fountain = "Title: Revised\n\nINT. ROOM - DAY #1#\n\nRevised scene.\n"
+    adapter.fail_final_verification = True
+    service, repository, storage, tasks = _service_with_adapter(adapter)
+    content = "原作小説本文。".encode()
+    imported = validate_import(
+        "novel.txt",
+        content,
+        1024 * 1024,
+        pdf_max_pages=100,
+        fdx_max_depth=32,
+        txt_minimum_confidence=0.7,
+    )
+
+    task_id = service.start("owner-1", imported)
+    service.run(task_id, content)
+
+    assert tasks.events_after(task_id, 0)[-1].event_type == "error"
+    assert tasks.events_after(task_id, 0)[-1].payload["code"] == "ADAPTATION_VERIFICATION_FAILED"
+    assert service.drafts.get(task_id) is None
+    assert repository.list_documents(limit=10, offset=0)[1] == 0
+    assert storage._objects == {}
 
     # 5. .pdf (SCREENPLAY) -> classify_pdf -> normalize_screenplay_pdf -> analyze
     adapter = FakeNarrativeAdapter(pdf_kind=SourceKind.SCREENPLAY)
@@ -853,8 +970,48 @@ def test_import_routes_screenplay_and_prose_correctly() -> None:
     )
     task_id = service.start("owner-1", imported)
     service.run(task_id, pdf_bytes)
-    assert adapter.calls == ["classify_pdf", "adapt_pdf"]
+    assert adapter.calls == ["classify_pdf", "adapt_pdf", "verify_after_analysis"]
     assert analyzer.calls == ["analyze"]
+
+
+def test_adaptation_source_context_stays_out_of_drafts_events_database_and_logs(caplog) -> None:
+    source_text = "合成原文の本文はImport中のメモリにだけ保持します。"
+    content = source_text.encode()
+    adapter = FakeNarrativeAdapter(text_kind=SourceKind.NARRATIVE_PROSE)
+    service, repository, storage, tasks = _service_with_adapter(adapter)
+    imported = validate_import(
+        "synthetic-novel.txt",
+        content,
+        1024 * 1024,
+        pdf_max_pages=100,
+        fdx_max_depth=32,
+        txt_minimum_confidence=0.7,
+    )
+    task_id = service.start("owner-1", imported)
+
+    with caplog.at_level(logging.INFO):
+        service.run(task_id, content)
+
+    draft = service.drafts.get(task_id)
+    assert draft is not None
+    events = [event.payload for event in tasks.events_after(task_id, 0)]
+    task = tasks.repository.get(task_id)
+    assert task is not None
+    persisted_view = json.dumps(
+        {
+            "draft": draft.structured,
+            "events": events,
+            "task_payload": task["payload_json"],
+            "documents": repository.list_documents(limit=10, offset=0)[0],
+            "storage": storage._objects,  # type: ignore[attr-defined]
+        },
+        ensure_ascii=False,
+    )
+    assert source_text not in persisted_view
+    assert "source_context" not in persisted_view
+    assert source_text not in caplog.text
+    assert repository.list_documents(limit=10, offset=0)[1] == 0
+    assert storage._objects == {}  # type: ignore[attr-defined]
 
 
 def test_import_inconclusive_pdf_and_failed_adaptation_emit_terminal_error_without_persistence() -> None:

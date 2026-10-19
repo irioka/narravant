@@ -46,10 +46,12 @@ def _add_document(
     owner: str = "owner-a",
     title: str = "Synthetic story",
     voice_id: str | None = None,
+    speaker: str = "Narrator",
+    source_fountain: str = "Synthetic text only",
 ) -> None:
     assignments = []
     if voice_id:
-        assignments = [{"speaker": "Narrator", "voice_id": voice_id, "voice_traits": ""}]
+        assignments = [{"speaker": speaker, "voice_id": voice_id, "voice_traits": ""}]
     stored = storage.write_structured_script(
         document_id,
         1,
@@ -57,7 +59,7 @@ def _add_document(
             "schema_version": 1,
             "document_id": document_id,
             "version_id": 1,
-            "source_fountain": "Synthetic text only",
+            "source_fountain": source_fountain,
             "voice_assignments": assignments,
         },
         if_generation_match=0,
@@ -367,6 +369,30 @@ async def test_usage_scan_ignores_voice_assignments_in_noncurrent_versions(manag
 
     assert complete is True
     assert [(voice_id, usage.document_id) for voice_id, usage in usages] == [("voice_current_2", document_id)]
+
+
+@pytest.mark.asyncio
+async def test_usage_scan_includes_voice_assigned_only_to_listener_reaction(management_setup) -> None:
+    db, _, _, storage, _, service = management_setup
+    source_fountain = (
+        "INT. ROOM - DAY #1#\n\n"
+        "[[listener:Guide]]\n"
+        "@Narrator\n"
+        "この先で待って。 |わかった|\n"
+    )
+    _add_document(
+        db,
+        storage,
+        document_id="doc-listener-only",
+        voice_id="voice_listener_only",
+        speaker="Guide",
+        source_fountain=source_fountain,
+    )
+
+    usages, complete = service._scan_usages("owner-a")
+
+    assert complete is True
+    assert [(voice_id, usage.speaker) for voice_id, usage in usages] == [("voice_listener_only", "Guide")]
 
 
 @pytest.mark.asyncio

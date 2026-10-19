@@ -575,6 +575,7 @@ function EditorPane({ activeScene, editable, isSaving, onChange, onCursorPositio
   const { t } = useTranslation(['analysis', 'common'])
   const textAreaRef = useRef<HTMLTextAreaElement>(null)
   const valueRef = useRef(value)
+  const lastPlaybackRangeRef = useRef<{ source: string; start: number; end: number } | undefined>(undefined)
   useEffect(() => {
     valueRef.current = value
   }, [value])
@@ -590,12 +591,19 @@ function EditorPane({ activeScene, editable, isSaving, onChange, onCursorPositio
   useEffect(() => {
     const source = valueRef.current
     const element = textAreaRef.current
-    if (!playbackPosition || !element) return
-    const range = utteranceRange(source, playbackPosition.sceneNumber, playbackPosition.utteranceIndex)
+    if (!playbackPosition || !element) {
+      lastPlaybackRangeRef.current = undefined
+      return
+    }
+    const range = utteranceRange(source, playbackPosition.sceneNumber, playbackPosition.utteranceIndex, playbackPosition.sourceOffset)
     if (!range) return
+    // 同じ発話のPCMごとに再選択・再スクロールしない。
+    const previous = lastPlaybackRangeRef.current
+    if (previous?.source === source && previous.start === range.start && previous.end === range.end) return
     element.focus({ preventScroll: true })
     element.setSelectionRange(range.start, range.end)
     scrollTextRangeIntoView(element, source, range)
+    lastPlaybackRangeRef.current = { source, ...range }
   }, [playbackPosition])
   const updateCursorPosition = (source: string, cursorOffset: number) => {
     if (!editable) return

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
@@ -10,6 +10,7 @@ import { streamTaskProgress } from '@/api/tasks'
 import { createVoice } from '@/api/voices'
 import { createLocaleRuntime, LocaleProvider } from '@/i18n/LocaleProvider'
 import { AnalysisPage } from './AnalysisPage'
+import * as scriptScroll from './script-scroll'
 
 vi.mock('@/api/documents', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/api/documents')>(),
@@ -34,6 +35,7 @@ class DraftWebSocket {
   readyState = 1
   sentMessages: string[] = []
   onopen: (() => void) | null = null
+  onmessage: ((event: { data: string }) => void) | null = null
   url: string
   constructor(url: string) {
     this.url = url
@@ -44,7 +46,71 @@ class DraftWebSocket {
   close() { this.readyState = 3 }
 }
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.clearAllMocks(); vi.unstubAllGlobals() })
+
+it('途中再生の選択とスクロールは元原稿の再開位置に一致し、同一発話の受信で戻らない', async () => {
+  DraftWebSocket.instances = []
+  vi.stubGlobal('WebSocket', DraftWebSocket)
+  const context = {
+    state: 'running', currentTime: 0, sampleRate: 24000, destination: {},
+    createBuffer: (_channels: number, length: number, sampleRate: number) => ({
+      length, sampleRate, getChannelData: () => new Float32Array(length),
+    }),
+    createBufferSource: () => ({ buffer: null, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn(), onended: null }),
+    close: () => Promise.resolve(),
+  }
+  vi.stubGlobal('AudioContext', class { constructor() { return context } })
+  const source = 'INT. ROOM - DAY #1#\n\n@ナレーター\n' + '前半の合成文です。'.repeat(40) + '\n再開対象の文です。\n\n@ナレーター\n次の発話です。'
+  const start = source.indexOf('再開対象')
+  const end = source.indexOf('\n\n@ナレーター', start)
+  const draft = {
+    document_id: 'synthetic-scroll', version_id: 1, expected_version: null, title: '合成スクロール',
+    source_fountain: source, scenes: [{ scene_number: 1, heading: 'INT. ROOM - DAY', text: '', dialogues: [] }],
+    metadata: {}, analysis: { status: 'completed' as const, characters: [], turning_points: [] },
+    narrator: { voice_traits: '落ち着いた声' },
+    voice_assignments: [{ speaker: 'ナレーター', voice_id: 'voices/synthetic', voice_traits: '落ち着いた声' }],
+    emotion_arc: { valence: [], tension: [], characters: {}, scene_mapping: [], valence_vector: [] },
+  }
+  vi.mocked(importDocument).mockResolvedValue({ task_id: 'synthetic-import', status: 'queued', task_type: 'import_document' })
+  vi.mocked(streamTaskProgress).mockImplementation(async (_id, callbacks) => {
+    callbacks.onCompleted?.({ import_draft: draft })
+  })
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const { container } = render(
+    <QueryClientProvider client={client}>
+      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+        <MemoryRouter initialEntries={['/analysis/new']}>
+          <Routes><Route path="/analysis/new" element={<AnalysisPage />} /></Routes>
+        </MemoryRouter>
+      </LocaleProvider>
+    </QueryClientProvider>,
+  )
+  fireEvent.change(container.querySelector('input[type="file"]')!, {
+    target: { files: [new File([source], 'synthetic.fountain')] },
+  })
+  const editor = await screen.findByRole('textbox', { name: '脚本本文' }) as HTMLTextAreaElement
+  editor.setSelectionRange(start + 2, start + 2)
+  fireEvent.select(editor)
+  fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+  await waitFor(() => expect(DraftWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+  const scroll = vi.spyOn(scriptScroll, 'scrollTextRangeIntoView')
+  const ws = DraftWebSocket.instances[0]
+  ws.onmessage?.({ data: JSON.stringify({ event: 'utterance_start', speaker: 'ナレーター', scene_number: 1, utterance_index: 1 }) })
+  ws.onmessage?.({ data: JSON.stringify({ event: 'audio_chunk', data: 'AAA=' }) })
+  await waitFor(() => expect(editor.selectionStart).toBe(start))
+  expect(editor.selectionEnd).toBe(end)
+  expect(scroll).toHaveBeenLastCalledWith(editor, source, { start, end })
+  expect(scroll).toHaveBeenCalledTimes(1)
+  editor.scrollTop = 500
+  context.currentTime = 1
+  act(() => ws.onmessage?.({ data: JSON.stringify({ event: 'audio_chunk', data: 'AAA=' }) }))
+  await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1))
+  expect(editor.scrollTop).toBe(500)
+  expect(editor.value).toBe(source)
+  expect(saveImportDraft).not.toHaveBeenCalled()
+  expect(updateDocument).not.toHaveBeenCalled()
+  client.clear()
+})
 
 it.each([
   { individualNarrator: false, savedDocument: false },
@@ -56,7 +122,7 @@ it.each([
   vi.stubGlobal('WebSocket', DraftWebSocket)
   const draft = {
     document_id: 'unsaved-import', version_id: 1, expected_version: null, title: '合成サンプル',
-    source_fountain: 'INT. ROOM - DAY #1#\n\n@ナレーター\n最初の場面。\n\nINT. GARDEN - DAY #2#\n\n@ナレーター\n次の場面。\n\n@Alice\nHello.\n\n@Bob\nGood day.',
+    source_fountain: 'INT. ROOM - DAY #1#\n\n@ナレーター\n最初の場面。\n\nINT. GARDEN - DAY #2#\n\n@ナレーター\n次の場面。\n\n@Alice\n[[listener:Bob]]\nHello. |Good day|',
     scenes: [
       { scene_number: 1, heading: 'INT. ROOM - DAY', text: '', dialogues: [] },
       { scene_number: 2, heading: 'INT. GARDEN - DAY', text: '', dialogues: [] },

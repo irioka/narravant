@@ -1,12 +1,11 @@
-"""Comprehensive synthetic end-to-end acceptance tests for scenarios A1 through A9.
+"""合成データと Fake を使うオーディオブックの受入シナリオ。
 
-These tests verify the single-work audiobook acceptance criteria.
-using fake dependencies, in-memory databases, and deterministic test fixtures.
-No real external Gemini API calls or billable services are invoked.
+実サービスや実原稿を使わず、費用の生じる外部 API は呼び出さない。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,7 +13,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 from tests.test_import_api import FakeDocumentAnalyzer, FakeNarrativeAdapter
 
 from narravant.api.dependencies import (
@@ -104,6 +102,44 @@ def _playback_ws_env(db: DatabaseManager, storage: InMemoryScriptStorageClient, 
         playback_module._build_tts_client = original_build
         playback_module._build_voice_design_client = original_voice_build
         app.dependency_overrides.clear()
+
+
+async def _playback_ws_events(path: str, start_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """ライフスパンを起動せず、合成データで再生 WebSocket を実行する。"""
+    incoming: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    outgoing: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "path": path,
+        "raw_path": path.encode(),
+        "scheme": "ws",
+        "query_string": b"",
+        "headers": [],
+        "root_path": "",
+        "client": ("test", 123),
+        "server": ("test", 80),
+        "subprotocols": [],
+    }
+    await incoming.put({"type": "websocket.connect"})
+    task = asyncio.create_task(app(scope, incoming.get, outgoing.put))
+    try:
+        accepted = await asyncio.wait_for(outgoing.get(), timeout=2)
+        assert accepted["type"] == "websocket.accept"
+        await incoming.put(
+            {"type": "websocket.receive", "text": json.dumps(start_payload, ensure_ascii=False)}
+        )
+        events: list[dict[str, Any]] = []
+        while True:
+            message = await asyncio.wait_for(outgoing.get(), timeout=2)
+            assert message["type"] == "websocket.send"
+            event = json.loads(message["text"])
+            events.append(event)
+            if event.get("event") in {"playback_complete", "error"}:
+                return events
+    finally:
+        await incoming.put({"type": "websocket.disconnect", "code": 1000})
+        await asyncio.wait_for(task, timeout=2)
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +333,9 @@ def test_scenario_a3_native_json_export_and_import_roundtrip() -> None:
         "document": {
             "title": "A3 Roundtrip",
             "source_fountain": (
-                "Title: A3 Roundtrip\n\nINT. STUDY - NIGHT #1#\n\nClock ticks.\n\n@DETECTIVE\nThe case is closed.\n"
+                "Title: A3 Roundtrip\n\nINT. STUDY - NIGHT #1#\n\nClock ticks.\n\n"
+                "@DETECTIVE\n[[listener:WITNESS]]\n"
+                "The case is closed. |Indeed.|\n"
             ),
             "metadata": {
                 "title": "A3 Roundtrip",
@@ -351,6 +389,7 @@ def test_scenario_a3_native_json_export_and_import_roundtrip() -> None:
                     "voice_traits": "淡々としたハードボイルドな語り口",
                 },
                 {"speaker": "DETECTIVE", "voice_id": "voice_fake_detective_3", "voice_traits": "冷徹で明瞭な中低音"},
+                {"speaker": "WITNESS", "voice_id": "voice_fake_witness_3", "voice_traits": "低く落ち着いた声"},
             ],
         },
     }
@@ -368,6 +407,7 @@ def test_scenario_a3_native_json_export_and_import_roundtrip() -> None:
 
     # 検証: 脚本・声の特徴・声の割当・分析が完全に復元される
     assert structured["document_id"] == "doc-a3"
+    assert structured["source_fountain"] == original_payload["document"]["source_fountain"].rstrip("\n")
     assert structured["narrator"] == {"voice_traits": "淡々としたハードボイルドな語り口"}
     assert structured["voice_assignments"] == [
         {
@@ -376,6 +416,7 @@ def test_scenario_a3_native_json_export_and_import_roundtrip() -> None:
             "voice_traits": "淡々としたハードボイルドな語り口",
         },
         {"speaker": "DETECTIVE", "voice_id": "voice_fake_detective_3", "voice_traits": "冷徹で明瞭な中低音"},
+        {"speaker": "WITNESS", "voice_id": "voice_fake_witness_3", "voice_traits": "低く落ち着いた声"},
     ]
     assert structured["analysis"]["characters"][0]["voice_traits"] == "冷徹で明瞭な中低音"
     assert len(structured["analysis"]["turning_points"]) == 5
@@ -465,35 +506,30 @@ INT. SALON - NIGHT #1#
 
     fake_tts = FakeTtsClient()
     with _playback_ws_env(in_memory_db, in_memory_storage, fake_tts):
-        client = TestClient(app)
-        with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
-            ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
+        events = asyncio.run(
+            _playback_ws_events(
+                f"/api/v1/documents/{doc_id}/playback",
+                {"action": "start", "scene_number": 1, "start_utterance_index": 0},
+            )
+        )
 
-            events: list[dict[str, Any]] = []
-            while True:
-                msg = ws.receive_json()
-                events.append(msg)
-                if msg.get("event") == "playback_complete":
-                    break
+    # Scene Heading を含む5発話が ナレーター → ナレーター → ALICE → BOB → ナレーター の順で処理されたことを確認
+    utterance_starts = [e for e in events if e.get("event") == "utterance_start"]
+    assert len(utterance_starts) == 5
+    speakers = [u["speaker"] for u in utterance_starts]
+    assert speakers == ["ナレーター", "ナレーター", "ALICE", "BOB", "ナレーター"]
+    assert utterance_starts[0]["utterance_index"] == 0
+    assert fake_tts.calls[0]["text"] == "SALON - NIGHT"
 
-        # Scene Heading を含む5発話が ナレーター → ナレーター → ALICE → BOB → ナレーター の順で処理されたことを確認
-        utterance_starts = [e for e in events if e.get("event") == "utterance_start"]
-        assert len(utterance_starts) == 5
-        speakers = [u["speaker"] for u in utterance_starts]
-        assert speakers == ["ナレーター", "ナレーター", "ALICE", "BOB", "ナレーター"]
-        assert utterance_starts[0]["utterance_index"] == 0
-        assert fake_tts.calls[0]["text"] == "SALON - NIGHT"
-
-        # TTS 呼び出し履歴の voice_id が割当と一致
-        assert len(fake_tts.calls) == 5
-        assert [c["voice_id"] for c in fake_tts.calls] == [
-            "voice_fake_narrator",
-            "voice_fake_narrator",
-            "voice_fake_alice",
-            "voice_fake_bob",
-            "voice_fake_narrator",
-        ]
-
+    # TTS 呼び出し履歴の voice_id が割当と一致
+    assert len(fake_tts.calls) == 5
+    assert [c["voice_id"] for c in fake_tts.calls] == [
+        "voice_fake_narrator",
+        "voice_fake_narrator",
+        "voice_fake_alice",
+        "voice_fake_bob",
+        "voice_fake_narrator",
+    ]
 
 # ---------------------------------------------------------------------------
 # Scenario A5: 途中失敗と失敗位置からの再試行
@@ -580,40 +616,31 @@ INT. ROOM - DAY #1#
     # Scene Heading が index 0 になるため、BOB は index 3。
     fake_tts = FakeTtsClient(fail_on_utterance_indices={3})
     with _playback_ws_env(in_memory_db, in_memory_storage, fake_tts):
-        client = TestClient(app)
-        # 1回目の再生: BOB の index 3 で失敗
-        with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
-            ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
-
-            events: list[dict[str, Any]] = []
-            while True:
-                msg = ws.receive_json()
-                events.append(msg)
-                if msg.get("event") == "error":
-                    break
-
-            error_ev = events[-1]
-            assert error_ev["event"] == "error"
-            assert error_ev["utterance_index"] == 3  # 失敗位置が通知される
+        events = asyncio.run(
+            _playback_ws_events(
+                f"/api/v1/documents/{doc_id}/playback",
+                {"action": "start", "scene_number": 1, "start_utterance_index": 0},
+            )
+        )
+        error_ev = events[-1]
+        assert error_ev["event"] == "error"
+        assert error_ev["utterance_index"] == 3  # 失敗位置が通知される
 
         # 2回目の再生: 失敗位置 (index 3) から再試行
         fake_tts.fail_on_utterance_indices.clear()
-        with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
-            ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 3})
+        resume_events = asyncio.run(
+            _playback_ws_events(
+                f"/api/v1/documents/{doc_id}/playback",
+                {"action": "start", "scene_number": 1, "start_utterance_index": 3},
+            )
+        )
 
-            resume_events: list[dict[str, Any]] = []
-            while True:
-                msg = ws.receive_json()
-                resume_events.append(msg)
-                if msg.get("event") == "playback_complete":
-                    break
-
-            resumed_starts = [e for e in resume_events if e.get("event") == "utterance_start"]
-            assert len(resumed_starts) == 2  # index 3 と index 4 のみ再生
-            assert resumed_starts[0]["utterance_index"] == 3
-            assert resumed_starts[0]["speaker"] == "BOB"
-            assert resumed_starts[1]["utterance_index"] == 4
-            assert resumed_starts[1]["speaker"] == "ナレーター"
+        resumed_starts = [e for e in resume_events if e.get("event") == "utterance_start"]
+        assert len(resumed_starts) == 2  # index 3 と index 4 のみ再生
+        assert resumed_starts[0]["utterance_index"] == 3
+        assert resumed_starts[0]["speaker"] == "BOB"
+        assert resumed_starts[1]["utterance_index"] == 4
+        assert resumed_starts[1]["speaker"] == "ナレーター"
 
 
 # ---------------------------------------------------------------------------
@@ -734,18 +761,18 @@ def test_scenario_a6_script_and_voice_edits_reflect_immediately(
 
     fake_tts = FakeTtsClient()
     with _playback_ws_env(in_memory_db, in_memory_storage, fake_tts):
-        client = TestClient(app)
-        with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
-            ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
-            while True:
-                msg = ws.receive_json()
-                if msg.get("event") == "playback_complete":
-                    break
+        events = asyncio.run(
+            _playback_ws_events(
+                f"/api/v1/documents/{doc_id}/playback",
+                {"action": "start", "scene_number": 1, "start_utterance_index": 0},
+            )
+        )
 
-        assert len(fake_tts.calls) == 2
-        assert fake_tts.calls[0] == {"text": "ROOM - DAY", "voice_id": "voice_fake_narrator"}
-        assert fake_tts.calls[1]["text"] == "New brand-new line."
-        assert fake_tts.calls[1]["voice_id"] == "voice_fake_alice_new"
+    assert events[-1]["event"] == "playback_complete"
+    assert len(fake_tts.calls) == 2
+    assert fake_tts.calls[0] == {"text": "ROOM - DAY", "voice_id": "voice_fake_narrator"}
+    assert fake_tts.calls[1]["text"] == "New brand-new line."
+    assert fake_tts.calls[1]["voice_id"] == "voice_fake_alice_new"
 
 
 # ---------------------------------------------------------------------------
@@ -856,3 +883,104 @@ INT. MARKET - DAY #1#
     # 端役を無制限に声生成対象にしない
     assert len(character_names) <= 5
     assert all("voice_traits" in c for c in analysis.characters)
+
+
+# ---------------------------------------------------------------------------
+# Scenario A10: 品質比較用合成短編の二話者ストリーミング
+# ---------------------------------------------------------------------------
+def test_scenario_a10_synthetic_quality_story_uses_two_voices_without_fixed_pauses(
+    in_memory_db: DatabaseManager,
+    in_memory_storage: InMemoryScriptStorageClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回想・伏線・年齢差・局所 pause・反応専用話者・演技変化を合成稿で確認する。"""
+    source_fountain = """Title: 品質検証用合成短編
+
+INT. 古時計店 - NIGHT #1#
+
+@老人
+(懐かしむように)
+[[listener:子供]]
+十年前、母さんはこの時計を預けた。<short pause> 「満月の夜に名前が現れる」と言った。 |誰の名前？|
+
+@老人
+(秘密を守るように)
+[[listener:子供]]
+まだ言えない。<long pause> けれど、その人は今ここにいる。 |えっ？|
+
+@老人
+(優しく)
+明かりをつけてごらん。
+"""
+    fake_tts = FakeTtsClient()
+    validated_voice_ids: list[str] = []
+
+    class VoiceValidationStub:
+        async def validate_voice_ids(
+            self,
+            owner_user_id: str,
+            voice_ids: list[str],
+            *,
+            allow_current_assignment: bool,
+        ) -> None:
+            validated_voice_ids.extend(voice_ids)
+
+    import narravant.api.playback as playback_module
+
+    monkeypatch.setattr(
+        playback_module,
+        "_build_voice_management_service",
+        lambda *_args: VoiceValidationStub(),
+    )
+    assignments = [
+        {"speaker": "Narrator", "voice_id": "voice_fake_narrator", "voice_traits": "落ち着いた語り手"},
+        {"speaker": "老人", "voice_id": "voice_fake_alice", "voice_traits": "年配の低く少しかすれた声"},
+        {"speaker": "子供", "voice_id": "voice_fake_bob", "voice_traits": "幼い明るい声"},
+    ]
+
+    with _playback_ws_env(in_memory_db, in_memory_storage, fake_tts):
+        events = asyncio.run(
+            _playback_ws_events(
+                "/api/v1/documents/playback",
+                {
+                    "action": "start",
+                    "draft": {
+                        "source_fountain": source_fountain,
+                        "voice_assignments": assignments,
+                    },
+                },
+            )
+        )
+
+    assert events[-1]["event"] == "playback_complete", events[-1]
+    assert validated_voice_ids == ["voice_fake_narrator", "voice_fake_alice", "voice_fake_bob"]
+    assert "utterance_pause" not in [event["event"] for event in events]
+    assert any(event["event"] == "audio_chunk" for event in events)
+
+    segments = fake_tts.synthesized_segments
+    assert len(segments) == fake_tts.call_count == 6
+    assert [segment.primary.speaker for segment in segments] == [
+        "ナレーター",
+        "老人",
+        "老人",
+        "老人",
+        "老人",
+        "老人",
+    ]
+    assert [segment.primary.voice_id for segment in segments] == [
+        "voice_fake_narrator",
+        "voice_fake_alice",
+        "voice_fake_alice",
+        "voice_fake_alice",
+        "voice_fake_alice",
+        "voice_fake_alice",
+    ]
+    reactions = [segment for segment in segments if segment.listener is not None]
+    assert len(reactions) == 2
+    assert all(segment.listener.speaker == "子供" for segment in reactions)
+    assert all(segment.listener.voice_id == "voice_fake_bob" for segment in reactions)
+    assert fake_tts.synthesized_styles[1] != fake_tts.synthesized_styles[3]
+    assert "<short pause>" in segments[1].text
+    assert "<long pause>" in segments[3].text
+    assert "[[listener:" not in "".join(segment.text for segment in segments)
+    assert all(event["speaker"] != "子供" for event in events if event["event"] == "utterance_start")

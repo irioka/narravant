@@ -14,6 +14,7 @@ from narravant.api import playback
 from narravant.api.dependencies import LOCAL_USER_DISPLAY_NAME, LOCAL_USER_EMAIL, LOCAL_USER_ID
 from narravant.db.database import DatabaseManager, DocumentRepository
 from narravant.db.voice_registry import VoiceRegistryRepository
+from narravant.services.speech_segments import SegmentVoice
 from narravant.services.tts import FakeTtsClient
 from narravant.services.voice_design import FakeVoiceDesignClient
 from narravant.services.voice_models import ProviderVoice, StoredVoiceRecord, parse_provider_datetime, utc_iso
@@ -38,6 +39,7 @@ def draft_connection(monkeypatch):
     for speaker, voice_id in (
         ("Narrator", "voice_synthetic_narrator"),
         ("ALICE", "voice_synthetic_alice"),
+        ("Guide", "voice_synthetic_guide"),
     ):
         provider.voices[voice_id] = ProviderVoice(
             voice_id=voice_id,
@@ -172,6 +174,76 @@ async def test_draft_missing_voice_fails_before_synthesis(draft_connection):
         assert tts.calls == []
 
 
+async def test_draft_reaction_uses_listener_voice_once_without_speaking_note(draft_connection):
+    draft = {
+        "source_fountain": (
+            "INT. ROOM - DAY #1#\n\n"
+            "@Narrator\n"
+            "[[listener:Guide]]\n"
+            "この先で待って。 |わかった|\n"
+        ),
+        "voice_assignments": [
+            {"speaker": "Narrator", "voice_id": "voice_synthetic_narrator"},
+            {"speaker": "Guide", "voice_id": "voice_synthetic_guide"},
+        ],
+    }
+    async with draft_connection() as (incoming, outgoing, tts):
+        await send_start(incoming, draft)
+        events = []
+        while True:
+            event = await receive_event(outgoing)
+            events.append(event)
+            if event["event"] in ("error", "playback_complete"):
+                break
+
+        assert events[-1]["event"] == "playback_complete"
+        assert tts.calls == [
+            {"text": "この先で待って。 |わかった|", "voice_id": "voice_synthetic_narrator"}
+        ]
+        assert len(tts.synthesized_segments) == 1
+        assert tts.synthesized_segments[0].listener == SegmentVoice("Guide", "voice_synthetic_guide")
+        assert "[[listener:Guide]]" not in tts.synthesized_segments[0].text
+
+
+async def test_draft_listener_without_voice_fails_before_synthesis(draft_connection):
+    draft = {
+        "source_fountain": "INT. ROOM - DAY #1#\n\n@Narrator\n[[listener:Guide]]\nWait. |Okay|",
+        "voice_assignments": [{"speaker": "Narrator", "voice_id": "voice_synthetic_narrator"}],
+    }
+    async with draft_connection() as (incoming, outgoing, tts):
+        await send_start(incoming, draft)
+        event = await receive_event(outgoing)
+
+        assert event["event"] == "error"
+        assert "Guide" in event["message"]
+        assert tts.calls == []
+
+
+async def test_draft_expired_listener_fails_before_synthesis(draft_connection):
+    draft = {
+        "source_fountain": "INT. ROOM - DAY #1#\n\n@Narrator\n[[listener:Guide]]\nWait? |Okay|",
+        "voice_assignments": [
+            {"speaker": "Narrator", "voice_id": "voice_synthetic_narrator"},
+            {"speaker": "Guide", "voice_id": "voice_synthetic_guide"},
+        ],
+    }
+    provider = playback._build_voice_design_client(None)
+    provider.voices["voice_synthetic_guide"] = ProviderVoice(
+        voice_id="voice_synthetic_guide",
+        voice_type="prompted",
+        language_code="ja-JP",
+        expire_time=parse_provider_datetime("2000-01-01T00:00:00Z"),
+    )
+
+    async with draft_connection() as (incoming, outgoing, tts):
+        await send_start(incoming, draft)
+        event = await receive_event(outgoing)
+
+        assert event["event"] == "error"
+        assert event["code"] == "VOICE_EXPIRED"
+        assert tts.calls == []
+
+
 async def test_draft_deleted_custom_voice_fails_before_synthesis(draft_connection):
     async with draft_connection() as (incoming, outgoing, tts):
         # Provider state no longer contains Alice's registered voice.
@@ -223,7 +295,7 @@ async def test_draft_stop_and_disconnect_cancel_synthesis(draft_connection, monk
         started = asyncio.Event()
         cancelled = asyncio.Event()
 
-        async def slow_stream(**kwargs):
+        async def slow_stream(*args, **kwargs):
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -231,7 +303,7 @@ async def test_draft_stop_and_disconnect_cancel_synthesis(draft_connection, monk
             finally:
                 cancelled.set()
 
-        monkeypatch.setattr(tts, "synthesize_stream", slow_stream)
+        monkeypatch.setattr(tts, "synthesize_segment_stream", slow_stream)
         await send_start(incoming, DRAFT)
         await asyncio.wait_for(started.wait(), timeout=2)
         if action == "stop":

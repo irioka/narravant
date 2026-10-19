@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-19
+
+### Added
+
+- Generate audiobook scripts with narration, character dialogue, and acting directions. For novel adaptations, scene planning and writing consider source events, character states, foreshadowing, and relevant earlier scenes.
+- Automatically generate suitable acting directions for Gemini 3.8 Flash TTS's style field and inline tags for pauses and human vocal delivery.
+- Check the first draft against the original source and revise affected scenes within a shared one-revision limit, then update the analysis.
+- Repair combined speaker cues by rewriting only the affected passages using the original source, while preserving surrounding text.
+
+### Changed
+
+- Remove added fixed silence between sentences and utterances within a scene, while retaining sentence-sized TTS requests, playback from the first PCM samples, and scene-transition pauses.
+- Keep persistent voice traits separate from utterance-specific acting directions and reuse assigned voices across short turns.
+- Use MEDIUM thinking effort for Gemini text generation and analysis.
+- Document overlapping custom voices as unsupported. Preserve existing listener and pipe notation, and reject affected playback before sending a Gemini request.
+
+### Fixed
+
+- Schedule received PCM buffers on the audio clock to prevent gaps caused by waiting for JavaScript end events. Stop all scheduled audio when playback is stopped.
+- Scroll spoken text into view using its wrapped display position, preserve the source position when resuming within an utterance, and avoid repeated scrolling within the same utterance.
+- Start unsaved or edited scripts at the cursor's sentence, including later sentences within the same utterance.
+- Preserve PCM16 samples split across chunks, avoid duplicate buffer submission, and handle English abbreviations when locating a playback sentence.
+- Strengthen instructions for planning labels and character names, reject generated tag-only utterances, and pass validation reasons into existing retries.
+- Prevent import validation exceptions from exposing original source material or intermediate plans in logs.
+
+### Notes
+
+- Original source material and intermediate plans remain in memory only during import. Saved documents, Native JSON, voice assignments, and public API/event payloads retain their existing field shapes.
+
 ## [0.2.0] - 2026-10-16
 
 ### Added

@@ -6,7 +6,9 @@ import json
 
 import pytest
 
+from narravant.core.speech_notation import parse_speech_notation
 from narravant.services.playback import PlannedUtterance
+from narravant.services.speech_segments import SegmentVoice
 from narravant.services.tts import (
     FakeTtsClient,
     GeminiTtsClient,
@@ -37,6 +39,7 @@ class _StubResponse:
 
 class _StubAsyncClient:
     responses: list[_StubResponse] = []
+    requests: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def __init__(self, **_kwargs: object) -> None:
         pass
@@ -48,6 +51,7 @@ class _StubAsyncClient:
         return None
 
     def stream(self, *_args: object, **_kwargs: object) -> _StubResponse:
+        self.requests.append((_args, _kwargs))
         return self.responses.pop(0)
 
 
@@ -103,6 +107,36 @@ async def test_gemini_tts_retries_transient_503_before_audio(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
+async def test_gemini_tts_rejects_custom_two_speaker_segment_before_provider_request(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _StubAsyncClient.responses = []
+    _StubAsyncClient.requests = []
+    monkeypatch.setattr("narravant.services.tts.httpx.AsyncClient", _StubAsyncClient)
+    text = "この道で |うん| 間違いない？"
+    utterance = PlannedUtterance(
+        scene_number=1,
+        utterance_index=0,
+        speaker="旅人",
+        target_type="character",
+        text=text,
+        voice_id="voice_test_primary",
+        notation=parse_speech_notation(text, listener="案内人"),
+        listener_voice=SegmentVoice("案内人", "voice_test_listener"),
+    )
+    client = GeminiTtsClient(api_key="", language_code="ja-JP", retry_backoff_seconds=0)
+
+    events = [event async for event in TtsPlaybackCoordinator(client).run_stream([utterance])]
+
+    assert [event["type"] for event in events] == ["utterance_start", "error"]
+    assert events[-1]["scene_number"] == 1
+    assert events[-1]["utterance_index"] == 0
+    assert "Gemini TTS では" in events[-1]["message"]
+    assert "二話者" in events[-1]["message"]
+    assert _StubAsyncClient.requests == []
+
+
+@pytest.mark.asyncio
 async def test_gemini_tts_does_not_retry_non_transient_400(monkeypatch: pytest.MonkeyPatch):
     _StubAsyncClient.responses = [_StubResponse(400, detail=b'{"error":{"status":"INVALID_ARGUMENT"}}')]
     monkeypatch.setattr("narravant.services.tts.httpx.AsyncClient", _StubAsyncClient)
@@ -150,7 +184,6 @@ async def test_tts_coordinator_iterates_utterances_in_order(fake_tts: FakeTtsCli
         "audio_chunk",
         "audio_segment_end",
         "utterance_end",
-        "utterance_pause",
         "utterance_start",
         "audio_chunk",
         "audio_chunk",
@@ -165,9 +198,21 @@ async def test_tts_coordinator_iterates_utterances_in_order(fake_tts: FakeTtsCli
     assert events[0]["speaker"] == "ナレーター"
 
     # Verify second utterance start metadata
-    assert events[6]["scene_number"] == 1
-    assert events[6]["utterance_index"] == 1
-    assert events[6]["speaker"] == "アリス"
+    assert events[5]["scene_number"] == 1
+    assert events[5]["utterance_index"] == 1
+    assert events[5]["speaker"] == "アリス"
+
+
+@pytest.mark.asyncio
+async def test_tts_coordinator_does_not_add_fixed_pause_within_a_scene(fake_tts: FakeTtsClient):
+    utterances = [
+        PlannedUtterance(1, 0, "ナレーター", "narrator", "ひとつ。", "voice-1"),
+        PlannedUtterance(1, 1, "ナレーター", "narrator", "ふたつ。", "voice-1"),
+    ]
+
+    events = [event async for event in TtsPlaybackCoordinator(fake_tts).run_stream(utterances)]
+
+    assert "utterance_pause" not in [event["type"] for event in events]
 
 
 @pytest.mark.asyncio
@@ -185,8 +230,8 @@ async def test_tts_coordinator_synthesizes_each_sentence_as_its_own_segment(fake
     assert [event["type"] for event in events].count("utterance_end") == 1
     assert [event["type"] for event in events].count("audio_segment_end") == 2
     segment_end = next(index for index, event in enumerate(events) if event["type"] == "audio_segment_end")
-    assert events[segment_end + 1] == {"type": "utterance_pause", "scene_number": 1, "duration_ms": 1000}
-    assert events[segment_end + 2]["type"] == "audio_chunk"
+    assert events[segment_end + 1]["type"] == "audio_chunk"
+    assert "utterance_pause" not in [event["type"] for event in events]
 
 
 @pytest.mark.asyncio
@@ -219,7 +264,7 @@ async def test_tts_coordinator_inserts_a_pause_between_scenes(fake_tts: FakeTtsC
 
 
 @pytest.mark.asyncio
-async def test_tts_coordinator_pauses_between_same_scene_utterances_without_doubling_scene_pause(
+async def test_tts_coordinator_only_pauses_when_the_scene_changes(
     fake_tts: FakeTtsClient,
 ):
     utterances = [
@@ -231,10 +276,7 @@ async def test_tts_coordinator_pauses_between_same_scene_utterances_without_doub
     events = [event async for event in TtsPlaybackCoordinator(fake_tts).run_stream(utterances)]
 
     pauses = [event for event in events if event["type"] in {"utterance_pause", "scene_pause"}]
-    assert pauses == [
-        {"type": "utterance_pause", "scene_number": 1, "duration_ms": 1000},
-        {"type": "scene_pause", "scene_number": 2, "duration_ms": 3000},
-    ]
+    assert pauses == [{"type": "scene_pause", "scene_number": 2, "duration_ms": 3000}]
 
 
 @pytest.mark.asyncio

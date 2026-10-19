@@ -11,6 +11,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from narravant.core.speech_notation import (
+    SpeechNotation,
+    SpeechNotationError,
+    is_listener_note_candidate,
+    parse_listener_note,
+    parse_speech_notation,
+    spoken_turns,
+)
+
 # Pattern to clean unwanted LLM signature artifacts if present
 _LLM_SIGNATURE_PATTERN = re.compile(
     r"\[?\{['\"]type['\"]:\s*['\"]text['\"],\s*['\"]text['\"]:\s*['\"]['\"],\s*['\"]extras['\"]:\s*\{['\"]signature['\"]:[^}]+\}[^]]*\]?",
@@ -108,6 +117,9 @@ class UtteranceItem:
     target_type: Literal["narrator", "character"]
     text: str
     performance_direction: str = ""  # Fountain parenthetical, sent to TTS as performance guidance
+    listener: str | None = None
+    speech_notation: SpeechNotation | None = field(default=None, repr=False, compare=False)
+    source_line: int | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -200,13 +212,14 @@ class ParsedScript:
         return seen
 
     def dialogue_character_names(self) -> list[str]:
-        """Return only non-narrator speakers that have spoken dialogue."""
+        """Return non-narrator speakers present in the analysis dialogue projection."""
         seen: list[str] = []
-        for utterance in self.all_utterances():
-            if utterance.target_type != "character":
-                continue
-            if utterance.speaker and utterance.speaker not in seen:
-                seen.append(utterance.speaker)
+        for scene in self.scenes:
+            for dialogue in scene.dialogues:
+                if dialogue.character in NARRATOR_SPEAKERS:
+                    continue
+                if dialogue.character and dialogue.character not in seen:
+                    seen.append(dialogue.character)
         return seen
 
     def to_v1_json(
@@ -319,14 +332,11 @@ class FountainParser:
             stripped = line.strip()
 
             if not stripped:
-                # Blank line may mark the end of the title page
-                # If we have collected key-values, title page ends
                 if metadata.raw_key_values or title_page_lines:
                     in_title_page = False
                 i += 1
                 continue
 
-            # Check if this line is already a scene heading or section start
             is_heading, _, _ = cls.parse_scene_heading(stripped)
             if is_heading or stripped.startswith("#"):
                 in_title_page = False
@@ -351,13 +361,12 @@ class FountainParser:
                 elif clean_key == "genre2":
                     metadata.genre2 = clean_val
                 elif clean_key in ("characters", "cast"):
-                    names = [n.strip() for n in clean_val.split(",") if n.strip()]
+                    names = [name.strip() for name in clean_val.split(",") if name.strip()]
                     metadata.characters.extend(names)
                 else:
                     title_page_lines.append(stripped)
             else:
                 title_page_lines.append(stripped)
-
             i += 1
 
         # 2. Parse Remaining Lines into Scenes and Dialogue
@@ -366,15 +375,27 @@ class FountainParser:
         current_scene_lines: list[str] = []
         current_character: str | None = None
         current_dialogue_lines: list[str] = []
-        current_parenthetical: str = ""
+        current_dialogue_line_numbers: list[int] = []
+        current_dialogue_start_line: int | None = None
+        current_parenthetical = ""
+        current_listener: str | None = None
+        current_listener_line: int | None = None
         current_action_lines: list[str] = []
+        current_action_start_line: int | None = None
+        in_regular_note = False
         auto_scene_number = 1
 
         def flush_action() -> None:
-            nonlocal current_action_lines, current_scene
+            nonlocal current_action_lines, current_action_start_line, current_scene
             if current_action_lines and current_scene:
                 action_text = " ".join(current_action_lines).strip()
                 if action_text:
+                    try:
+                        notation = parse_speech_notation(action_text)
+                    except SpeechNotationError as exc:
+                        exc.line_number = current_action_start_line
+                        exc.scene_number = current_scene.scene_number
+                        raise
                     current_scene.utterances.append(
                         UtteranceItem(
                             scene_number=current_scene.scene_number,
@@ -382,19 +403,60 @@ class FountainParser:
                             speaker=narrator_cue_name,
                             target_type="narrator",
                             text=action_text,
+                            speech_notation=notation,
+                            source_line=current_action_start_line,
                         )
                     )
             current_action_lines = []
+            current_action_start_line = None
 
         def flush_dialogue() -> None:
-            nonlocal current_character, current_dialogue_lines, current_parenthetical, current_scene
+            nonlocal current_character
+            nonlocal current_dialogue_lines, current_dialogue_line_numbers, current_dialogue_start_line
+            nonlocal current_parenthetical, current_listener, current_listener_line, current_scene
+            if current_character and current_listener is not None and not current_dialogue_lines and current_scene:
+                raise SpeechNotationError(
+                    "listener_note_without_speech",
+                    offset=0,
+                    line_number=current_listener_line,
+                    scene_number=current_scene.scene_number,
+                )
             if current_character and current_dialogue_lines and current_scene:
                 speech = " ".join(current_dialogue_lines).strip()
                 if speech:
-                    current_scene.dialogues.append(DialogueItem(character=current_character, line=speech))
-                    # "@ナレーター" (Japanese) or "@Narrator" / "@NARRATOR" (English) cues
-                    # are narration voiced by the narrator, not a character.
+                    try:
+                        notation = parse_speech_notation(speech, current_listener)
+                    except SpeechNotationError as exc:
+                        offset = max(0, exc.offset)
+                        consumed = 0
+                        error_line = current_dialogue_start_line or 1
+                        for line_number, dialogue_line in zip(
+                            current_dialogue_line_numbers,
+                            current_dialogue_lines,
+                            strict=False,
+                        ):
+                            if offset <= consumed + len(dialogue_line):
+                                error_line = line_number
+                                break
+                            consumed += len(dialogue_line) + 1
+                        exc.line_number = error_line
+                        exc.scene_number = current_scene.scene_number
+                        raise
+
                     is_narrator = current_character in NARRATOR_SPEAKERS
+                    if current_listener and normalize_speaker_name(current_listener) == normalize_speaker_name(
+                        current_character
+                    ):
+                        raise SpeechNotationError(
+                            "listener_is_primary_speaker",
+                            offset=0,
+                            line_number=current_listener_line or current_dialogue_start_line,
+                            scene_number=current_scene.scene_number,
+                        )
+
+                    for turn_speaker, turn_text in spoken_turns(current_character, notation):
+                        if turn_text.strip():
+                            current_scene.dialogues.append(DialogueItem(character=turn_speaker, line=turn_text))
                     current_scene.utterances.append(
                         UtteranceItem(
                             scene_number=current_scene.scene_number,
@@ -403,11 +465,18 @@ class FountainParser:
                             target_type="narrator" if is_narrator else "character",
                             text=speech,
                             performance_direction=current_parenthetical,
+                            listener=current_listener,
+                            speech_notation=notation,
+                            source_line=current_dialogue_start_line,
                         )
                     )
             current_character = None
             current_dialogue_lines = []
+            current_dialogue_line_numbers = []
+            current_dialogue_start_line = None
             current_parenthetical = ""
+            current_listener = None
+            current_listener_line = None
 
         def flush_scene() -> None:
             nonlocal current_scene, current_scene_lines
@@ -423,12 +492,17 @@ class FountainParser:
             raw_line = lines[i]
             stripped = raw_line.strip()
 
+            if in_regular_note:
+                if current_scene:
+                    current_scene_lines.append(stripped)
+                    script_lines.append(stripped)
+                if "]]" in stripped:
+                    in_regular_note = False
+                i += 1
+                continue
+
             if not stripped:
-                # A few Fountain writers put a blank line between a
-                # parenthetical and its spoken line. Keep that cue alive until
-                # the line arrives so the direction is not mistaken for the
-                # audition text or discarded as an empty dialogue block.
-                if current_parenthetical and current_character and not current_dialogue_lines:
+                if current_character and not current_dialogue_lines:
                     flush_action()
                 else:
                     flush_dialogue()
@@ -438,7 +512,6 @@ class FountainParser:
                 i += 1
                 continue
 
-            # Check for scene heading
             is_heading, explicit_num, clean_heading = cls.parse_scene_heading(stripped)
             if is_heading:
                 flush_scene()
@@ -450,20 +523,25 @@ class FountainParser:
                 i += 1
                 continue
 
-            # Section headers (# Section)
             if stripped.startswith("#"):
                 outline_lines.append(stripped)
                 i += 1
                 continue
 
-            # If inside a scene, detect character cue vs dialogue vs action
             if current_scene:
                 current_scene_lines.append(stripped)
                 script_lines.append(stripped)
-
-                # Character cue heuristic:
-                # 1. Starts with @ (Fountain forced character cue)
-                # 2. Or uppercase name
+                if is_listener_note_candidate(stripped) and current_character is None:
+                    raise SpeechNotationError(
+                        "listener_note_without_speaker",
+                        offset=0,
+                        line_number=i + 1,
+                        scene_number=current_scene.scene_number,
+                    )
+                if stripped.startswith("[[") and not is_listener_note_candidate(stripped):
+                    in_regular_note = "]]" not in stripped
+                    i += 1
+                    continue
                 is_forced_char = stripped.startswith("@")
                 is_all_caps_char = is_ascii_character_cue(stripped) and not stripped.startswith("!")
 
@@ -474,21 +552,59 @@ class FountainParser:
                     char_name = re.sub(r"\s*\(.*?\)$", "", char_name).strip()
                     current_character = char_name
                 elif current_character:
-                    # Parenthetical: a performance direction, e.g. (落ち着いた低い声で).
-                    # Captured as TTS guidance (not spoken verbatim). Only the first
-                    # parenthetical of a dialogue block is retained.
-                    if is_parenthetical_line(stripped):
+                    if is_listener_note_candidate(stripped):
+                        try:
+                            listener = parse_listener_note(stripped)
+                        except SpeechNotationError as exc:
+                            exc.line_number = i + 1
+                            exc.scene_number = current_scene.scene_number
+                            raise
+                        if current_dialogue_lines:
+                            raise SpeechNotationError(
+                                "listener_note_after_speech",
+                                offset=0,
+                                line_number=i + 1,
+                                scene_number=current_scene.scene_number,
+                            )
+                        if current_listener is not None:
+                            raise SpeechNotationError(
+                                "multiple_listener_notes",
+                                offset=0,
+                                line_number=i + 1,
+                                scene_number=current_scene.scene_number,
+                            )
+                        if normalize_speaker_name(listener) == normalize_speaker_name(current_character):
+                            raise SpeechNotationError(
+                                "listener_is_primary_speaker",
+                                offset=0,
+                                line_number=i + 1,
+                                scene_number=current_scene.scene_number,
+                            )
+                        current_listener = listener
+                        current_listener_line = i + 1
+                    elif is_parenthetical_line(stripped):
+                        if current_listener is not None:
+                            raise SpeechNotationError(
+                                "listener_note_before_parenthetical",
+                                offset=0,
+                                line_number=i + 1,
+                                scene_number=current_scene.scene_number,
+                            )
                         if not current_parenthetical:
                             current_parenthetical = stripped[1:-1].strip()
                     else:
+                        if current_dialogue_start_line is None:
+                            current_dialogue_start_line = i + 1
                         current_dialogue_lines.append(stripped)
+                        current_dialogue_line_numbers.append(i + 1)
                 else:
                     action_line = stripped[1:].strip() if stripped.startswith("!") else stripped
                     if action_line:
+                        if current_action_start_line is None:
+                            current_action_start_line = i + 1
                         current_action_lines.append(action_line)
             else:
                 outline_lines.append(stripped)
-
             i += 1
 
         flush_scene()
@@ -496,10 +612,49 @@ class FountainParser:
         if not metadata.title and outline_lines:
             metadata.title = outline_lines[0].replace("#", "").strip()
 
-        return ParsedScript(
+        parsed = ParsedScript(
             metadata=metadata,
             scenes=scenes,
             raw_outline="\n".join(outline_lines).strip(),
             raw_script_body="\n".join(script_lines).strip(),
             source_fountain=sanitized,
         )
+
+        source_speakers = list(
+            dict.fromkeys(
+                utterance.speaker for utterance in parsed.all_utterances() if utterance.target_type == "character"
+            )
+        )
+        for scene in parsed.scenes:
+            for utterance in scene.utterances:
+                if utterance.listener is None:
+                    continue
+                normalized_listener = normalize_speaker_name(utterance.listener)
+                matches = [
+                    speaker for speaker in source_speakers if normalize_speaker_name(speaker) == normalized_listener
+                ]
+                if len(matches) > 1:
+                    raise SpeechNotationError(
+                        "ambiguous_listener",
+                        offset=0,
+                        line_number=utterance.source_line,
+                        scene_number=utterance.scene_number,
+                    )
+                listener = matches[0] if matches else utterance.listener
+                if normalize_speaker_name(listener) == normalize_speaker_name(utterance.speaker):
+                    raise SpeechNotationError(
+                        "listener_is_primary_speaker",
+                        offset=0,
+                        line_number=utterance.source_line,
+                        scene_number=utterance.scene_number,
+                    )
+                utterance.listener = listener
+                if utterance.speech_notation is not None:
+                    utterance.speech_notation = SpeechNotation(
+                        tokens=utterance.speech_notation.tokens,
+                        listener=listener,
+                    )
+                for dialogue in scene.dialogues:
+                    if normalize_speaker_name(dialogue.character) == normalized_listener:
+                        dialogue.character = listener
+        return parsed

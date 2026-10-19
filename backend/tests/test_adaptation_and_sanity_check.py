@@ -1,4 +1,4 @@
-"""Tests for Task 10 (C2t): Adaptation prompt relaxation and structural sanity check."""
+"""脚色プロンプトと脚本構造の整合性検証。"""
 
 from __future__ import annotations
 
@@ -80,10 +80,196 @@ def test_conversion_prompt_relaxes_creation_constraint() -> None:
 
 
 def test_conversion_prompt_requires_contextual_original_performance_direction() -> None:
-    """Directions must be inferred for performance, not copied from stage directions."""
+    """Directions should be selective and distinguish sustained acting from momentary tags."""
     assert "immediate situation" in CONVERSION_PROMPT
     assert "dialogue's wording" in CONVERSION_PROMPT
     assert "Do not merely copy" in CONVERSION_PROMPT
+    assert "Parentheticals are optional" in CONVERSION_PROMPT
+    assert "Do not add the same direction to every turn" in CONVERSION_PROMPT
+    assert "Do not add pause tags at every punctuation mark" in CONVERSION_PROMPT
+    assert "<short pause>" in CONVERSION_PROMPT
+    assert "<breath>" in CONVERSION_PROMPT
+    assert "[[listener:話者名]]" in CONVERSION_PROMPT
+
+
+def test_screenplay_normalization_prompt_uses_shared_d8_performance_rules() -> None:
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    captured = {}
+
+    def convert(**kwargs):
+        captured.update(kwargs)
+        return "Title: Synthetic\\n\\n=== NARRAVANT FOUNTAIN COMPLETE ==="
+
+    analyzer._convert_with_continuation = convert
+    analyzer.normalize_screenplay_text(
+        "Title: Synthetic\\n\\nINT. ROOM - DAY #1#\\n\\n@Narrator\\nA calm line.",
+        source_language="en",
+    )
+    text_prompt = captured["initial_contents"]
+    analyzer.normalize_screenplay_pdf(b"synthetic pdf bytes")
+    pdf_prompt = captured["initial_contents"][0]
+
+    for prompt in (text_prompt, pdf_prompt):
+        assert "Parentheticals are optional" in prompt
+        assert "Do not add the same direction to every turn" in prompt
+        assert "Do not duplicate an existing parenthetical or narrator cue" in prompt
+        assert "Do not add pause tags at every punctuation mark" in prompt
+        assert "[[listener:話者名]]" in prompt
+
+
+def test_scene_verification_returns_structured_rooted_issues() -> None:
+    import json
+
+    from narravant.services.narrative_adaptation import (
+        PlannedScene,
+        ResolvedSourceMaterial,
+        SceneContext,
+        SourceAnchor,
+    )
+    from narravant.services.vertex_analysis import CollectedStream
+
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    analyzer.verification_max_output_tokens = 1000
+    requests = []
+    response = {
+        "issues": [
+            {
+                "scene_number": 1,
+                "issue_type": "event_omission",
+                "severity": "major",
+                "event_ids": ["event1"],
+                "source_anchors": [
+                    {"kind": "text", "start_offset": 0, "end_offset": 20},
+                ],
+                "preservation_condition": "Retain Maya's decision to keep the key.",
+                "description": "The generated scene omits her decision.",
+                "revision_direction": "Restore the decision without changing the heading.",
+            }
+        ]
+    }
+
+    def collect(**kwargs):
+        requests.append(kwargs)
+        return CollectedStream(json.dumps(response), 30, ("STOP",))
+
+    analyzer._collect_stream_text = collect
+    plan = PlannedScene(
+        scene_number=1,
+        heading="INT. ROOM - DAY #1#",
+        source_unit_ids=["unit1"],
+        retained_event_ids=["event1"],
+        omitted_event_ids=[],
+        purpose="Maya decides what to do with the key.",
+        characters=["MAYA"],
+        causal_notes="The key is important.",
+    )
+    context = SceneContext(
+        scene_number=1,
+        source_unit_ids=("unit1",),
+        retained_events=(),
+        source_material=(
+            ResolvedSourceMaterial(
+                source_anchor=SourceAnchor.text(0, 20),
+                content="Maya keeps the brass key.",
+            ),
+        ),
+    )
+
+    issues = analyzer.verify_scene(
+        plan,
+        "INT. ROOM - DAY #1#\\n\\n@MAYA\\nI will keep it.",
+        scene_context=context,
+        analysis_context={"metadata": {"title": "Synthetic analysis"}},
+    )
+
+    assert len(issues) == 1
+    assert issues[0].event_ids == ["event1"]
+    assert "Maya keeps the brass key." in requests[0]["contents"]
+    assert "Synthetic analysis" in requests[0]["contents"]
+    assert "Do not reject stylistic preference without source evidence" in requests[0]["contents"]
+    assert "Check each line against the actual source speaker" in requests[0]["contents"]
+    assert "A combined cue is not evidence that both people spoke" in requests[0]["contents"]
+    assert "misattribution as speaker_attribution" in requests[0]["contents"]
+
+
+def test_scene_reviser_receives_draft_source_and_all_quality_issues() -> None:
+    from narravant.services.narrative_adaptation import (
+        PlannedScene,
+        QualityIssue,
+        ResolvedSourceMaterial,
+        SceneContext,
+        SourceAnchor,
+    )
+    from narravant.services.vertex_analysis import CollectedStream
+
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    analyzer.scene_writing_max_output_tokens = 1000
+    requests = []
+    analyzer._collect_stream_text = lambda **kwargs: (
+        requests.append(kwargs) or CollectedStream("INT. ROOM - DAY #1#\\n\\n@MAYA\\nI keep the key.", 30, ("STOP",))
+    )
+    plan = PlannedScene(
+        scene_number=1,
+        heading="INT. ROOM - DAY #1#",
+        source_unit_ids=["unit1"],
+        retained_event_ids=["event1"],
+        omitted_event_ids=[],
+        purpose="Maya decides what to do with the key.",
+        characters=["MAYA"],
+        causal_notes="The key matters.",
+    )
+    context = SceneContext(
+        scene_number=1,
+        source_unit_ids=("unit1",),
+        retained_events=(),
+        source_material=(
+            ResolvedSourceMaterial(
+                source_anchor=SourceAnchor.text(0, 20),
+                content="Maya keeps the brass key.",
+            ),
+        ),
+    )
+    issues = [
+        QualityIssue(
+            scene_number=1,
+            issue_type="event_omission",
+            severity="major",
+            event_ids=["event1"],
+            preservation_condition="Keep Maya's decision.",
+            description="The first draft drops the decision.",
+            revision_direction="Restore the decision in Maya's line.",
+        ),
+        QualityIssue(
+            scene_number=1,
+            issue_type="motivation_change",
+            severity="minor",
+            event_ids=["event1"],
+            preservation_condition="Preserve Maya's reason.",
+            description="The line weakens her stated reason.",
+            revision_direction="Keep the reason explicit.",
+        ),
+    ]
+
+    revised = analyzer.revise_scene(
+        plan,
+        context,
+        "INT. ROOM - DAY #1#\\n\\n@MAYA\\nI will leave it here.",
+        issues,
+        story_plan=None,
+        analysis_context={"metadata": {"title": "Synthetic analysis"}},
+        source_language="en",
+    )
+    prompt = requests[0]["contents"]
+
+    assert revised.endswith("I keep the key.")
+    assert "Maya keeps the brass key." in prompt
+    assert "I will leave it here." in prompt
+    assert "The first draft drops the decision." in prompt
+    assert "Synthetic analysis" in prompt
+    assert "Keep the reason explicit." in prompt
+    assert "Parentheticals are optional" in prompt
+    assert "Use only the exact names in planned_scene.characters for character cues" in prompt
+    assert "Use planned_scene.heading verbatim" in prompt
 
 
 def test_conversion_prompt_replaces_only_plot_irrelevant_minor_roles_with_narration() -> None:
@@ -93,14 +279,42 @@ def test_conversion_prompt_replaces_only_plot_irrelevant_minor_roles_with_narrat
 
 
 def test_analysis_prompt_separates_stable_voice_traits_from_scene_direction() -> None:
-    """Voice Design traits stay provider-friendly; line acting belongs to parentheticals."""
-    parsed = FountainParser.parse("Title: Sample\n\nINT. ROOM - DAY #1#\n\nA line.\n")
+    """Voice Design traits stay source-grounded; line acting belongs to Fountain."""
+    parsed = FountainParser.parse("Title: Sample\\n\\nINT. ROOM - DAY #1#\\n\\nA line.\\n")
     prompt = VertexDocumentAnalyzer._analysis_prompt(parsed, max_main_characters=6)
     assert "Output exactly one or two short sentences" in prompt
     assert "scene-specific emotions" in prompt
     assert "Fountain parentheticals and TTS speech style" in prompt
     assert "natural human voice only" in prompt
     assert "figurative comparisons" in prompt
+    assert "Do not assert a concrete age unless it is supported by the source character information" in prompt
+    assert "Do not put scene-specific pace, pauses, emphasis, or line delivery in voice_traits" in prompt
+
+
+def test_adaptation_result_exposes_stable_source_character_cards_only() -> None:
+    from narravant.services.narrative_adaptation import (
+        AdaptationResult,
+        CharacterKnowledge,
+        SourceCharacterCard,
+    )
+
+    result = AdaptationResult(
+        fountain="",
+        source_context=None,
+        character_knowledge=(
+            CharacterKnowledge(
+                character_name="NOBU",
+                evidence_event_ids=["event1"],
+                defining_traits=["年齢が明記された老職人"],
+                state_by_event={"event1": "この場面では怒っている"},
+                knowledge_by_event={"event1": "秘密を知った"},
+            ),
+        ),
+    )
+
+    assert result.source_character_cards == (
+        SourceCharacterCard("NOBU", ("年齢が明記された老職人",)),
+    )
 
 
 def test_fountain_parser_counts_utterances() -> None:

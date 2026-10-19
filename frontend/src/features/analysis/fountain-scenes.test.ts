@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
-import { countSceneHeadings, firstUtteranceLine, hasSceneHeadings, narratorSpeakerName, playbackStartAtOffset, sceneHeadingRange, spokenCharacterNames, utteranceRange } from './fountain-scenes'
+import { countSceneHeadings, firstUtteranceLine, hasSceneHeadings, narratorSpeakerName, playbackSourceAtPosition, playbackStartAtOffset, sceneHeadingRange, spokenCharacterNames, utteranceRange } from './fountain-scenes'
 
 const NARRATOR = 'ナレーター'
+
+it('文途中から再開した表示範囲は、発音しない前半へ戻さない', () => {
+  const source = 'INT. ROOM - DAY #1#\n\n@ナレーター\n前の文です。再開対象です。\n\n@子供\n次の台詞です。'
+  const start = source.indexOf('再開対象')
+  const full = utteranceRange(source, 1, 1)!
+  expect(utteranceRange(source, 1, 1, start)).toEqual({ start, end: full.end })
+  // 次話者や別発話には再開位置を持ち越さない。
+  expect(utteranceRange(source, 1, 2, start)).toEqual(utteranceRange(source, 1, 2))
+})
 
 describe('narrator speaker identity', () => {
   it.each(['Narrator', 'NARRATOR', 'ナレーター'])('明示された %s を本文の文字種より優先する', (speaker) => {
@@ -124,6 +133,45 @@ describe('playback source ranges', () => {
     expect(playbackStartAtOffset(source, cursor)).toEqual({ sceneNumber: 1, utteranceIndex: 2 })
   })
 
+  it('英語の非終端略記をカーソルの文境界にしない', () => {
+    const text = 'INT. ROOM - DAY #1#\n\n@Narrator\nDr. Smith waited. Next sentence.\n'
+    const position = playbackStartAtOffset(text, text.indexOf('Smith') + 1)!
+    expect(position).toEqual({ sceneNumber: 1, utteranceIndex: 1 })
+    expect(playbackSourceAtPosition(text, position)).toBe(text)
+    const next = playbackStartAtOffset(text, text.indexOf('Next') + 1)!
+    expect(playbackSourceAtPosition(text, next)).toContain('@Narrator\nNext sentence.')
+  })
+
+  it('2文目の先頭・途中からの再生位置を、同じ発話 index の2文目先頭へ対応させる', () => {
+    const source = [
+      'INT. ROOM - DAY #1#',
+      '',
+      '@ナレーター',
+      '雨の匂いがした。',
+      '窓辺に小さな傘が置かれていた。',
+    ].join('\n')
+    const secondSentenceStart = source.indexOf('窓辺')
+    const afterFirstSentence = playbackStartAtOffset(
+      source,
+      source.indexOf('雨の匂いがした。') + '雨の匂いがした。'.length,
+    )!
+
+    const fromSentenceStart = playbackStartAtOffset(source, secondSentenceStart)!
+    const fromSentenceMiddle = playbackStartAtOffset(source, secondSentenceStart + 2)!
+
+    expect(fromSentenceStart).toEqual({ sceneNumber: 1, utteranceIndex: 1, sourceOffset: secondSentenceStart })
+    expect(fromSentenceMiddle).toEqual(fromSentenceStart)
+    expect(afterFirstSentence).toEqual(fromSentenceStart)
+    expect(playbackSourceAtPosition(source, fromSentenceMiddle)).toBe([
+      'INT. ROOM - DAY #1#',
+      '',
+      '@ナレーター',
+      '窓辺に小さな傘が置かれていた。',
+    ].join('\n'))
+    expect(playbackStartAtOffset(playbackSourceAtPosition(source, fromSentenceMiddle), secondSentenceStart))
+      .toEqual({ sceneNumber: 1, utteranceIndex: 1 })
+  })
+
   it('maps a cursor in a heading or blank line to the next utterance', () => {
     const headingCursor = source.indexOf('INT. ROOM')
     expect(playbackStartAtOffset(source, headingCursor)).toEqual({ sceneNumber: 1, utteranceIndex: 0 })
@@ -142,5 +190,39 @@ describe('playback source ranges', () => {
     ].join('\n')
     expect(spokenCharacterNames(contdSource)).toEqual(['MAYA'])
     expect(firstUtteranceLine(contdSource, 'MAYA', NARRATOR)).toBe('First line of speech.')
+  })
+
+  it('maps a listener reaction to the existing utterance and includes its speaker in previews', () => {
+    const source = [
+      'INT. 山道 - 夜 #1#',
+      '',
+      '@旅人',
+      '[[listener:案内人]]',
+      'この道で |うん| 間違いない？<short pause>',
+    ].join('\n')
+    const spokenLine = 'この道で |うん| 間違いない？<short pause>'
+
+    expect(spokenCharacterNames(source)).toEqual(['旅人', '案内人'])
+    expect(firstUtteranceLine(source, '旅人', NARRATOR)).toBe('この道で 間違いない？')
+    expect(firstUtteranceLine(source, '案内人', NARRATOR)).toBe('うん')
+    expect(source.slice(...Object.values(utteranceRange(source, 1, 1)!))).toBe(spokenLine)
+    expect(playbackStartAtOffset(source, source.indexOf('うん'))).toEqual({ sceneNumber: 1, utteranceIndex: 1 })
+  })
+
+  it.each([1, 2])('resolves a listener alias even when the existing cue occurs %i times', (cueCount) => {
+    const source = [
+      'INT. 山道 - 夜 #1#',
+      '',
+      '@旅人',
+      '[[listener:専門の猟師]]',
+      '危険なのか |そうだ|',
+      '',
+      '@専門の猟師（案内人）',
+      'こちらへ。',
+    ].join('\n')
+
+    const repeatedSource = source + '\n\n@専門の猟師（案内人）\n別の合成台詞。'.repeat(cueCount - 1)
+    expect(spokenCharacterNames(repeatedSource)).toEqual(['旅人', '専門の猟師（案内人）'])
+    expect(firstUtteranceLine(repeatedSource, '専門の猟師（案内人）', NARRATOR)).toBe('そうだ')
   })
 })

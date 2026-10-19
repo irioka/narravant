@@ -1,23 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 from narravant.api.dependencies import (
     LOCAL_USER_DISPLAY_NAME,
     LOCAL_USER_EMAIL,
     LOCAL_USER_ID,
 )
-from narravant.api.dependencies import get_db_manager as get_db_manager
-from narravant.api.dependencies import get_storage_client as get_storage_client
 from narravant.core.emotion_arc_resolution import scene_mapping_payload
 from narravant.db.database import DatabaseManager, DocumentRepository
 from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.main import app
+from narravant.services.speech_segments import SegmentVoice
 from narravant.services.tts import FakeTtsClient
 from narravant.services.voice_design import FakeVoiceDesignClient
 from narravant.services.voice_models import ProviderVoice, StoredVoiceRecord, utc_iso
@@ -39,6 +40,50 @@ Sun shines bright.
 @BOB
 Good morning.
 """
+
+
+class WebSocketTestSession:
+    def __init__(self, incoming: asyncio.Queue, outgoing: asyncio.Queue) -> None:
+        self.incoming = incoming
+        self.outgoing = outgoing
+
+    async def send_json(self, data: dict) -> None:
+        await self.incoming.put(
+            {"type": "websocket.receive", "text": json.dumps(data, ensure_ascii=False)}
+        )
+
+    async def receive_json(self) -> dict:
+        message = await asyncio.wait_for(self.outgoing.get(), timeout=2)
+        assert message["type"] == "websocket.send"
+        return json.loads(message["text"])
+
+
+@asynccontextmanager
+async def connect_websocket(path: str):
+    incoming: asyncio.Queue = asyncio.Queue()
+    outgoing: asyncio.Queue = asyncio.Queue()
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "path": path,
+        "raw_path": path.encode(),
+        "scheme": "ws",
+        "query_string": b"",
+        "headers": [],
+        "root_path": "",
+        "client": ("test", 123),
+        "server": ("test", 80),
+        "subprotocols": [],
+    }
+    await incoming.put({"type": "websocket.connect"})
+    task = asyncio.create_task(app(scope, incoming.get, outgoing.put))
+    try:
+        accepted = await asyncio.wait_for(outgoing.get(), timeout=2)
+        assert accepted["type"] == "websocket.accept"
+        yield WebSocketTestSession(incoming, outgoing)
+    finally:
+        await incoming.put({"type": "websocket.disconnect", "code": 1000})
+        await asyncio.wait_for(task, timeout=2)
 
 
 @pytest.fixture
@@ -155,7 +200,6 @@ def test_setup(fake_tts: FakeTtsClient, monkeypatch: pytest.MonkeyPatch):
         gemini_api_key="fake",
         gemini_tts_model="gemini-3.8-flash-tts",
         playback_scene_pause_duration_ms=1750,
-        playback_inter_utterance_pause_duration_ms=1000,
         emotion_arc_max_points=36,
         valence_max_arc_distance=1.0,
     )
@@ -164,48 +208,41 @@ def test_setup(fake_tts: FakeTtsClient, monkeypatch: pytest.MonkeyPatch):
     app.state.storage_client = storage
     app.state.voice_management_owner_locks = {}
 
-    # Register HTTP accessor overrides ONLY to signal main.lifespan to skip
-    # production wiring (so it doesn't overwrite app.state). The WS route itself
-    # reads app.state directly; the TTS client is faked via module indirection.
-    app.dependency_overrides[get_db_manager] = lambda: db
-    app.dependency_overrides[get_storage_client] = lambda: storage
-
     import narravant.api.playback as playback_module
 
     monkeypatch.setattr(playback_module, "_build_tts_client", lambda settings: fake_tts)
     monkeypatch.setattr(playback_module, "_build_voice_design_client", lambda settings: voice_provider)
 
-    with TestClient(app) as client:
-        yield client, storage, doc_id, fake_tts
-    app.dependency_overrides.clear()
+    try:
+        yield storage, doc_id, fake_tts
+    finally:
+        app.dependency_overrides.clear()
 
 
-def test_playback_ws_full_flow(test_setup):
+async def test_playback_ws_full_flow(test_setup):
     """Test full WebSocket playback streaming flow with utterance events and audio chunks."""
-    client, storage, doc_id, fake_tts = test_setup
+    storage, doc_id, fake_tts = test_setup
 
-    with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
-        ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
+    async with connect_websocket(f"/api/v1/documents/{doc_id}/playback") as ws:
+        await ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
 
         events = []
         while True:
-            msg = ws.receive_json()
+            msg = await ws.receive_json()
             events.append(msg)
-            if msg.get("event") == "playback_complete":
+            if msg.get("event") in {"playback_complete", "error"}:
                 break
 
         event_types = [e["event"] for e in events]
         assert "utterance_start" in event_types
         assert "scene_pause" in event_types
-        assert "utterance_pause" in event_types
+        assert "utterance_pause" not in event_types
         assert "audio_chunk" in event_types
         assert "audio_segment_end" in event_types
         assert "utterance_end" in event_types
         assert event_types[-1] == "playback_complete"
         pause = next(event for event in events if event["event"] == "scene_pause")
         assert pause["duration_ms"] == 1750
-        utterance_pause = next(event for event in events if event["event"] == "utterance_pause")
-        assert utterance_pause["duration_ms"] == 1000
 
         # Check audio chunk contains valid base64
         audio_chunks = [e for e in events if e["event"] == "audio_chunk"]
@@ -214,16 +251,69 @@ def test_playback_ws_full_flow(test_setup):
         assert len(decoded_bytes) > 0
 
 
-def test_playback_ws_start_from_specific_position(test_setup):
-    """Test starting playback from scene 2 utterance 0."""
-    client, storage, doc_id, fake_tts = test_setup
+async def test_playback_ws_validates_listener_voice_with_primary_voices_before_synthesis(
+    test_setup,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _storage, _doc_id, fake_tts = test_setup
+    validated: list[tuple[str, list[str], bool]] = []
 
-    with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
-        ws.send_json({"action": "start", "scene_number": 2, "start_utterance_index": 0})
+    class VoiceValidationSpy:
+        async def validate_voice_ids(
+            self,
+            owner_id: str,
+            voice_ids: list[str],
+            *,
+            allow_current_assignment: bool,
+        ) -> None:
+            validated.append((owner_id, voice_ids, allow_current_assignment))
+
+    import narravant.api.playback as playback_module
+
+    monkeypatch.setattr(playback_module, "_build_voice_management_service", lambda *_args: VoiceValidationSpy())
+
+    async with connect_websocket("/api/v1/documents/playback") as ws:
+        await ws.send_json(
+            {
+                "action": "start",
+                "draft": {
+                    "source_fountain": (
+                        "INT. ROOM - DAY #1#\n\n"
+                        "@ALICE\n"
+                        "[[listener:BOB]]\n"
+                        "わかる？ |うん|"
+                    ),
+                    "voice_assignments": [
+                        {"speaker": "Narrator", "voice_id": "voice_fake_narrator"},
+                        {"speaker": "ALICE", "voice_id": "voice_fake_alice"},
+                        {"speaker": "BOB", "voice_id": "voice_fake_bob"},
+                    ],
+                },
+            }
+        )
+        events = []
+        while True:
+            message = await ws.receive_json()
+            events.append(message)
+            if message.get("event") == "playback_complete":
+                break
+
+    assert validated == [(LOCAL_USER_ID, ["voice_fake_narrator", "voice_fake_alice", "voice_fake_bob"], False)]
+    reaction_segment = next(segment for segment in fake_tts.synthesized_segments if segment.listener is not None)
+    assert reaction_segment.listener == SegmentVoice("BOB", "voice_fake_bob")
+    assert all(message["event"] != "utterance_pause" for message in events)
+
+
+async def test_playback_ws_start_from_specific_position(test_setup):
+    """Test starting playback from scene 2 utterance 0."""
+    _storage, doc_id, _fake_tts = test_setup
+
+    async with connect_websocket(f"/api/v1/documents/{doc_id}/playback") as ws:
+        await ws.send_json({"action": "start", "scene_number": 2, "start_utterance_index": 0})
 
         events = []
         while True:
-            msg = ws.receive_json()
+            msg = await ws.receive_json()
             events.append(msg)
             if msg.get("event") == "playback_complete":
                 break
@@ -242,9 +332,9 @@ def test_playback_ws_start_from_specific_position(test_setup):
         assert starts[2]["speaker"] == "BOB"
 
 
-def test_playback_ws_unassigned_voice_emits_error(test_setup):
+async def test_playback_ws_unassigned_voice_emits_error(test_setup):
     """If a speaker lacks voice_id, error event is emitted with position."""
-    client, storage, doc_id, fake_tts = test_setup
+    storage, doc_id, _fake_tts = test_setup
 
     # Overwrite script with unassigned voice for ALICE
     data, meta = storage.read_structured_script(doc_id, 1)
@@ -254,53 +344,53 @@ def test_playback_ws_unassigned_voice_emits_error(test_setup):
     ]
     storage.write_structured_script(doc_id, 1, data, if_generation_match=meta.generation)
 
-    with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
-        ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
+    async with connect_websocket(f"/api/v1/documents/{doc_id}/playback") as ws:
+        await ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
 
-        msg = ws.receive_json()
+        msg = await ws.receive_json()
         assert msg["event"] == "error"
         assert msg["scene_number"] == 1
         assert msg["utterance_index"] == 2
         assert "ALICE" in msg["message"]
 
 
-def test_playback_ws_stop_action(test_setup):
+async def test_playback_ws_stop_action(test_setup):
     """action: 'stop' halts subsequent playback generation."""
-    client, storage, doc_id, fake_tts = test_setup
+    _storage, doc_id, _fake_tts = test_setup
 
-    with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
-        ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
+    async with connect_websocket(f"/api/v1/documents/{doc_id}/playback") as ws:
+        await ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
 
         # Receive first utterance_start
-        msg = ws.receive_json()
+        msg = await ws.receive_json()
         assert msg["event"] == "utterance_start"
 
         # Send stop immediately
-        ws.send_json({"action": "stop"})
+        await ws.send_json({"action": "stop"})
 
 
-def test_playback_ws_nonexistent_document(test_setup):
+async def test_playback_ws_nonexistent_document(test_setup):
     """Connecting to a nonexistent document yields error event and closes."""
-    client, storage, doc_id, fake_tts = test_setup
+    _storage, _doc_id, _fake_tts = test_setup
 
-    with client.websocket_connect("/api/v1/documents/non-existent-doc/playback") as ws:
-        msg = ws.receive_json()
+    async with connect_websocket("/api/v1/documents/non-existent-doc/playback") as ws:
+        msg = await ws.receive_json()
         assert msg["event"] == "error"
         assert "not found" in msg["message"]
 
 
-def test_playback_ws_duplicate_start_ignored(test_setup):
+async def test_playback_ws_duplicate_start_ignored(test_setup):
     """Sending duplicate start while playback is already running does not trigger parallel task."""
-    client, storage, doc_id, fake_tts = test_setup
+    _storage, doc_id, _fake_tts = test_setup
 
-    with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
-        ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
+    async with connect_websocket(f"/api/v1/documents/{doc_id}/playback") as ws:
+        await ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
         # Immediately send a second start
-        ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
+        await ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
 
         events = []
         while True:
-            msg = ws.receive_json()
+            msg = await ws.receive_json()
             events.append(msg)
             if msg.get("event") == "playback_complete":
                 break
@@ -310,7 +400,7 @@ def test_playback_ws_duplicate_start_ignored(test_setup):
         assert len(complete_events) == 1
 
 
-def test_playback_ws_resolves_deps_without_request_override(
+async def test_playback_ws_resolves_deps_without_request_override(
     fake_tts: FakeTtsClient,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -386,26 +476,22 @@ def test_playback_ws_resolves_deps_without_request_override(
     # Resolve db/storage/settings/user from the real WebSocket connection
     # (app.state). External TTS and Voice Design clients use fakes. This reproduces the
     # runtime path that previously failed with `get_db_manager() missing 'request'`.
-    # HTTP accessor overrides are registered solely to bypass lifespan wiring.
-    app.dependency_overrides[get_db_manager] = lambda: db
-    app.dependency_overrides[get_storage_client] = lambda: storage
 
     import narravant.api.playback as playback_module
 
     monkeypatch.setattr(playback_module, "_build_tts_client", lambda settings: fake_tts)
     monkeypatch.setattr(playback_module, "_build_voice_design_client", lambda settings: voice_provider)
     try:
-        with TestClient(app) as client:
-            with client.websocket_connect(f"/api/v1/documents/{doc_id}/playback") as ws:
-                ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
-                events = []
-                while True:
-                    msg = ws.receive_json()
-                    events.append(msg)
-                    if msg.get("event") == "playback_complete":
-                        break
-                assert events[-1]["event"] == "playback_complete"
-                assert any(e["event"] == "utterance_start" for e in events)
-                assert voice_provider.get_call_count == 1
+        async with connect_websocket(f"/api/v1/documents/{doc_id}/playback") as ws:
+            await ws.send_json({"action": "start", "scene_number": 1, "start_utterance_index": 0})
+            events = []
+            while True:
+                msg = await ws.receive_json()
+                events.append(msg)
+                if msg.get("event") == "playback_complete":
+                    break
+            assert events[-1]["event"] == "playback_complete"
+            assert any(e["event"] == "utterance_start" for e in events)
+            assert voice_provider.get_call_count == 1
     finally:
         app.dependency_overrides.clear()

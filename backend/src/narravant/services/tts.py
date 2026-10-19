@@ -14,96 +14,17 @@ import httpx
 
 from narravant.core.settings import Settings
 from narravant.services.playback import PlannedUtterance
+from narravant.services.speech_segments import (
+    SegmentVoice,
+    SpeechSegment,
+    build_speech_segments,
+)
 from narravant.services.voice_models import canonical_voice_id
 
 logger = logging.getLogger(__name__)
 
 TRANSIENT_TTS_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 DEFAULT_SCENE_PAUSE_DURATION_MS = 3000
-DEFAULT_INTER_UTTERANCE_PAUSE_DURATION_MS = 1000
-MAX_TTS_SEGMENT_CHARACTERS = 180
-_SENTENCE_ENDINGS = frozenset("。！？!?…")
-_CLAUSE_ENDINGS = frozenset("、，,;；:")
-_CLOSING_PUNCTUATION = frozenset('」』）)]}’”"〉》')
-_NON_TERMINAL_ABBREVIATIONS = frozenset({"dr.", "mr.", "mrs.", "ms.", "prof.", "sr.", "jr.", "e.g.", "i.e."})
-
-
-def _split_tts_text(text: str) -> list[str]:
-    """計画上の発話を文単位の TTS 要求へ分割する。
-
-    長文は句読点を優先して分ける。近くに句読点がない場合は、最初の音声を
-    遅らせないよう空白または文字境界で分ける。句読点は直前の segment に残す。
-    """
-    text = text.strip()
-    if not text:
-        return []
-
-    sentences: list[str] = []
-    start = 0
-    index = 0
-    while index < len(text):
-        character = text[index]
-        sentence_end = character in _SENTENCE_ENDINGS
-        if character == ".":
-            previous = text[index - 1] if index > 0 else ""
-            following = text[index + 1] if index + 1 < len(text) else ""
-            # 小数点や e.g. のような略記のピリオドでは分割しない。
-            preceding_token = text[: index + 1].rsplit(None, 1)[-1].lower()
-            dotted_abbreviation = preceding_token in _NON_TERMINAL_ABBREVIATIONS
-            sentence_end = (
-                not dotted_abbreviation
-                and not (previous.isdigit() and following.isdigit())
-                and (not following or following.isspace() or following in _CLOSING_PUNCTUATION)
-            )
-
-        if not sentence_end:
-            index += 1
-            continue
-
-        end = index + 1
-        while end < len(text) and (text[end] in _SENTENCE_ENDINGS or text[end] in _CLOSING_PUNCTUATION):
-            end += 1
-        sentences.append(text[start:end].strip())
-        start = end
-        index = end
-
-    if start < len(text):
-        sentences.append(text[start:].strip())
-
-    segments: list[str] = []
-    for sentence in sentences:
-        remaining = sentence
-        while len(remaining) > MAX_TTS_SEGMENT_CHARACTERS:
-            limit = MAX_TTS_SEGMENT_CHARACTERS
-            clause_positions = [position for position, char in enumerate(remaining[:limit]) if char in _CLAUSE_ENDINGS]
-            if clause_positions:
-                end = clause_positions[-1] + 1
-            else:
-                next_clause = next(
-                    (
-                        position + 1
-                        for position, char in enumerate(remaining[limit:], start=limit)
-                        if char in _CLAUSE_ENDINGS
-                    ),
-                    None,
-                )
-                if next_clause is not None and next_clause <= limit + 30:
-                    end = next_clause
-                else:
-                    whitespace_positions = [
-                        position for position, char in enumerate(remaining[:limit]) if char.isspace()
-                    ]
-                    end = whitespace_positions[-1] + 1 if whitespace_positions else limit
-
-            piece = remaining[:end].strip()
-            if piece:
-                segments.append(piece)
-            remaining = remaining[end:].strip()
-
-        if remaining:
-            segments.append(remaining)
-
-    return segments
 
 
 def _extract_audio_chunks(sse_data_payload: str) -> Iterator[bytes]:
@@ -131,7 +52,15 @@ class TtsError(Exception):
 
 
 class TtsClient(Protocol):
-    """Protocol for speech synthesis."""
+    """Protocol for speech synthesis with segment and legacy entry points."""
+
+    async def synthesize_segment_stream(
+        self,
+        segment: SpeechSegment,
+        model: str | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Synthesize one sentence segment into raw PCM chunks."""
+        ...
 
     async def synthesize_stream(
         self,
@@ -140,11 +69,7 @@ class TtsClient(Protocol):
         model: str | None = None,
         style: str = "",
     ) -> AsyncIterator[bytes]:
-        """Synthesize text into raw audio (PCM) chunks.
-
-        `style` is an optional performance direction sent to Gemini TTS via the
-        part's speechMetadata.style field (not read aloud).
-        """
+        """Synthesize one legacy single-speaker request through the segment builder."""
         ...
 
 
@@ -155,12 +80,33 @@ def _normalize_tts_voice_id(voice_id: str) -> str:
     return voice_id
 
 
-class GeminiTtsClient:
-    """Production client calling Google Gemini TTS (gemini-3.8-flash-tts).
+def build_tts_request(segment: SpeechSegment, model: str, language_code: str) -> dict[str, Any]:
+    """Build the REST body for one supported Gemini sentence segment."""
+    if segment.listener is not None:
+        raise TtsError(
+            "Gemini TTS では、割当済みカスタム声による二話者の重なり再生は未対応です。"
+        )
 
-    🔑 NOTE: Invoking real Gemini TTS generates external API costs and requires
-    explicit user approval.
-    """
+    part: dict[str, Any] = {"text": segment.text}
+    if segment.style:
+        part["speechMetadata"] = {"style": segment.style}
+    voice_configuration: dict[str, Any] = {
+        "voiceConfig": {"voice": _normalize_tts_voice_id(segment.primary.voice_id)}
+    }
+
+    # The selected model is carried by the REST endpoint path, not this JSON body.
+    _ = model
+    return {
+        "contents": [{"parts": [part]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {**voice_configuration, "languageCode": language_code},
+        },
+    }
+
+
+class GeminiTtsClient:
+    """Gemini TTS の streamGenerateContent raw PCM 経路を使う client。"""
 
     def __init__(
         self,
@@ -186,40 +132,35 @@ class GeminiTtsClient:
         model: str | None = None,
         style: str = "",
     ) -> AsyncIterator[bytes]:
+        """既存の単一話者呼出を一つの SpeechSegment に変換する。"""
+        try:
+            normalized_voice_id = _normalize_tts_voice_id(voice_id)
+        except ValueError as exc:
+            raise TtsError("Invalid custom voice ID") from exc
+        segment = SpeechSegment(
+            text=text,
+            primary=SegmentVoice("speaker", normalized_voice_id),
+            listener=None,
+            style=style,
+        )
+        async for chunk in self.synthesize_segment_stream(segment, model=model):
+            yield chunk
+
+    async def synthesize_segment_stream(
+        self,
+        segment: SpeechSegment,
+        model: str | None = None,
+    ) -> AsyncIterator[bytes]:
+        """一つの本文 segment を raw PCM chunk として逐次取得する。"""
+        selected_model = model or self._default_model
+        try:
+            body = build_tts_request(segment, selected_model, self._language_code)
+        except ValueError as exc:
+            raise TtsError("Invalid custom voice ID") from exc
         if not self._api_key:
             raise TtsError("GEMINI_API_KEY is not configured.")
 
-        try:
-            voice_id = _normalize_tts_voice_id(voice_id)
-        except ValueError as exc:
-            raise TtsError("Invalid custom voice ID") from exc
-
-        selected_model = model or self._default_model
-        # A custom Voice Design ID (voice_...) is referenced via
-        # speechConfig.voiceConfig.voice in the REST API. The typed google-genai
-        # SDK VoiceConfig (2.x) does NOT expose that `voice` field (only
-        # prebuilt_voice_config / replicated_voice_config) and rejects designed
-        # voice IDs, so we call the REST streamGenerateContent (SSE) endpoint
-        # directly. Verified output: audio/l16; rate=24000; channels=1
-        # (16-bit PCM, 24 kHz mono).
-        #
-        # Performance direction is passed as the documented turn-level styling
-        # field parts[].speechMetadata.style (verified field name), NOT prepended
-        # into the spoken text, so the direction is followed but not read aloud.
-        part: dict[str, Any] = {"text": text}
-        if style:
-            part["speechMetadata"] = {"style": style}
         url = f"{self._base_url}/models/{selected_model}:streamGenerateContent"
-        body = {
-            "contents": [{"parts": [part]}],
-            "generationConfig": {
-                "responseModalities": ["AUDIO"],
-                "speechConfig": {
-                    "voiceConfig": {"voice": voice_id},
-                    "languageCode": self._language_code,
-                },
-            },
-        }
         last_error: TtsError | None = None
         for attempt in range(1, self._max_attempts + 1):
             received_audio = False
@@ -280,6 +221,7 @@ class FakeTtsClient:
         self.call_count = 0
         self.synthesized_utterances: list[tuple[str, str]] = []
         self.synthesized_styles: list[str] = []
+        self.synthesized_segments: list[SpeechSegment] = []
         self.fail_on_utterance_text: str | None = None
         self.fail_on_utterance_indices = set(fail_on_utterance_indices) if fail_on_utterance_indices else set()
 
@@ -294,44 +236,59 @@ class FakeTtsClient:
         model: str | None = None,
         style: str = "",
     ) -> AsyncIterator[bytes]:
-        voice_id = _normalize_tts_voice_id(voice_id)
+        try:
+            normalized_voice_id = _normalize_tts_voice_id(voice_id)
+        except ValueError as exc:
+            raise TtsError("Invalid custom voice ID") from exc
+        segment = SpeechSegment(text, SegmentVoice("speaker", normalized_voice_id), None, style)
+        async for chunk in self.synthesize_segment_stream(segment, model=model):
+            yield chunk
+
+    async def synthesize_segment_stream(
+        self,
+        segment: SpeechSegment,
+        model: str | None = None,
+    ) -> AsyncIterator[bytes]:
+        try:
+            primary_voice_id = _normalize_tts_voice_id(segment.primary.voice_id)
+            listener_voice_id = (
+                _normalize_tts_voice_id(segment.listener.voice_id) if segment.listener is not None else None
+            )
+        except ValueError as exc:
+            raise TtsError("Invalid custom voice ID") from exc
+
         idx = self.call_count
         self.call_count += 1
-        self.synthesized_utterances.append((text, voice_id))
-        self.synthesized_styles.append(style)
-        self.last_style = style
+        self.synthesized_utterances.append((segment.text, primary_voice_id))
+        self.synthesized_styles.append(segment.style)
+        self.synthesized_segments.append(segment)
+        self.last_style = segment.style
 
         if idx in self.fail_on_utterance_indices:
             raise TtsError(f"Simulated TTS failure on utterance index {idx}")
+        if self.fail_on_utterance_text and self.fail_on_utterance_text in segment.text:
+            raise TtsError(f"Simulated TTS failure for text: {segment.text}")
 
-        if self.fail_on_utterance_text and self.fail_on_utterance_text in text:
-            raise TtsError(f"Simulated TTS failure for text: {text}")
-
-        # Deterministic 16-bit PCM bytes
-        h = hashlib.sha256(f"{voice_id}:{text}".encode()).digest()
-        part1 = h * (self.chunk_size // 32)
-        part2 = (h[::-1]) * (self.chunk_size // 32)
+        speaker_ids = f"{primary_voice_id}:{listener_voice_id or ''}"
+        digest = hashlib.sha256(f"{speaker_ids}:{segment.text}".encode()).digest()
+        part1 = digest * (self.chunk_size // 32)
+        part2 = digest[::-1] * (self.chunk_size // 32)
 
         yield part1
-        await asyncio.sleep(0.01)  # allow task interruption/switching
+        await asyncio.sleep(0.01)
         yield part2
 
 
 class TtsPlaybackCoordinator:
-    """Coordinates speech synthesis across a sequence of planned utterances.
-
-    Handles sequentially yielding events, error halting, and cancellation.
-    """
+    """Coordinates sentence-level synthesis while preserving scene transitions."""
 
     def __init__(
         self,
         tts_client: TtsClient,
         scene_pause_duration_ms: int = DEFAULT_SCENE_PAUSE_DURATION_MS,
-        inter_utterance_pause_duration_ms: int = DEFAULT_INTER_UTTERANCE_PAUSE_DURATION_MS,
     ) -> None:
         self.tts_client = tts_client
         self.scene_pause_duration_ms = max(0, scene_pause_duration_ms)
-        self.inter_utterance_pause_duration_ms = max(0, inter_utterance_pause_duration_ms)
         self._stopped = False
         self._current_task: asyncio.Task | None = None
 
@@ -350,62 +307,43 @@ class TtsPlaybackCoordinator:
         self._current_task = asyncio.current_task()
 
         previous_scene: int | None = None
-        for u in utterances:
+        for utterance in utterances:
             if self._stopped:
                 break
 
-            if previous_scene is not None:
-                if u.scene_number != previous_scene:
-                    yield {
-                        "type": "scene_pause",
-                        "scene_number": u.scene_number,
-                        "duration_ms": self.scene_pause_duration_ms,
-                    }
-                else:
-                    yield {
-                        "type": "utterance_pause",
-                        "scene_number": u.scene_number,
-                        "duration_ms": self.inter_utterance_pause_duration_ms,
-                    }
+            if previous_scene is not None and utterance.scene_number != previous_scene:
+                yield {
+                    "type": "scene_pause",
+                    "scene_number": utterance.scene_number,
+                    "duration_ms": self.scene_pause_duration_ms,
+                }
 
             yield {
                 "type": "utterance_start",
-                "scene_number": u.scene_number,
-                "utterance_index": u.utterance_index,
-                "speaker": u.speaker,
-                "target_type": u.target_type,
+                "scene_number": utterance.scene_number,
+                "utterance_index": utterance.utterance_index,
+                "speaker": utterance.speaker,
+                "target_type": utterance.target_type,
             }
 
             try:
-                for segment_index, segment in enumerate(_split_tts_text(u.text)):
-                    if segment_index > 0:
-                        yield {
-                            "type": "utterance_pause",
-                            "scene_number": u.scene_number,
-                            "duration_ms": self.inter_utterance_pause_duration_ms,
-                        }
-                    # Fountain の parenthetical は演技指示として送り、読み上げない。
-                    # 分割後も同じ計画上の発話として扱い、ハイライトと再開位置を保つ。
-                    stream = self.tts_client.synthesize_stream(
-                        text=segment,
-                        voice_id=u.voice_id,
-                        style=u.performance_direction,
-                    )
+                for segment in build_speech_segments(utterance):
+                    stream = self.tts_client.synthesize_segment_stream(segment)
                     async for chunk in stream:
                         if self._stopped:
                             break
                         yield {
                             "type": "audio_chunk",
-                            "scene_number": u.scene_number,
-                            "utterance_index": u.utterance_index,
+                            "scene_number": utterance.scene_number,
+                            "utterance_index": utterance.utterance_index,
                             "data": chunk,
                         }
                     if self._stopped:
                         break
                     yield {
                         "type": "audio_segment_end",
-                        "scene_number": u.scene_number,
-                        "utterance_index": u.utterance_index,
+                        "scene_number": utterance.scene_number,
+                        "utterance_index": utterance.utterance_index,
                     }
             except asyncio.CancelledError:
                 self._stopped = True
@@ -413,8 +351,8 @@ class TtsPlaybackCoordinator:
             except Exception as exc:
                 yield {
                     "type": "error",
-                    "scene_number": u.scene_number,
-                    "utterance_index": u.utterance_index,
+                    "scene_number": utterance.scene_number,
+                    "utterance_index": utterance.utterance_index,
                     "message": str(exc),
                 }
                 return
@@ -424,10 +362,10 @@ class TtsPlaybackCoordinator:
 
             yield {
                 "type": "utterance_end",
-                "scene_number": u.scene_number,
-                "utterance_index": u.utterance_index,
+                "scene_number": utterance.scene_number,
+                "utterance_index": utterance.utterance_index,
             }
-            previous_scene = u.scene_number
+            previous_scene = utterance.scene_number
 
         if not self._stopped:
             yield {"type": "playback_complete"}

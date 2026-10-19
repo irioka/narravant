@@ -49,6 +49,7 @@ from narravant.core.valence_vector import default_valence_vectorizer
 from narravant.db.database import DocumentRepository, OptimisticLockError
 from narravant.domain.tasks import TERMINAL_TASK_STATUSES, TaskStatus
 from narravant.services.narrative_adaptation import (
+    AdaptationResult,
     NarrativeAdaptationError,
     SourceKind,
 )
@@ -270,7 +271,7 @@ class NarrativeAdapter(Protocol):
         ensure_not_cancelled: Callable[[], None] | None = None,
         deadline: float | None = None,
         source_language: SourceLanguage = "und",
-    ) -> str: ...
+    ) -> AdaptationResult: ...
 
     def adapt_pdf(
         self,
@@ -279,7 +280,18 @@ class NarrativeAdapter(Protocol):
         on_progress: Callable[[str, int], None] | None = None,
         ensure_not_cancelled: Callable[[], None] | None = None,
         deadline: float | None = None,
-    ) -> str: ...
+    ) -> AdaptationResult: ...
+
+    def verify_after_analysis(
+        self,
+        adaptation: AdaptationResult,
+        analysis_context: dict[str, object],
+        *,
+        on_progress: Callable[[str, int], None] | None = None,
+        ensure_not_cancelled: Callable[[], None] | None = None,
+        deadline: float | None = None,
+        allow_revision: bool = True,
+    ) -> AdaptationResult: ...
 
 
 @dataclass(frozen=True)
@@ -365,6 +377,7 @@ class ImportService:
             raise KeyError(task_id)
         payload = json.loads(task["payload_json"])
         document_id = str(payload["document_id"])
+        adaptation_result: AdaptationResult | None = None
         try:
             self.tasks.start(task_id)
             imported = validate_import(
@@ -420,11 +433,21 @@ class ImportService:
                         source_language=source_language,
                     )
                 elif imported.extension == ".txt":
-                    source_fountain = self._route_text_import(
+                    adaptation_output = self._route_text_import(
                         task_id, imported, deadline, source_language=source_language
                     )
+                    if isinstance(adaptation_output, AdaptationResult):
+                        adaptation_result = adaptation_output
+                        source_fountain = adaptation_result.fountain
+                    else:
+                        source_fountain = adaptation_output
                 elif imported.extension == ".pdf":
-                    source_fountain = self._route_pdf_import(task_id, content, deadline)
+                    adaptation_output = self._route_pdf_import(task_id, content, deadline)
+                    if isinstance(adaptation_output, AdaptationResult):
+                        adaptation_result = adaptation_output
+                        source_fountain = adaptation_result.fountain
+                    else:
+                        source_fountain = adaptation_output
                 else:
                     raise ImportValidationError("UNSUPPORTED_MEDIA_TYPE", "未対応のファイル形式です。")
 
@@ -470,6 +493,50 @@ class ImportService:
                     source_filename=imported.filename,
                     source_language=source_language,
                 )
+                if adaptation_result is not None:
+                    self._ensure_not_cancelled(task_id)
+                    initial_fountain = source_fountain
+                    adaptation_result = self.adapter.verify_after_analysis(
+                        adaptation_result,
+                        _canonical_analysis_context(analysis),
+                        ensure_not_cancelled=lambda: self._ensure_not_cancelled(task_id),
+                        deadline=deadline,
+                    )
+                    source_fountain = adaptation_result.fountain
+                    if source_fountain != initial_fountain:
+                        validate_generated_fountain_cues(
+                            source_fountain,
+                            known_source_speakers=known_source_speakers,
+                            strict_speaker_names=False,
+                        )
+                        parsed_source = FountainParser.parse(source_fountain)
+                        if parsed_source.scene_count() < 1 or parsed_source.utterance_count() < 1:
+                            raise ImportValidationError(
+                                "INVALID_SCRIPT_STRUCTURE",
+                                "生成された脚本にシーンまたは発話がありません。",
+                            )
+                        utterance_text = "\n".join(
+                            item.text for item in parsed_source.all_utterances()
+                        )
+                        validate_text_language(utterance_text, source_language)
+                        self._ensure_not_cancelled(task_id)
+                        analysis = self.analyzer.analyze(
+                            source_fountain,
+                            self._stream_reporter(task_id, "analyzing", 80),
+                            processing_deadline=deadline,
+                            source_filename=imported.filename,
+                            source_language=source_language,
+                        )
+                        final_verification = self.adapter.verify_after_analysis(
+                            adaptation_result,
+                            _canonical_analysis_context(analysis),
+                            ensure_not_cancelled=lambda: self._ensure_not_cancelled(task_id),
+                            deadline=deadline,
+                            allow_revision=False,
+                        )
+                        if final_verification.fountain != source_fountain:
+                            raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+                        adaptation_result = final_verification
                 structured = canonical_analysis_to_v1(
                     source_fountain,
                     analysis,
@@ -552,7 +619,8 @@ class ImportService:
                 )
                 self._fail(task_id, "IMPORT_FAILED", message, retryable=True)
             else:
-                logger.exception("Import task failed task_id=%s", task_id, exc_info=exc)
+                # 検証例外の本文には原文・中間計画が含まれ得るため、型だけを記録する。
+                logger.error("Import task failed task_id=%s error_type=%s", task_id, type(exc).__name__)
                 self._fail(
                     task_id,
                     "IMPORT_FAILED",
@@ -567,7 +635,7 @@ class ImportService:
         deadline: float,
         *,
         source_language: SourceLanguage = "und",
-    ) -> str:
+    ) -> str | AdaptationResult:
         text = _required_text(imported)
         self.tasks.publish(
             task_id,
@@ -608,7 +676,7 @@ class ImportService:
             source_language=source_language,
         )
 
-    def _route_pdf_import(self, task_id: str, content: bytes, deadline: float) -> str:
+    def _route_pdf_import(self, task_id: str, content: bytes, deadline: float) -> str | AdaptationResult:
         self.tasks.publish(
             task_id,
             "progress",
@@ -753,6 +821,17 @@ def _required_text(imported: ValidatedImport) -> str:
     if imported.text is None:
         raise ValueError("テキスト本文がありません。")
     return imported.text
+
+
+def _canonical_analysis_context(analysis: CanonicalAnalysis) -> dict[str, object]:
+    """初稿分析を Import 中だけの原作照合 context に射影する。"""
+    return {
+        "metadata": analysis.metadata,
+        "emotion_arc": analysis.emotion_arc,
+        "characters": analysis.characters,
+        "turning_points": analysis.turning_points,
+        "narrator": analysis.narrator,
+    }
 
 
 def _reject_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:

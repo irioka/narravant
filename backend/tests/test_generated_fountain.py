@@ -36,6 +36,44 @@ def test_invalid_generated_cue_is_rejected(body: str) -> None:
         )
 
 
+def test_generated_notation_rejects_unclosed_reaction_at_source_line() -> None:
+    fountain = "INT. ROOM - DAY #1#\n\n@MAYA\n[[listener:JON]]\nHello |unfinished"
+
+    with pytest.raises(GeneratedFountainCueError) as caught:
+        validate_generated_fountain_cues(
+            fountain,
+            known_source_speakers=["MAYA", "JON"],
+            strict_speaker_names=True,
+        )
+
+    assert caught.value.reason == "unclosed_pipe"
+    assert caught.value.line_number == 5
+    assert caught.value.scene_number == 1
+
+
+def test_generated_notation_rejects_unknown_tags_without_listener_note() -> None:
+    fountain = "INT. ROOM - DAY #1#\n\n@MAYA\nHello <unknown>."
+
+    with pytest.raises(GeneratedFountainCueError) as caught:
+        validate_generated_fountain_cues(fountain, known_source_speakers=["MAYA"], strict_speaker_names=True)
+
+    assert caught.value.reason == "unknown_tag"
+
+
+@pytest.mark.parametrize("tags", ["<breath>", "<short pause>", "<breath> <sigh>"])
+def test_generated_notation_rejects_tag_only_utterance_before_analysis(tags: str) -> None:
+    fountain = "INT. ROOM - DAY #1#\n\n@MAYA\n" + tags
+
+    with pytest.raises(GeneratedFountainCueError) as caught:
+        validate_generated_fountain_cues(fountain, known_source_speakers=["MAYA"], strict_speaker_names=True)
+
+    assert caught.value.reason == "missing_speech"
+    assert caught.value.scene_number == 1
+
+
+def test_generated_notation_accepts_vocal_tag_with_spoken_body() -> None:
+    validate_generated_fountain_cues("INT. ROOM - DAY #1#\n\n@MAYA\n<breath> I can keep walking.")
+
 def test_valid_cues_with_narrator_and_contd_are_accepted() -> None:
     valid_fountain = (
         "Title: Storm Cabin\n\n"

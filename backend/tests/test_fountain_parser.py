@@ -1,6 +1,9 @@
 """Spike & Stabilize behavioral tests for FountainParser."""
 
+import pytest
+
 from narravant.core.fountain import FountainParser, sanitize_fountain_text
+from narravant.core.speech_notation import SpeechNotationError
 
 SAMPLE_FOUNTAIN_SCRIPT = """Title: The Neon Detective
 Credit: Written by
@@ -220,6 +223,84 @@ EXT. 深い山奥 - 昼 #1#
     assert [item.speaker for item in utterances] == ["若い紳士A", "ナレーター"]
     assert "紳士Aは犬の死体" in utterances[1].text
 
+
+def test_listener_reaction_is_analyzed_without_adding_a_serialized_field() -> None:
+    source = (
+        "INT. 山道 - 夜 #1#\n\n"
+        "@旅人\n\n"
+        "(不安に問いかける)\n\n"
+        "[[listener:案内人]]\n\n"
+        "この道で |うん| 間違いない？<short pause>"
+    )
+    parsed = FountainParser.parse(source)
+
+    assert parsed.source_fountain == source
+    assert parsed.character_names() == ["旅人", "案内人"]
+    assert parsed.dialogue_character_names() == ["旅人", "案内人"]
+    assert [(item.character, item.line) for item in parsed.scenes[0].dialogues] == [
+        ("旅人", "この道で "),
+        ("案内人", "うん"),
+        ("旅人", " 間違いない？"),
+    ]
+    assert parsed.utterance_count() == 1
+    utterance = parsed.all_utterances()[0]
+    assert utterance.listener == "案内人"
+    assert utterance.performance_direction == "不安に問いかける"
+    assert set(utterance.to_dict()) == {
+        "scene_number",
+        "utterance_index",
+        "speaker",
+        "target_type",
+        "text",
+        "performance_direction",
+    }
+    assert utterance.text == "この道で |うん| 間違いない？<short pause>"
+
+
+@pytest.mark.parametrize(
+    "notation",
+    [
+        "[[listener:旅人]]\n問いかけ |うん|",
+        "[[listener:案内人]]\n問いかけ |開いたまま",
+        "[[listener:[案内人]]] \n問いかけ |うん|",
+        "[[listener:案内人]]\n[[listener:通行人]]\n問いかけ |うん|",
+    ],
+)
+def test_invalid_listener_reaction_fails_during_fountain_parsing(notation: str) -> None:
+    with pytest.raises(SpeechNotationError):
+        FountainParser.parse(f"INT. 山道 - 夜 #1#\n\n@旅人\n{notation}")
+
+
+def test_plain_fountain_note_is_non_speaking_and_does_not_activate_old_pipes() -> None:
+    source = "INT. ROOM - DAY #1#\n\n@MAYA\n[[ordinary note]]\nKeep |literal| text."
+    parsed = FountainParser.parse(source)
+
+    assert parsed.all_utterances()[0].text == "Keep |literal| text."
+    assert [(item.character, item.line) for item in parsed.scenes[0].dialogues] == [("MAYA", "Keep |literal| text.")]
+
+
+
+def test_listener_alias_must_resolve_to_one_existing_speaker() -> None:
+    source = (
+        "INT. 山道 - 夜 #1#\n\n"
+        "@奥の声\n"
+        "ここだ。\n\n"
+        "@奥の声（山猫たち）\n"
+        "気をつけろ。\n\n"
+        "@旅人\n"
+        "[[listener:奥の声]]\n"
+        "本当か |うん|"
+    )
+
+    with pytest.raises(SpeechNotationError, match="ambiguous_listener"):
+        FountainParser.parse(source)
+
+
+def test_listener_note_must_follow_any_parenthetical() -> None:
+    source = "INT. 山道 - 夜 #1#\n\n@旅人\n[[listener:案内人]]\n(驚いて)\nそうなのか |うん|"
+
+    with pytest.raises(SpeechNotationError, match="listener_note_before_parenthetical"):
+        FountainParser.parse(source)
 
 def test_dialogue_character_names_include_all_non_narrator_cues():
     script = """Title: 話者一覧

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from narravant.api.dependencies import (
     LOCAL_USER_DISPLAY_NAME,
@@ -10,13 +10,18 @@ from narravant.api.dependencies import (
     CurrentUser,
     get_current_user,
     get_db_manager,
+    get_document_repo,
     get_settings,
     get_storage_client,
     get_voice_design_client,
+    get_voice_management_service,
+    get_voice_registry_repo,
 )
 from narravant.db.database import DatabaseManager, DocumentRepository
+from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.main import app
 from narravant.services.voice_design import FakeVoiceDesignClient
+from narravant.services.voice_management import VoiceManagementService
 from narravant.storage.gcs import InMemoryScriptStorageClient
 
 
@@ -41,7 +46,7 @@ async def test_fake_voice_design_client_keeps_identical_trait_creations_distinct
 
 
 @pytest.fixture
-def client(fake_voice_client: FakeVoiceDesignClient) -> TestClient:
+async def client(fake_voice_client: FakeVoiceDesignClient) -> httpx.AsyncClient:
     db = DatabaseManager(":memory:")
     storage = InMemoryScriptStorageClient()
 
@@ -165,33 +170,71 @@ def client(fake_voice_client: FakeVoiceDesignClient) -> TestClient:
     )
     app.state.settings = mock_settings
 
-    app.dependency_overrides[get_settings] = lambda: mock_settings
-    app.dependency_overrides[get_db_manager] = lambda: db
-    app.dependency_overrides[get_storage_client] = lambda: storage
-    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
-        LOCAL_USER_ID, LOCAL_USER_EMAIL, LOCAL_USER_DISPLAY_NAME
+    async def settings_provider():
+        return mock_settings
+
+    async def db_provider():
+        return db
+
+    async def document_repo_provider():
+        return repo
+
+    async def storage_provider():
+        return storage
+
+    async def current_user_provider():
+        return CurrentUser(LOCAL_USER_ID, LOCAL_USER_EMAIL, LOCAL_USER_DISPLAY_NAME)
+
+    async def voice_design_provider():
+        return fake_voice_client
+
+    voice_registry = VoiceRegistryRepository(db)
+
+    async def voice_registry_provider():
+        return voice_registry
+
+    voice_service = VoiceManagementService(
+        fake_voice_client,
+        voice_registry,
+        repo,
+        storage,
+        local_owner_id=LOCAL_USER_ID,
     )
-    app.dependency_overrides[get_voice_design_client] = lambda: fake_voice_client
 
-    with TestClient(app) as test_client:
-        yield test_client
-    app.dependency_overrides.clear()
+    async def voice_management_provider():
+        return voice_service
+
+    app.dependency_overrides[get_settings] = settings_provider
+    app.dependency_overrides[get_db_manager] = db_provider
+    app.dependency_overrides[get_document_repo] = document_repo_provider
+    app.dependency_overrides[get_storage_client] = storage_provider
+    app.dependency_overrides[get_current_user] = current_user_provider
+    app.dependency_overrides[get_voice_design_client] = voice_design_provider
+    app.dependency_overrides[get_voice_management_service] = voice_management_provider
+    app.dependency_overrides[get_voice_registry_repo] = voice_registry_provider
+
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()
 
 
-def test_create_voice_success_and_does_not_advance_version(
-    client: TestClient,
+async def test_create_voice_success_and_does_not_advance_version(
+    client: httpx.AsyncClient,
     fake_voice_client: FakeVoiceDesignClient,
 ):
     """Voice Design creates a voice without mutating document or advancing version_id."""
     doc_id = "doc-test-123"
 
     # Verify initial version is 1
-    doc_resp = client.get(f"/api/v1/documents/{doc_id}")
+    doc_resp = await client.get(f"/api/v1/documents/{doc_id}")
     assert doc_resp.status_code == 200
     assert doc_resp.json()["current_version_id"] == 1
 
     # Call POST /voices
-    response = client.post(
+    response = await client.post(
         f"/api/v1/documents/{doc_id}/voices",
         json={
             "speaker": "ナレーター",
@@ -207,12 +250,12 @@ def test_create_voice_success_and_does_not_advance_version(
     created_voice_id = data["voice_id"]
 
     # Verify version_id is STILL 1 (MF-2: no persistence, no version advance)
-    doc_resp2 = client.get(f"/api/v1/documents/{doc_id}")
+    doc_resp2 = await client.get(f"/api/v1/documents/{doc_id}")
     assert doc_resp2.status_code == 200
     assert doc_resp2.json()["current_version_id"] == 1
 
     # Verify that subsequent PUT with expected_version=1 succeeds (no 409 Conflict)
-    put_resp = client.put(
+    put_resp = await client.put(
         f"/api/v1/documents/{doc_id}",
         json={
             "expected_version": 1,
@@ -233,8 +276,8 @@ def test_create_voice_success_and_does_not_advance_version(
     assert updated_doc["voice_assignments"][0]["voice_id"] == created_voice_id
 
 
-def test_create_voice_nonexistent_document_returns_404(client: TestClient):
-    response = client.post(
+async def test_create_voice_nonexistent_document_returns_404(client: httpx.AsyncClient):
+    response = await client.post(
         "/api/v1/documents/non-existent-doc/voices",
         json={
             "speaker": "ナレーター",
@@ -244,11 +287,11 @@ def test_create_voice_nonexistent_document_returns_404(client: TestClient):
     assert response.status_code == 404
 
 
-def test_create_draft_voice_does_not_require_a_persisted_document(
-    client: TestClient,
+async def test_create_draft_voice_does_not_require_a_persisted_document(
+    client: httpx.AsyncClient,
     fake_voice_client: FakeVoiceDesignClient,
 ):
-    response = client.post(
+    response = await client.post(
         "/api/v1/voices",
         json={
             "speaker": "未保存の話者",
@@ -260,14 +303,14 @@ def test_create_draft_voice_does_not_require_a_persisted_document(
     assert fake_voice_client.call_count == 1
 
 
-def test_create_voice_failure_returns_502_and_preserves_document(
-    client: TestClient,
+async def test_create_voice_failure_returns_502_and_preserves_document(
+    client: httpx.AsyncClient,
     fake_voice_client: FakeVoiceDesignClient,
 ):
     doc_id = "doc-test-123"
     fake_voice_client.should_fail = True
 
-    response = client.post(
+    response = await client.post(
         f"/api/v1/documents/{doc_id}/voices",
         json={
             "speaker": "ナレーター",
@@ -281,25 +324,25 @@ def test_create_voice_failure_returns_502_and_preserves_document(
     assert "Simulated Voice Design failure" not in data["error"]["message"]
 
     # Document version and data remain intact
-    doc_resp = client.get(f"/api/v1/documents/{doc_id}")
+    doc_resp = await client.get(f"/api/v1/documents/{doc_id}")
     assert doc_resp.status_code == 200
     assert doc_resp.json()["current_version_id"] == 1
 
 
-def test_create_voice_different_traits_produce_different_ids(
-    client: TestClient,
+async def test_create_voice_different_traits_produce_different_ids(
+    client: httpx.AsyncClient,
     fake_voice_client: FakeVoiceDesignClient,
 ):
     doc_id = "doc-test-123"
 
-    resp1 = client.post(
+    resp1 = await client.post(
         f"/api/v1/documents/{doc_id}/voices",
         json={"speaker": "アリス", "voice_traits": "元気な少女の声"},
     )
     assert resp1.status_code == 200
     voice_id_1 = resp1.json()["voice_id"]
 
-    resp2 = client.post(
+    resp2 = await client.post(
         f"/api/v1/documents/{doc_id}/voices",
         json={"speaker": "アリス", "voice_traits": "落ち着いた大人の女性の声"},
     )

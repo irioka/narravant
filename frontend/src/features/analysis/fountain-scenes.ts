@@ -45,6 +45,43 @@ export function cueSpeakerName(cue: string): string {
   return cue.trim().replace(/\s*\(.*?\)\s*$/, '')
 }
 
+function normalizeSpeakerAlias(speaker: string): string {
+  return speaker.replace(/[\(（\[［].*?[\)）\]］]/g, '').replace(/\s/g, '').trim()
+}
+
+const LISTENER_NOTE_PREFIX = '[[listener:'
+const LISTENER_NOTE = /^\[\[listener:([^\[\]\r\n]+)\]\]$/
+const SPEECH_TAGS = /<(?:short pause|long pause|breath|sigh|laugh|chuckle|gasp|sob|cough|throat-clearing)>/g
+const SENTENCE_ENDINGS = new Set('。．.!！？?？…')
+const CLOSING_PUNCTUATION = new Set('」』）)]}’"〉》')
+
+function isListenerNoteCandidate(line: string): boolean {
+  return line.toLowerCase().startsWith(LISTENER_NOTE_PREFIX)
+}
+
+function listenerFromNote(line: string): string | undefined {
+  const match = LISTENER_NOTE.exec(line)
+  return match?.[1].trim() || undefined
+}
+
+function isFountainNote(line: string): boolean {
+  return line.startsWith('[[')
+}
+
+function stripSpeechTags(text: string): string {
+  return text.replace(SPEECH_TAGS, '')
+}
+
+function listenerSpeech(line: string, listener: string | undefined): { main: string; reactions: string[] } {
+  if (!listener) return { main: stripSpeechTags(line), reactions: [] }
+  const reactions: string[] = []
+  const main = line.replace(/\|([^|]+)\|/g, (_match, reaction: string) => {
+    reactions.push(stripSpeechTags(reaction))
+    return ''
+  })
+  return { main: stripSpeechTags(main), reactions }
+}
+
 export function countSceneHeadings(text: string): number {
   return text.split(/\r?\n/).filter((line) => SCENE_HEADING.test(line)).length
 }
@@ -57,6 +94,7 @@ export interface TextRange {
 export interface PlaybackStartPosition {
   sceneNumber: number
   utteranceIndex: number
+  sourceOffset?: number
 }
 
 interface SourceLine {
@@ -94,9 +132,11 @@ export function sceneHeadingRange(source: string, sceneNumber: number): TextRang
 }
 
 /** Return the source range for the ordered utterance emitted by the playback plan. */
-export function utteranceRange(source: string, sceneNumber: number, utteranceIndex: number): TextRange | undefined {
+export function utteranceRange(source: string, sceneNumber: number, utteranceIndex: number, sourceOffset?: number): TextRange | undefined {
   const matches = playbackUtteranceRanges(source).filter((item) => item.scene === sceneNumber)
-  return matches[utteranceIndex]?.range
+  const range = matches[utteranceIndex]?.range
+  if (!range || sourceOffset === undefined || sourceOffset <= range.start || sourceOffset >= range.end) return range
+  return { start: sourceOffset, end: range.end }
 }
 
 function spokenSceneHeading(line: SourceLine): { text: string; range: TextRange } | undefined {
@@ -127,7 +167,62 @@ export function playbackStartAtOffset(source: string, offset: number): PlaybackS
     .slice(0, ranges.indexOf(selected))
     .filter((item) => item.scene === selected.scene)
     .length
-  return { sceneNumber: selected.scene, utteranceIndex }
+  const position = { sceneNumber: selected.scene, utteranceIndex }
+  const sourceOffset = sentenceStartAtOffset(source, selected.range, boundedOffset)
+  return sourceOffset === undefined ? position : { ...position, sourceOffset }
+}
+
+/** 文カーソル位置より前の直近の文境界から、次の文の開始位置を返す。 */
+function sentenceStartAtOffset(source: string, range: TextRange, offset: number): number | undefined {
+  const headingLine = sourceLines(source).find((line) =>
+    line.start <= range.start && range.start <= line.end,
+  )
+  if (headingLine && isSceneHeading(headingLine.text.trim())) return undefined
+
+  const utteranceText = source.slice(range.start, range.end)
+  let sentenceStart = 0
+  for (let index = 0; index < utteranceText.length; index += 1) {
+    const ending = utteranceText[index]
+    if (!SENTENCE_ENDINGS.has(ending) && ending !== '.' && ending !== '．') continue
+    if (ending === '.') {
+      const token = utteranceText.slice(0, index + 1).split(/\s+/).at(-1)?.toLowerCase()
+      if (token && ['dr.', 'mr.', 'mrs.', 'ms.', 'prof.', 'sr.', 'e.g.', 'i.e.'].includes(token)) continue
+    }
+
+    let boundaryEnd = index + 1
+    while (boundaryEnd < utteranceText.length && CLOSING_PUNCTUATION.has(utteranceText[boundaryEnd])) {
+      boundaryEnd += 1
+    }
+    if (
+      (ending === '.' || ending === '．') &&
+      boundaryEnd < utteranceText.length &&
+      !/\s/.test(utteranceText[boundaryEnd])
+    ) {
+      continue
+    }
+
+    const boundaryOffset = range.start + boundaryEnd
+    while (boundaryEnd < utteranceText.length && /\s/.test(utteranceText[boundaryEnd])) {
+      boundaryEnd += 1
+    }
+    if (boundaryEnd < utteranceText.length && offset >= boundaryOffset) {
+      sentenceStart = boundaryEnd
+    }
+  }
+
+  const result = range.start + sentenceStart
+  return result > range.start && source.slice(result, range.end).trim() ? result : undefined
+}
+
+/**
+ * 指定した発話内のカーソルより前を原稿から除き、再生計画の発話 index は保つ。
+ * 呼出元は下書き本文にだけ適用し、保存済み文書の認可経路を変更しない。
+ */
+export function playbackSourceAtPosition(source: string, position: PlaybackStartPosition): string {
+  if (position.sourceOffset === undefined) return source
+  const range = utteranceRange(source, position.sceneNumber, position.utteranceIndex)
+  if (!range || position.sourceOffset <= range.start || position.sourceOffset > range.end) return source
+  return source.slice(0, range.start) + source.slice(position.sourceOffset)
 }
 
 function playbackUtteranceRanges(source: string): Array<{ scene: number; range: TextRange }> {
@@ -135,6 +230,7 @@ function playbackUtteranceRanges(source: string): Array<{ scene: number; range: 
   let fallbackScene = 1
   let currentScene: number | undefined
   let currentCue: string | undefined
+  let inRegularNote = false
   let pending: TextRange | undefined
   let pendingIsDialogue = false
 
@@ -143,11 +239,17 @@ function playbackUtteranceRanges(source: string): Array<{ scene: number; range: 
     if (currentScene !== undefined && pending) ranges.push({ scene: currentScene, range: pending })
     pending = undefined
     pendingIsDialogue = false
-    if (hadPending) currentCue = undefined
+    if (hadPending) {
+      currentCue = undefined
+    }
   }
 
   for (const line of sourceLines(source)) {
     const text = line.text.trim()
+    if (inRegularNote) {
+      if (text.includes(']]')) inRegularNote = false
+      continue
+    }
     if (isSceneHeading(text)) {
       flush()
       currentScene = sceneNumberFromHeading(text, fallbackScene)
@@ -158,6 +260,10 @@ function playbackUtteranceRanges(source: string): Array<{ scene: number; range: 
       continue
     }
     if (currentScene === undefined || isTitlePageLine(text)) continue
+    if (isListenerNoteCandidate(text) || isFountainNote(text)) {
+      if (isFountainNote(text) && !text.includes(']]')) inRegularNote = true
+      continue
+    }
     if (text === '') {
       if (currentCue && pendingIsDialogue && pending) flush()
       else if (!currentCue) flush()
@@ -203,28 +309,51 @@ function isPerformanceDirection(line: string): boolean {
 /** Return non-narrator character cues that contain a spoken line. */
 export function spokenCharacterNames(fountain: string): string[] {
   const names: string[] = []
+  // 同じ人物の発話回数を、別名解決の候補人数として数えない。
+  const cueNames = [...new Set(fountain.split(/\r?\n/)
+    .map((line) => /^@(.+)$/.exec(line.trim()))
+    .filter((cue): cue is RegExpExecArray => cue !== null)
+    .map((cue) => cueSpeakerName(cue[1])))]
   let currentCue: string | undefined
   let cueHasSpeech = false
+  let currentListener: string | undefined
+  let cueHasReaction = false
+  let inRegularNote = false
 
   const flush = () => {
-    if (
-      currentCue &&
-      cueHasSpeech &&
-      !isNarratorSpeaker(currentCue) &&
-      !names.includes(currentCue)
-    ) {
+    if (currentCue && cueHasSpeech && !isNarratorSpeaker(currentCue) && !names.includes(currentCue)) {
       names.push(currentCue)
+    }
+    if (cueHasReaction && currentListener && !isNarratorSpeaker(currentListener)) {
+      const normalizedListener = normalizeSpeakerAlias(currentListener)
+      const matches = cueNames.filter((name) => normalizeSpeakerAlias(name) === normalizedListener)
+      const resolvedListener = matches.length === 1 ? matches[0] : currentListener
+      if (!names.includes(resolvedListener)) names.push(resolvedListener)
     }
     currentCue = undefined
     cueHasSpeech = false
+    currentListener = undefined
+    cueHasReaction = false
   }
 
   for (const raw of fountain.split(/\r?\n/)) {
     const line = raw.trim()
+    if (inRegularNote) {
+      if (line.includes(']]')) inRegularNote = false
+      continue
+    }
     const cue = /^@(.+)$/.exec(line)
     if (cue) {
       flush()
       currentCue = cueSpeakerName(cue[1])
+      continue
+    }
+    if (isListenerNoteCandidate(line)) {
+      currentListener = listenerFromNote(line)
+      continue
+    }
+    if (isFountainNote(line)) {
+      if (!line.includes(']]')) inRegularNote = true
       continue
     }
     if (line === '' || isSceneHeading(line) || isTitlePageLine(line)) {
@@ -232,7 +361,10 @@ export function spokenCharacterNames(fountain: string): string[] {
       flush()
       continue
     }
-    if (currentCue && !isPerformanceDirection(line)) cueHasSpeech = true
+    if (currentCue && !isPerformanceDirection(line)) {
+      cueHasSpeech = true
+      if (currentListener && /\|[^|]+\|/.test(line)) cueHasReaction = true
+    }
   }
   flush()
   return names
@@ -255,10 +387,16 @@ export function firstUtteranceLine(
   const lines = fountain.split(/\r?\n/)
   const wantNarrator = speaker === narratorSpeaker || isNarratorSpeaker(speaker)
   let currentSpeaker: string | undefined
+  let currentListener: string | undefined
   let currentCueHasDialogue = false
+  let inRegularNote = false
 
   for (const raw of lines) {
     const line = raw.trim()
+    if (inRegularNote) {
+      if (line.includes(']]')) inRegularNote = false
+      continue
+    }
     if (line === '') {
       // Fountain commonly puts a blank line between a cue, its parenthetical,
       // and the spoken line. Keep that cue alive until a spoken line has been
@@ -266,12 +404,22 @@ export function firstUtteranceLine(
       if (currentCueHasDialogue) {
         currentSpeaker = undefined
         currentCueHasDialogue = false
+        currentListener = undefined
       }
+      continue
+    }
+    if (isListenerNoteCandidate(line)) {
+      currentListener = listenerFromNote(line)
+      continue
+    }
+    if (isFountainNote(line)) {
+      if (!line.includes(']]')) inRegularNote = true
       continue
     }
     const cue = /^@(.+)$/.exec(line)
     if (cue) {
       currentSpeaker = cueSpeakerName(cue[1])
+      currentListener = undefined
       currentCueHasDialogue = false
       continue
     }
@@ -281,26 +429,41 @@ export function firstUtteranceLine(
         if (heading) return firstSentence(heading.text)
       }
       currentSpeaker = undefined
+      currentListener = undefined
       currentCueHasDialogue = false
       continue
     }
     if (isTitlePageLine(line)) {
       currentSpeaker = undefined
+      currentListener = undefined
       currentCueHasDialogue = false
       continue
     }
     if (isPerformanceDirection(line)) continue
+    const projection = listenerSpeech(line, currentListener)
     if (wantNarrator) {
       if (currentSpeaker === undefined || currentSpeaker === narratorSpeaker || isNarratorSpeaker(currentSpeaker)) {
         currentCueHasDialogue = currentSpeaker !== undefined
-        return firstSentence(line)
+        return firstSentence(projection.main.replace(/\s+/g, ' '))
       }
       currentCueHasDialogue = true
       continue
     }
-    if (currentSpeaker === speaker) {
+    if (
+      currentSpeaker !== undefined &&
+      normalizeSpeakerAlias(currentSpeaker) === normalizeSpeakerAlias(speaker)
+    ) {
       currentCueHasDialogue = true
-      return firstSentence(line)
+      if (projection.main.trim()) return firstSentence(projection.main.replace(/\s+/g, ' '))
+      continue
+    }
+    if (
+      currentListener !== undefined &&
+      normalizeSpeakerAlias(currentListener) === normalizeSpeakerAlias(speaker) &&
+      projection.reactions[0]
+    ) {
+      currentCueHasDialogue = true
+      return firstSentence(projection.reactions[0])
     }
     if (currentSpeaker !== undefined) currentCueHasDialogue = true
   }

@@ -3,6 +3,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { scrollTextRangeIntoView } from './script-scroll'
 
 describe('script selection scrolling', () => {
+  it('折り返し後の表示座標とスクロールバーを除いた幅で対象を表示する', () => {
+    const textarea = document.createElement('textarea')
+    textarea.style.cssText = 'padding:28px; font:14px monospace; line-height:28px'
+    Object.defineProperty(textarea, 'clientHeight', { configurable: true, value: 100 })
+    Object.defineProperty(textarea, 'clientWidth', { configurable: true, value: 180 })
+    const source = '長い合成台詞です。'.repeat(100) + '選択対象'
+    const start = source.indexOf('選択対象')
+    const mirrorStyles: string[] = []
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.tagName === 'DIV') mirrorStyles.push(this.style.cssText)
+      return { top: this.tagName === 'SPAN' ? 400 : 100 } as DOMRect
+    })
+    const childrenBefore = document.body.childElementCount
+    scrollTextRangeIntoView(textarea, source, { start, end: source.length })
+    expect(textarea.scrollTop).toBe(265)
+    expect(mirrorStyles.some((style) => style.includes('width: 180px') && style.includes('pre-wrap'))).toBe(true)
+    expect(document.body.childElementCount).toBe(childrenBefore)
+  })
+
   afterEach(() => {
     vi.restoreAllMocks()
   })

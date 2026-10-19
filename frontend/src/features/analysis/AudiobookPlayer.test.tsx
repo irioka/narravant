@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -42,7 +42,9 @@ class MockAudioContext {
   static instances: MockAudioContext[] = []
   static starts: string[] = []
   static startedBufferLengths: number[] = []
-  static activeSources: Array<{ buffer: AudioBuffer | null; onended: (() => void) | null }> = []
+  static startTimes: number[] = []
+  static activeSources: Array<{ buffer: AudioBuffer | null; onended: (() => void) | null; stop: () => void; disconnect: () => void }> = []
+  currentTime = 1
   state: AudioContextState = 'running'
   sampleRate = 24000
   destination = {}
@@ -62,12 +64,14 @@ class MockAudioContext {
       buffer: null,
       connect: () => undefined,
       onended: null,
-      start: () => {
+      disconnect: vi.fn(),
+      start: (when = 0) => {
+        MockAudioContext.startTimes.push(when)
         MockAudioContext.starts.push(this.state)
         MockAudioContext.startedBufferLengths.push((source.buffer as AudioBuffer | null)?.length ?? -1)
         MockAudioContext.activeSources.push(source)
       },
-      stop: () => undefined,
+      stop: vi.fn(),
     }
     return source as unknown as AudioBufferSourceNode
   }
@@ -88,6 +92,135 @@ class MockAudioContext {
 }
 
 describe('AudiobookPlayer', () => {
+  it('先着PCMは終了通知を待たず音声時計で隙間なく予約する', async () => {
+    const onPlayingChange = vi.fn()
+    renderPlayer({ documentId: 'doc-continuous', isPlaying: false, onPlayingChange, scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    const context = MockAudioContext.instances[0]
+    const pcm = btoa(String.fromCharCode(...new Uint8Array(960))) // 24kHzで20ms。
+    ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+    ws.emitMessage({ event: 'audio_chunk', data: pcm })
+    context.currentTime = 1.005
+    ws.emitMessage({ event: 'audio_chunk', data: pcm })
+    context.currentTime = 1.01
+    ws.emitMessage({ event: 'audio_chunk', data: pcm })
+    // onendedがメインスレッドで遅れても、受信済みの次chunkは既に予約済み。
+    expect(MockAudioContext.startTimes).toEqual([1, 1.02, 1.04])
+    ws.emitMessage({ event: 'utterance_end' })
+    ws.emitMessage({ event: 'playback_complete' })
+    context.currentTime = 1.2
+    MockAudioContext.finishCurrentSource()
+    expect(onPlayingChange).not.toHaveBeenCalledWith(false)
+    MockAudioContext.finishCurrentSource()
+    expect(onPlayingChange).not.toHaveBeenCalledWith(false)
+    MockAudioContext.finishCurrentSource()
+    expect(onPlayingChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it('受信が途切れた後は過去の予約時刻で音声を重ねない', async () => {
+    renderPlayer({ documentId: 'doc-starved', isPlaying: false, onPlayingChange: vi.fn(), scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+    ws.emitMessage({ event: 'audio_chunk', data: 'AAA=' })
+    MockAudioContext.finishCurrentSource()
+    MockAudioContext.instances[0].currentTime = 1.5
+    ws.emitMessage({ event: 'audio_chunk', data: 'AAA=' })
+    expect(MockAudioContext.startTimes).toEqual([1, 1.5])
+  })
+
+  it('先行予約した次話者を受信時にハイライトせず、停止で全予約を解除する', async () => {
+    const onPlaybackPositionChange = vi.fn()
+    const onPlayingChange = vi.fn()
+    const props = { documentId: 'doc-scheduled', onPlayingChange, onPlaybackPositionChange, scenes }
+    const runtime = createLocaleRuntime({ initialLocale: 'ja' })
+    const { rerender } = render(
+      <LocaleProvider runtime={runtime}><AudiobookPlayer {...props} isPlaying={false} /></LocaleProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    vi.useFakeTimers()
+    const ws = MockWebSocket.instances[0]
+    const pcm = btoa(String.fromCharCode(...new Uint8Array(960)))
+    ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+    ws.emitMessage({ event: 'audio_chunk', data: pcm })
+    ws.emitMessage({ event: 'utterance_end' })
+    ws.emitMessage({ event: 'utterance_start', speaker: 'Child', scene_number: 1, utterance_index: 1 })
+    ws.emitMessage({ event: 'audio_chunk', data: pcm })
+    expect(MockAudioContext.starts).toHaveLength(2)
+    expect(onPlaybackPositionChange).not.toHaveBeenCalledWith({ sceneNumber: 1, utteranceIndex: 1 })
+    // 壁時計だけ進んでも、停止中のAudioContextより先に表示を進めない。
+    act(() => vi.advanceTimersByTime(21))
+    expect(onPlaybackPositionChange).not.toHaveBeenCalledWith({ sceneNumber: 1, utteranceIndex: 1 })
+    MockAudioContext.instances[0].currentTime = 1.02
+    act(() => vi.advanceTimersByTime(21))
+    expect(onPlaybackPositionChange).toHaveBeenLastCalledWith({ sceneNumber: 1, utteranceIndex: 1 })
+    const sources = [...MockAudioContext.activeSources]
+    const staleCallbacks = sources.map((source) => source.onended)
+    rerender(<LocaleProvider runtime={runtime}><AudiobookPlayer {...props} isPlaying stopSignal={1} /></LocaleProvider>)
+    // stopSignalの初期値からの変更で全sourceを止める。
+    for (const source of sources) expect(source.stop).toHaveBeenCalledOnce()
+    const callsAfterStop = onPlaybackPositionChange.mock.calls.length
+    act(() => {
+      staleCallbacks.forEach((callback) => callback?.())
+      vi.runOnlyPendingTimers()
+    })
+    expect(onPlaybackPositionChange).toHaveBeenCalledTimes(callsAfterStop)
+  })
+
+  it('PCM再生が始まるまで本文位置をハイライトしない', async () => {
+    const startCountsAtPosition: number[] = []
+    const onPlaybackPositionChange = vi.fn((position?: { sceneNumber: number; utteranceIndex: number }) => {
+      if (position) startCountsAtPosition.push(MockAudioContext.starts.length)
+    })
+    renderPlayer({
+      documentId: 'doc-123',
+      isPlaying: false,
+      onPlayingChange: vi.fn(),
+      onPlaybackPositionChange,
+      scenes,
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    const position = { sceneNumber: 1, utteranceIndex: 0 }
+    ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+    expect(onPlaybackPositionChange).not.toHaveBeenCalledWith(position)
+    ws.emitMessage({ event: 'audio_chunk', scene_number: 1, utterance_index: 0, data: 'AAE=' })
+    // 文の終端が来る前に、最初のPCMで実再生を開始する。
+    await waitFor(() => expect(MockAudioContext.starts).toHaveLength(1))
+    ws.emitMessage({ event: 'audio_segment_end', scene_number: 1, utterance_index: 0 })
+    expect(MockAudioContext.starts).toHaveLength(1)
+
+    expect(startCountsAtPosition).toEqual([1])
+  })
+
+  it('chunk境界のPCM16を保持し、segment終端で音声を二重に入れない', async () => {
+    const onPlayingChange = vi.fn()
+    renderPlayer({ documentId: 'doc-pcm', isPlaying: false, onPlayingChange, scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 1 })
+    ws.emitMessage({ event: 'audio_chunk', data: 'AQ==' })
+    expect(MockAudioContext.starts).toHaveLength(0)
+    ws.emitMessage({ event: 'audio_chunk', data: 'AgME' })
+    expect(MockAudioContext.startedBufferLengths).toEqual([2])
+    ws.emitMessage({ event: 'audio_chunk', data: 'BQY=' })
+    ws.emitMessage({ event: 'audio_segment_end', scene_number: 1, utterance_index: 1 })
+    MockAudioContext.finishCurrentSource()
+    expect(MockAudioContext.startedBufferLengths).toEqual([2, 1])
+    ws.emitMessage({ event: 'utterance_end', scene_number: 1, utterance_index: 1 })
+    ws.emitMessage({ event: 'playback_complete' })
+    MockAudioContext.finishCurrentSource()
+    await waitFor(() => expect(onPlayingChange).toHaveBeenLastCalledWith(false))
+    expect(MockAudioContext.startedBufferLengths).toEqual([2, 1])
+  })
+
   it('server voice errors use the current locale and preserve the failed state', async () => {
     const onPlayingChange = vi.fn()
     renderPlayer({ disabled: false, documentId: 'doc-voice-expired', isPlaying: false, onPlayingChange, scenes })
@@ -115,6 +248,7 @@ describe('AudiobookPlayer', () => {
     MockAudioContext.instances = []
     MockAudioContext.starts = []
     MockAudioContext.startedBufferLengths = []
+    MockAudioContext.startTimes = []
     MockAudioContext.activeSources = []
     vi.stubGlobal('WebSocket', MockWebSocket)
     vi.stubGlobal('AudioContext', MockAudioContext)
@@ -122,6 +256,7 @@ describe('AudiobookPlayer', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
@@ -235,15 +370,16 @@ describe('AudiobookPlayer', () => {
       expect(MockAudioContext.starts).toHaveLength(1)
     })
 
+    vi.useFakeTimers()
     ws.emitMessage({ event: 'utterance_pause', scene_number: 1, duration_ms: 1000 })
     ws.emitMessage({ event: 'audio_chunk', scene_number: 1, utterance_index: 0, data: 'AQI=' })
     ws.emitMessage({ event: 'audio_segment_end', scene_number: 1, utterance_index: 0 })
-    expect(MockAudioContext.starts).toHaveLength(1)
-    MockAudioContext.finishCurrentSource()
-    await waitFor(() => expect(MockAudioContext.starts).toHaveLength(2))
+    // pauseも音声時計で先行予約し、直前sourceの終了通知を待たない。
+    expect(MockAudioContext.starts).toHaveLength(3)
     expect(MockAudioContext.startedBufferLengths[1]).toBe(24000)
-    MockAudioContext.finishCurrentSource()
-    await waitFor(() => expect(MockAudioContext.starts).toHaveLength(3))
+    const sample = 1 / 24000
+    expect(MockAudioContext.startTimes[1]).toBeCloseTo(1 + sample, 8)
+    expect(MockAudioContext.startTimes[2]).toBeCloseTo(2 + sample, 8)
 
     ws.emitMessage({ event: 'utterance_end', scene_number: 1, utterance_index: 0 })
     ws.emitMessage({ event: 'scene_pause', scene_number: 2, duration_ms: 100 })
@@ -252,14 +388,14 @@ describe('AudiobookPlayer', () => {
     ws.emitMessage({ event: 'audio_segment_end', scene_number: 2, utterance_index: 0 })
     ws.emitMessage({ event: 'utterance_end', scene_number: 2, utterance_index: 0 })
 
-    // シーン1の再生中に次の見出しをキューへ入れ、完了後に100msの無音を挟む。
-    expect(MockAudioContext.starts).toHaveLength(3)
-    MockAudioContext.finishCurrentSource()
+    // 100msの場面pauseを保持し、次の見出しの表示だけ実再生時刻まで待つ。
+    expect(MockAudioContext.starts).toHaveLength(5)
     expect(MockAudioContext.startedBufferLengths[3]).toBe(2400)
-    MockAudioContext.finishCurrentSource()
-    await waitFor(() => {
-      expect(MockAudioContext.starts).toHaveLength(5)
-    })
+    expect(MockAudioContext.startTimes[3]).toBeCloseTo(2 + 2 * sample, 8)
+    expect(MockAudioContext.startTimes[4]).toBeCloseTo(2.1 + 2 * sample, 8)
+    expect(onPlaybackPositionChange).not.toHaveBeenCalledWith({ sceneNumber: 2, utteranceIndex: 0 })
+    MockAudioContext.instances[0].currentTime = 2.102
+    act(() => vi.advanceTimersByTime(1102))
     expect(onPlaybackPositionChange).toHaveBeenCalledWith({ sceneNumber: 2, utteranceIndex: 0 })
   })
 
@@ -282,6 +418,50 @@ describe('AudiobookPlayer', () => {
       action: 'start',
       scene_number: 2,
       start_utterance_index: 1,
+    })
+  })
+
+  it('未保存原稿はカーソルの文から同じ発話 index で再生する', async () => {
+    const source = [
+      'INT. ROOM - DAY #1#',
+      '',
+      '@ナレーター',
+      '雨の匂いがした。',
+      '窓辺に小さな傘が置かれていた。',
+    ].join('\n')
+    const sentenceStart = source.indexOf('窓辺')
+    const onPlaybackPositionChange = vi.fn()
+    const draft = {
+      source_fountain: source,
+      voice_assignments: [{ speaker: 'ナレーター', voice_id: 'voices/synthetic', voice_traits: '落ち着いた声' }],
+    }
+    renderPlayer({
+      documentId: 'draft-only-id', draft, isPlaying: false, onPlayingChange: vi.fn(), onPlaybackPositionChange,
+      playbackStart: { sceneNumber: 1, utteranceIndex: 1, sourceOffset: sentenceStart }, scenes,
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+
+    expect(JSON.parse(MockWebSocket.instances[0].sentMessages[0])).toEqual({
+      action: 'start',
+      scene_number: 1,
+      start_utterance_index: 1,
+      draft: {
+        ...draft,
+        source_fountain: [
+          'INT. ROOM - DAY #1#',
+          '',
+          '@ナレーター',
+          '窓辺に小さな傘が置かれていた。',
+        ].join('\n'),
+      },
+    })
+    const ws = MockWebSocket.instances[0]
+    ws.emitMessage({ event: 'utterance_start', speaker: 'ナレーター', scene_number: 1, utterance_index: 1 })
+    ws.emitMessage({ event: 'audio_chunk', data: 'AAA=' })
+    expect(onPlaybackPositionChange).toHaveBeenLastCalledWith({
+      sceneNumber: 1, utteranceIndex: 1, sourceOffset: sentenceStart,
     })
   })
 

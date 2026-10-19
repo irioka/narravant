@@ -2,11 +2,18 @@
 
 [日本語](README.ja.md)
 
-Current release: **0.2.0**.
+Current release: **0.3.0**.
 
-NARRAVANT is an open source application that turns novels and screenplays into audiobook scripts and reads them aloud. It generates an audiobook script in [Fountain](https://fountain.io/) format from your source text, then uses Gemini TTS to play the narration and character voices in real time. It also analyzes the story through five turning points and an emotional arc. Background music and sound effects are not supported.
+NARRAVANT is a lightweight, local-first application that uses AI to turn novels and screenplays into [Fountain](https://fountain.io/) audiobook scripts with **narration, character dialogue, and acting directions**, then reads them aloud with Gemini TTS.
+
+NARRAVANT **0.3.0** plans and writes novel adaptations with the original **events, character states, and foreshadowing** in view. It also automatically generates delivery instructions for **Gemini 3.8 Flash TTS's style field and inline tags**. Existing screenplays keep their story and scene order while their narration, dialogue, and delivery notation are prepared for reading.
+
+**One Gemini API key covers script generation, voice design, and speech.** After installing the app, add your key to the supplied local configuration and run it on your computer. The app uses SQLite for local storage; no GPU, local model download, or separate database server is required. Gemini API calls are billed separately.
+
+Story analysis includes a synopsis, five turning points, and an emotional arc. Background music and sound effects are not supported.
 
 ## Screenshots
+
 
 | Analysis workbench | Five turning points |
 | --- | --- |
@@ -16,18 +23,33 @@ NARRAVANT is an open source application that turns novels and screenplays into a
 
 Real-time reading — import, analysis, voice design, and playback with auto-scroll:
 
+
 https://github.com/user-attachments/assets/511a7b1d-07ab-4e1b-8aa5-9045ebe5dd8c
 
 > The sample work shown here is from [Aozora Bunko](https://www.aozora.gr.jp/), a library of public-domain Japanese literature.
 
 ## Features
 
-- **Script generation** — Upload a novel or screenplay (`.txt`, `.pdf`, `.fountain`, `.fdx`, or Native JSON) and generate an audiobook script in Fountain format, with narration and character dialogue.
+- **Audiobook scripts** — Import a novel or screenplay (`.txt`, `.pdf`, `.fountain`, or `.fdx`) to prepare narration, dialogue, and acting directions in Fountain format. Re-import Native JSON to restore a work. Novel adaptation uses source events, character states, foreshadowing, and related scenes.
+- **Automatic delivery instructions** — AI adds acting directions and inline tags where useful. Playback sends sustained directions through `speechMetadata.style` and keeps local tags such as `<short pause>` and `<breath>` in the spoken text supplied to Gemini 3.8 Flash TTS.
+- **Lightweight local setup** — One Gemini Developer API key, a local Python service, and a browser UI. SQLite stores your work locally.
 - **Story analysis** — Generate and keep a synopsis, five turning points, and an emotional arc from the uploaded work.
 - **Voice design** — Generate voice traits for the narrator and each character, then create voices with Gemini and assign them per speaker. Gemini retains stateful custom voices for one year after their last use; using a voice for TTS resets this period ([Google's guide](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation)).
 - **Real-time playback** — Synthesize each utterance in script order with Gemini TTS and stream it over WebSocket. Generated audio is not stored; playback is regenerated each time.
 - **Local-first storage** — Scripts, voice traits, voice assignments, and analysis are saved in a local database. Export and re-import via Native JSON.
 - **Bilingual UI** — Switch the interface between English and Japanese.
+
+## What's new in 0.3.0
+
+Version 0.3.0 includes these changes:
+
+- Novel imports use the original text or PDF pages, source events, character states and knowledge, foreshadowing, and related earlier scenes when planning and writing each scene. The original presentation order is kept separate from causal order.
+- After analyzing the first draft, source-grounded checks can revise a problematic scene within a shared one-revision limit. Changes trigger updated analysis before the unsaved draft is returned. Original source material and intermediate plans are not saved with the document.
+- Narration uses `@Narrator` or `@ナレーター`. AI generates optional Fountain parentheticals for sustained acting directions, which playback maps to Gemini 3.8 Flash TTS's `speechMetadata.style` field. It also generates inline tags such as `<short pause>`, `<long pause>`, and `<breath>` for local delivery choices.
+- Playback keeps sentence-sized streaming requests and the scene-transition pause, while removing added fixed silence within a scene. Tags do not guarantee an exact pause duration or remove API waiting time. Unsaved or edited scripts can start at the sentence containing the cursor.
+- Custom-voice overlap is unsupported.
+
+Native JSON, saved document fields, voice assignments, and public API/event payloads retain their existing shapes. Perceived child/elderly voice quality remains future work.
 
 ## Tech Stack
 
@@ -54,6 +76,8 @@ cp .env.example .env
 - `GEMINI_TTS_MODEL`: Speech synthesis model (default: `gemini-3.8-flash-tts`).
 - `SQLITE_DB_PATH`: Path to the local SQLite database file (default: `./runtime/narravant.sqlite3`). Relative paths are resolved from the repository root (the directory containing `.env`).
 - `LOCAL_STORAGE_PATH`: Directory for local script storage (default: `./runtime/storage`). Relative paths are resolved from the repository root (the directory containing `.env`).
+
+For the supplied local setup, keep the other defaults and replace the `GEMINI_API_KEY` placeholder. Text generation and analysis settings are in `backend/config.yaml`; the default is `gemini.thinking_level: MEDIUM`. Restart the backend after changing these settings. This setting does not control TTS playback.
 
 > [!WARNING]
 > **API Billing Notice**

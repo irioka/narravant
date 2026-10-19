@@ -24,7 +24,6 @@ from narravant.services.playback import (
     build_playback_plan,
 )
 from narravant.services.tts import (
-    DEFAULT_INTER_UTTERANCE_PAUSE_DURATION_MS,
     TtsPlaybackCoordinator,
     create_tts_client,
 )
@@ -159,8 +158,17 @@ async def document_playback_websocket(
                 start_scene=start_scene,
                 start_utterance_index=start_utterance_index,
             )
-
-            planned_voice_ids = [utterance.voice_id for utterance in plan.utterances]
+            planned_voice_ids = list(
+                dict.fromkeys(
+                    voice_id
+                    for utterance in plan.utterances
+                    for voice_id in (
+                        utterance.voice_id,
+                        utterance.listener_voice.voice_id if utterance.listener_voice else None,
+                    )
+                    if voice_id
+                )
+            )
             if any(voice_id.startswith(("voice_", "voices/")) for voice_id in planned_voice_ids):
                 voice_service = _build_voice_management_service(websocket, settings)
                 await voice_service.validate_voice_ids(
@@ -172,11 +180,6 @@ async def document_playback_websocket(
             coordinator = TtsPlaybackCoordinator(
                 tts_client=tts_client,
                 scene_pause_duration_ms=getattr(settings, "playback_scene_pause_duration_ms", 3000),
-                inter_utterance_pause_duration_ms=getattr(
-                    settings,
-                    "playback_inter_utterance_pause_duration_ms",
-                    DEFAULT_INTER_UTTERANCE_PAUSE_DURATION_MS,
-                ),
             )
             async for ev in coordinator.run_stream(plan.utterances):
                 ev_type = ev["type"]
