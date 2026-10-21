@@ -68,7 +68,7 @@ function requiredMetadata(metadata: DocumentDetail['metadata'], key: 'logline' |
 export function canExportNative(document: Pick<DocumentDetail, 'title' | 'source_fountain' | 'analysis' | 'emotion_arc' | 'scenes'>): boolean {
   if (document.analysis.status !== 'completed') return false
   const fountainTitle = /^Title:\s*(.+)$/im.exec(document.source_fountain)?.[1]?.trim()
-  if (!fountainTitle || fountainTitle.normalize('NFC') !== document.title.trim().normalize('NFC')) return false
+  if (!fountainTitle || !document.title.trim()) return false
   const sceneCount = countSceneHeadings(document.source_fountain)
   if (sceneCount === 0 || sceneCount !== document.scenes.length) return false
   const mapping = document.emotion_arc.scene_mapping
@@ -142,7 +142,8 @@ export function serializeNativeJson(
     exported_at: exportedAt,
     document: {
       title: document.title,
-      source_fountain: document.source_fountain,
+      // タイトル変更は分析を無効にしない。交換用コピー内だけ三つのタイトルを揃える。
+      source_fountain: document.source_fountain.replace(/^Title:[^\r\n]*/im, () => `Title: ${document.title}`),
       metadata: {
         // The external title triad is intentionally normalized from the visible title.
         title: document.title,

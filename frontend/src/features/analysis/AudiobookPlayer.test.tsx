@@ -92,6 +92,30 @@ class MockAudioContext {
 }
 
 describe('AudiobookPlayer', () => {
+  it('8分の先行受信でも予約ノードを制限し、音声を欠落・重複なく最後まで補充する', async () => {
+    const onPlayingChange = vi.fn()
+    renderPlayer({ documentId: 'doc-long', isPlaying: false, onPlayingChange, scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    const pcm = btoa(String.fromCharCode(...new Uint8Array(48000))) // 1秒の合成PCM。
+    act(() => {
+      ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+      for (let i = 0; i < 480; i++) ws.emitMessage({ event: 'audio_chunk', data: pcm })
+      ws.emitMessage({ event: 'utterance_end' })
+      ws.emitMessage({ event: 'playback_complete' })
+    })
+    expect(MockAudioContext.activeSources.length).toBeLessThanOrEqual(32)
+    expect(onPlayingChange).not.toHaveBeenCalledWith(false)
+    for (let i = 0; i < 480; i++) {
+      MockAudioContext.instances[0].currentTime = i + 2
+      act(() => MockAudioContext.finishCurrentSource())
+      expect(MockAudioContext.activeSources.length).toBeLessThanOrEqual(32)
+    }
+    expect(MockAudioContext.startTimes).toEqual(Array.from({ length: 480 }, (_, i) => i + 1))
+    expect(onPlayingChange).toHaveBeenLastCalledWith(false)
+  })
+
   it('先着PCMは終了通知を待たず音声時計で隙間なく予約する', async () => {
     const onPlayingChange = vi.fn()
     renderPlayer({ documentId: 'doc-continuous', isPlaying: false, onPlayingChange, scenes })

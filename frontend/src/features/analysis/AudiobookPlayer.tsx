@@ -9,6 +9,8 @@ import { localizeUiError, type KnownErrorCode } from '@/i18n/errors'
 import { base64ToUint8Array, pcm16ToAudioBuffer } from './audio-decoder'
 import { playbackSourceAtPosition, type PlaybackStartPosition } from './fountain-scenes'
 
+const MAX_SCHEDULED_SOURCES = 32
+
 export type PlaybackStatus = 'idle' | 'generating' | 'playing' | 'stopped' | 'error' | 'completed'
 
 export interface AudiobookPlayerProps {
@@ -165,7 +167,9 @@ export function AudiobookPlayer({
   const playNextRef = useRef<() => void>(() => { })
 
   const playNextInQueue = useCallback(() => {
-    while (audioQueueRef.current.length > 0) {
+    // 先行合成が速くても、出力グラフと表示用timerを無制限に増やさない。
+    // 終了通知では次の音声を即時再生せず、常に先行予約の空きだけ補充する。
+    while (audioQueueRef.current.length > 0 && scheduledSourcesRef.current.size < MAX_SCHEDULED_SOURCES) {
       const item = audioQueueRef.current.shift()!
       isPlayingQueueRef.current = true
       setStatus('playing')

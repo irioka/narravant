@@ -58,6 +58,33 @@ function IconAction({ children, label, onClick, destructive = false, disabled = 
   return <Tooltip><TooltipTrigger asChild><Button aria-label={label} disabled={disabled} onClick={onClick} size="icon" variant="ghost"><span className={destructive ? 'text-destructive' : undefined}>{children}</span></Button></TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>
 }
 
+// 読込み中も一覧とパネルを保持し、文書切替でスクロール位置を失わない。
+function AnalysisLayout({ documentId, onBeforeNavigate, actions, tabs, editor, content, children }: {
+  documentId?: string
+  onBeforeNavigate: () => void
+  actions?: React.ReactNode
+  tabs?: React.ReactNode
+  editor?: React.ReactNode
+  content?: React.ReactNode
+  children?: React.ReactNode
+}) {
+  return <main className="flex h-svh min-w-[1180px] flex-col overflow-hidden bg-background">
+    <NarravantHeader actions={actions} />
+    <Group className="flex-1" orientation="horizontal">
+      <Panel defaultSize="30" minSize="24"><Group className="h-full" orientation="vertical">
+        <Panel defaultSize="40" minSize="20"><aside className="h-full overflow-hidden border-b bg-card"><DocumentList activeDocumentId={documentId} onBeforeNavigate={onBeforeNavigate} /></aside></Panel>
+        <Separator className="h-px bg-border hover:bg-primary/50" />
+        <Panel defaultSize="60" minSize="20">{tabs}</Panel>
+      </Group></Panel>
+      <Separator className="w-px bg-border hover:bg-primary/50" />
+      <Panel defaultSize="47" minSize="30">{editor}</Panel>
+      <Separator className="w-px bg-border hover:bg-primary/50" />
+      <Panel defaultSize="23" minSize="18"><aside className="h-full overflow-hidden bg-card">{content}</aside></Panel>
+    </Group>
+    {children}
+  </main>
+}
+
 export function AnalysisPage() {
   const { t } = useTranslation(['analysis', 'common', 'importExport', 'errors'])
   const errorT = t as unknown as TFunction<'errors'>
@@ -501,7 +528,7 @@ export function AnalysisPage() {
   }, [taskProgress?.terminal])
 
   if (!documentId && !document) return <><EmptyAnalysis importDisabled={hasActiveTask} onImport={importFile} /><TaskProgressDialog now={progressClock} onCancel={cancelActiveTask} onDismiss={dismissTaskProgress} task={taskProgress} /><RuntimeErrorDialog error={runtimeError} onDismiss={() => setRuntimeError(undefined)} /></>
-  if (!document && (documentQuery.isPending || (selectedVersionId !== undefined && versionQuery.isPending))) return <><main className="grid h-svh place-items-center bg-background text-sm text-muted-foreground">Loading document…</main><TaskProgressDialog now={progressClock} onCancel={cancelActiveTask} onDismiss={dismissTaskProgress} task={taskProgress} /><RuntimeErrorDialog error={runtimeError} onDismiss={() => setRuntimeError(undefined)} /></>
+  if (!document && (documentQuery.isPending || (selectedVersionId !== undefined && versionQuery.isPending))) return <AnalysisLayout documentId={documentId} onBeforeNavigate={stopPlayback} editor={<div className="grid h-full place-items-center text-sm text-muted-foreground">Loading document…</div>}><TaskProgressDialog now={progressClock} onCancel={cancelActiveTask} onDismiss={dismissTaskProgress} task={taskProgress} /><RuntimeErrorDialog error={runtimeError} onDismiss={() => setRuntimeError(undefined)} /></AnalysisLayout>
   if ((!activeDraftState && (documentQuery.isError || (selectedVersionId !== undefined && versionQuery.isError))) || !document) return <><main className="grid h-svh place-items-center bg-background"><div className="text-center"><p className="text-sm text-muted-foreground">Unable to load document.</p><Button asChild className="mt-4" variant="outline"><Link to="/analysis/new">{t('common:actions.retry')}</Link></Button></div></main><TaskProgressDialog now={progressClock} onCancel={cancelActiveTask} onDismiss={dismissTaskProgress} task={taskProgress} /><RuntimeErrorDialog error={runtimeError} onDismiss={() => setRuntimeError(undefined)} /></>
 
   const canReanalyze = !selectedVersionId
@@ -513,9 +540,12 @@ export function AnalysisPage() {
     && !reanalyzeMutation.isPending
     && !taskProgress
 
-  return <main className="flex h-svh min-w-[1180px] flex-col overflow-hidden bg-background">
-    <NarravantHeader actions={<><IconAction disabled={!document.capabilities.can_edit || hasActiveTask} label={t('analysis:dialogs.importDocument')} onClick={() => { stopPlayback(); window.document.getElementById('analysis-document-import')?.click() }}><FileInput /></IconAction><IconAction label={t('importExport:export.title')} onClick={() => { stopPlayback(); setExportOpen(true) }}><FileOutput /></IconAction><IconAction disabled={!document.capabilities.can_delete} destructive label={t('common:actions.delete')} onClick={() => { stopPlayback(); setDeleteOpen(true) }}><Trash2 /></IconAction><input accept={IMPORT_FILE_ACCEPT} className="hidden" disabled={!document.capabilities.can_edit || hasActiveTask} onChange={(event) => { void importFile(event.target.files?.[0]); event.target.value = '' }} type="file" id="analysis-document-import" /></>} />
-    <Group className="flex-1" orientation="horizontal"><Panel defaultSize="30" minSize="24"><Group className="h-full" orientation="vertical"><Panel defaultSize="40" minSize="20"><aside className="h-full overflow-hidden border-b bg-card"><DocumentList activeDocumentId={documentId} onBeforeNavigate={stopPlayback} /></aside></Panel><Separator className="h-px bg-border hover:bg-primary/50" /><Panel defaultSize="60" minSize="20"><AnalysisTabsPanel activeSceneNumber={activeSceneNumber} document={document} onDraftChange={!isPlaybackActive ? updateDraft : undefined} onOpenSimilarities={() => setSimilarityOpen(true)} onReanalyze={canReanalyze ? () => setReanalyzeOpen(true) : undefined} onSceneSelect={(sceneNumber) => { stopPlayback(); setActiveSceneNumber(sceneNumber); setSceneJumpVersion((version) => version + 1); setPlaybackStart({ documentId: document.document_id, sceneNumber, utteranceIndex: 0 }) }} onSelectVersion={selectHistoryVersion} titleMode={document.capabilities.can_edit && !isPlaybackActive ? 'editable' : 'readonly'} versions={versionsQuery.data?.items ?? []} /></Panel></Group></Panel><Separator className="w-px bg-border hover:bg-primary/50" /><Panel defaultSize="47" minSize="30"><EditorPane activeScene={selectedScene} editable={Boolean(document.capabilities.can_edit && !isPlaybackActive)} isSaving={saveMutation.isPending} onChange={(source_fountain) => updateDraft({ source_fountain })} onCursorPositionChange={(position) => setPlaybackStart(position ? { ...position, documentId: document.document_id } : undefined)} onSave={requestSave} playbackPosition={isPlaybackActive ? playbackPosition : undefined} player={<AudiobookPlayer documentId={document.document_id} draft={activeDraftState?.importTaskId || isDirty ? { source_fountain: document.source_fountain, voice_assignments: document.voice_assignments ?? [] } : undefined} isPlaying={isPlaybackActive} onBeforePlay={() => { const missing = missingVoiceSpeakers(document); if (missing.length > 0) { setMissingVoices(missing); return false } return true }} onPlaybackPositionChange={setPlaybackPosition} onPlayingChange={setIsPlaybackActive} onSceneJump={(sceneNumber) => { stopPlayback(); setActiveSceneNumber(sceneNumber); setSceneJumpVersion((version) => version + 1); setPlaybackStart({ documentId: document.document_id, sceneNumber, utteranceIndex: 0 }) }} playbackStart={playbackStart?.documentId === document.document_id ? playbackStart : undefined} scenes={document.scenes} stopSignal={playbackStopVersion} />} saveEnabled={Boolean(document.capabilities.can_edit && isDirty && !isPlaybackActive && !hasActiveTask)} sceneJumpVersion={sceneJumpVersion} value={document.source_fountain} /></Panel><Separator className="w-px bg-border hover:bg-primary/50" /><Panel defaultSize="23" minSize="18"><aside className="h-full overflow-hidden bg-card"><AnalysisContent document={document} isDraft={Boolean(activeDraftState?.importTaskId)} onDraftChange={!isPlaybackActive ? updateDraft : undefined} titleMode={document.capabilities.can_edit && !isPlaybackActive ? 'editable' : 'readonly'} /></aside></Panel></Group>
+  return <AnalysisLayout documentId={documentId} onBeforeNavigate={stopPlayback}
+    actions={<><IconAction disabled={!document.capabilities.can_edit || hasActiveTask} label={t('analysis:dialogs.importDocument')} onClick={() => { stopPlayback(); window.document.getElementById('analysis-document-import')?.click() }}><FileInput /></IconAction><IconAction label={t('importExport:export.title')} onClick={() => { stopPlayback(); setExportOpen(true) }}><FileOutput /></IconAction><IconAction disabled={!document.capabilities.can_delete} destructive label={t('common:actions.delete')} onClick={() => { stopPlayback(); setDeleteOpen(true) }}><Trash2 /></IconAction><input accept={IMPORT_FILE_ACCEPT} className="hidden" disabled={!document.capabilities.can_edit || hasActiveTask} onChange={(event) => { void importFile(event.target.files?.[0]); event.target.value = '' }} type="file" id="analysis-document-import" /></>}
+    tabs={<AnalysisTabsPanel activeSceneNumber={activeSceneNumber} document={document} onDraftChange={!isPlaybackActive ? updateDraft : undefined} onOpenSimilarities={() => setSimilarityOpen(true)} onReanalyze={canReanalyze ? () => setReanalyzeOpen(true) : undefined} onSceneSelect={(sceneNumber) => { stopPlayback(); setActiveSceneNumber(sceneNumber); setSceneJumpVersion((version) => version + 1); setPlaybackStart({ documentId: document.document_id, sceneNumber, utteranceIndex: 0 }) }} onSelectVersion={selectHistoryVersion} titleMode={document.capabilities.can_edit && !isPlaybackActive ? 'editable' : 'readonly'} versions={versionsQuery.data?.items ?? []} />}
+    editor={<EditorPane activeScene={selectedScene} editable={Boolean(document.capabilities.can_edit && !isPlaybackActive)} isSaving={saveMutation.isPending} onChange={(source_fountain) => updateDraft({ source_fountain })} onCursorPositionChange={(position) => setPlaybackStart(position ? { ...position, documentId: document.document_id } : undefined)} onSave={requestSave} playbackPosition={isPlaybackActive ? playbackPosition : undefined} player={<AudiobookPlayer documentId={document.document_id} draft={activeDraftState?.importTaskId || isDirty ? { source_fountain: document.source_fountain, voice_assignments: document.voice_assignments ?? [] } : undefined} isPlaying={isPlaybackActive} onBeforePlay={() => { const missing = missingVoiceSpeakers(document); if (missing.length > 0) { setMissingVoices(missing); return false } return true }} onPlaybackPositionChange={setPlaybackPosition} onPlayingChange={setIsPlaybackActive} onSceneJump={(sceneNumber) => { stopPlayback(); setActiveSceneNumber(sceneNumber); setSceneJumpVersion((version) => version + 1); setPlaybackStart({ documentId: document.document_id, sceneNumber, utteranceIndex: 0 }) }} playbackStart={playbackStart?.documentId === document.document_id ? playbackStart : undefined} scenes={document.scenes} stopSignal={playbackStopVersion} />} saveEnabled={Boolean(document.capabilities.can_edit && isDirty && !isPlaybackActive && !hasActiveTask)} sceneJumpVersion={sceneJumpVersion} value={document.source_fountain} />}
+    content={<AnalysisContent document={document} isDraft={Boolean(activeDraftState?.importTaskId)} onDraftChange={!isPlaybackActive ? updateDraft : undefined} titleMode={document.capabilities.can_edit && !isPlaybackActive ? 'editable' : 'readonly'} />}
+  >
     <ValenceSimilarityDialog items={similaritiesQuery.data?.items.map((item) => ({ label: item.name, value: item.percentage.toFixed(2) })) ?? []} onOpenChange={setSimilarityOpen} open={similarityOpen} />
     <ReanalyzeDialog isPending={reanalyzeMutation.isPending} onConfirm={confirmReanalysis} onOpenChange={setReanalyzeOpen} open={reanalyzeOpen} />
     <ImportTitleDialog isPending={saveMutation.isPending} onConfirm={confirmImportSave} onOpenChange={setImportTitleOpen} onTitleChange={setImportTitle} open={importTitleOpen} title={importTitle} />
@@ -525,7 +555,7 @@ export function AnalysisPage() {
     <TaskProgressDialog now={progressClock} onCancel={cancelActiveTask} onDismiss={dismissTaskProgress} task={taskProgress} />
     <RuntimeErrorDialog error={runtimeError} onDismiss={() => setRuntimeError(undefined)} />
     <MissingVoicesDialog onDismiss={() => setMissingVoices(undefined)} speakers={missingVoices} />
-  </main>
+  </AnalysisLayout>
 }
 
 function MissingVoicesDialog({ onDismiss, speakers }: { onDismiss: () => void; speakers: string[] | undefined }) {

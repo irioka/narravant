@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getDocument, getVersions, reanalyzeEmotionArc, updateDocument } from '@/api/documents'
@@ -18,7 +18,7 @@ vi.mock('@/api/documents', async (importOriginal) => ({
   updateDocument: vi.fn(),
 }))
 vi.mock('@/api/tasks', () => ({ streamTaskProgress: vi.fn(), cancelTask: vi.fn() }))
-vi.mock('./DocumentList', () => ({ DocumentList: () => null }))
+vi.mock('./DocumentList', () => ({ DocumentList: () => <div data-testid="document-list"><Link to="/analysis/next-document">Next document</Link></div> }))
 vi.mock('./AnalysisTabsPanel', () => ({
   AnalysisTabsPanel: ({ onReanalyze }: { onReanalyze?: () => void }) => onReanalyze
     ? <button onClick={onReanalyze}>Open Emotional Arc reanalysis</button>
@@ -75,6 +75,27 @@ beforeEach(() => {
 })
 
 describe('AnalysisPage の未保存本文 Reanalyze', () => {
+  it('別文書の取得中も一覧のDOMとスクロール位置を保持する', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    let resolveNext!: (document: DocumentDetail) => void
+    vi.mocked(getDocument).mockImplementation(async (id) => id === 'next-document'
+      ? new Promise<DocumentDetail>((resolve) => { resolveNext = resolve })
+      : baseDocument)
+    render(<QueryClientProvider client={client}><LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><MemoryRouter initialEntries={['/analysis/synthetic-document']}><Routes><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes></MemoryRouter></LocaleProvider></QueryClientProvider>)
+    await screen.findByRole('textbox', { name: '脚本本文' })
+    const list = screen.getByTestId('document-list')
+    list.scrollTop = 420
+    fireEvent.click(screen.getByRole('link', { name: 'Next document' }))
+    await waitFor(() => expect(getDocument).toHaveBeenCalledWith('next-document'))
+    expect(screen.getByTestId('document-list')).toBe(list)
+    expect(list.scrollTop).toBe(420)
+    resolveNext({ ...baseDocument, document_id: 'next-document' })
+    await screen.findByRole('textbox', { name: '脚本本文' })
+    expect(screen.getByTestId('document-list')).toBe(list)
+    expect(list.scrollTop).toBe(420)
+    client.clear()
+  })
+
   it('画面上の本文を解析し、結果と本文を一度の保存にまとめる', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const draftSource = 'INT. TEST ROOM - DAY\n\n@ALICE\nUpdated synthetic line.'

@@ -109,7 +109,17 @@ describe('Native JSON export', () => {
   it('blocks stale Native JSON while always allowing Fountain', () => {
     expect(canExportNative(document)).toBe(true)
     expect(canExportNative({ ...document, source_fountain: `${document.source_fountain}\n\nEXT. STREET - NIGHT #2#\n\nMore.` })).toBe(false)
-    expect(canExportNative({ ...document, title: 'Different' })).toBe(false)
+    expect(canExportNative({ ...document, title: 'Different' })).toBe(true)
+  })
+
+  it('タイトル変更後も三つのタイトルを揃えてNative JSONを書き出せる', () => {
+    const renamed = { ...document, title: '合成作品 0.3.1 Argon' }
+    expect(canExportNative(renamed)).toBe(true)
+    const exported = serializeNativeJson(renamed)
+    expect(exported.document.title).toBe(renamed.title)
+    expect(exported.document.metadata.title).toBe(renamed.title)
+    expect(exported.document.source_fountain).toBe(document.source_fountain.replace('Title: 物語 / test', `Title: ${renamed.title}`))
+    expect(renamed.source_fountain).toBe(document.source_fountain)
   })
 
   it('allows Native JSON export when 100 source scenes are represented by 36 mapped points', () => {
