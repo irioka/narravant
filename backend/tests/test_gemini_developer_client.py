@@ -25,6 +25,8 @@ def dummy_settings():
         gemini_connection_timeout_seconds=30,
         gemini_chunk_timeout_seconds=10,
         gemini_processing_timeout_seconds=60,
+        gemini_http_timeout_milliseconds=1800000,
+        gemini_minimum_output_tokens=1,
         gemini_max_output_tokens=8192,
         gemini_max_main_characters=6,
         gemini_thinking_level="LOW",
@@ -42,6 +44,7 @@ def dummy_settings():
         gemini_planning_max_output_tokens=8192,
         gemini_scene_writing_max_output_tokens=8192,
         gemini_verification_max_output_tokens=4096,
+        gemini_verification_max_attempts=3,
         emotion_arc_max_points=36,
     )
 
@@ -50,6 +53,16 @@ def test_analyzer_uses_configured_model_and_api_key(dummy_settings) -> None:
     analyzer = VertexDocumentAnalyzer(dummy_settings)
     assert analyzer.model == "gemini-3.8-flash"
     assert analyzer.api_key == "synthetic-test-api-key-12345"
+
+
+def test_analyzer_uses_resolved_timeouts_without_replacing_processing_deadline(dummy_settings) -> None:
+    dummy_settings.gemini_model = "gemini-4-argon"
+    dummy_settings.gemini_connection_timeout_seconds = 1301
+    dummy_settings.gemini_chunk_timeout_seconds = 1302
+    analyzer = VertexDocumentAnalyzer(dummy_settings)
+    assert analyzer.connection_timeout_seconds == 1301
+    assert analyzer.chunk_timeout_seconds == 1302
+    assert analyzer.processing_timeout_seconds == 60
 
 
 def test_analyzer_passes_model_to_client_stream(dummy_settings) -> None:

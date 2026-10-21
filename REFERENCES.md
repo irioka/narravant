@@ -74,12 +74,20 @@ Fountain. **Syntax.**
 - Use: title pages, scene headings, scene numbers (`#N#`), forced character cues (`@`), dialogue, and parentheticals in script generation, parsing, editing, and playback.
 - Limits: NARRAVANT's heading prefixes, sequential integer scene numbers, explicit speaker cues, and narrator aliases (`@ナレーター` / `@Narrator`) are application conventions. Interpreting parentheticals as speech style is NARRAVANT's playback behavior, rather than a TTS feature of Fountain.
 
+### REF-GEMINI-TEXT
+
+Google. **Gemini 4 Argon**, **What's new in Gemini 4 Argon**, and **Google Gen AI Python SDK**. Checked 2026-10-21.
+
+- Sources: [Model specifications](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon), [Generate Content migration guide](https://ai.google.dev/gemini-api/docs/generate-content/latest-model), [Python SDK](https://github.com/googleapis/python-genai).
+- Use: text analysis and adaptation with Gemini 4 Argon or Gemini 3.8 Flash. `GEMINI_MODEL` selects the model; `backend/config.yaml` defines the model-specific output budget and HTTP/stream timeouts. Argon's thinking tokens share its output budget; the migration guide recommends at least 32,768 output tokens and a 20-minute HTTP timeout. The application requires Python SDK 2.30.1 or newer.
+- Limits: configuration and synthetic compatibility tests do not establish model availability for an account, real-generation quality, latency, or billed cost. Argon does not generate speech; TTS uses a separate model. Recheck model limits and SDK support when updating the integration.
+
 ### REF-GEMINI-TTS
 
 Google. **Text-to-speech generation (TTS)** and **Generating content: SpeechMetadata.**
 
 - Sources: [GenerateContent TTS guide](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation), [SpeechMetadata API reference](https://ai.google.dev/api/generate-content#SpeechMetadata).
-- Use: separate spoken text from sustained acting directions through `parts[].speechMetadata.style` and stream playback from the first PCM samples. Local pause and vocal delivery tags remain in the text. Requests are split by sentence and reuse the assigned voice ID. No fixed silence is added within a scene.
+- Use: separate spoken text from sustained acting directions through `parts[].speechMetadata.style` and stream playback from the first PCM samples. Local pause and vocal delivery tags remain in the text. Requests are split by sentence and reuse the assigned voice ID. The application inserts configured silence at speaker changes and after spoken Scene Headings, without adding silence between other sentences by the same speaker.
 - Limits: acceptance of an API field does not demonstrate acting quality, timing, or clarity. Tags do not guarantee millisecond durations or eliminate API waiting time. Overlapping custom-voice playback is rejected before a request is sent. New adaptations use narrator explanations or natural sequential turns; this is not a playback fallback for existing pipe notation. SDK, model, and API support must be rechecked when updating the integration. The application does not retain generated audio.
 
 ### REF-GEMINI-VOICE-DESIGN

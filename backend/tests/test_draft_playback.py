@@ -68,7 +68,9 @@ def draft_connection(monkeypatch):
     app.include_router(playback.router)
     # Draft playback may read the owner-scoped voice registry, but never a saved
     # document or script object.
-    app.state.settings = SimpleNamespace(playback_scene_pause_duration_ms=0)
+    app.state.settings = SimpleNamespace(
+        playback_scene_pause_duration_ms=0, playback_speaker_change_pause_duration_ms=1000
+    )
     app.state.db_manager = db
     app.state.storage_client = SimpleNamespace()
 
@@ -142,6 +144,7 @@ async def test_unsaved_draft_plays_scene_heading_without_persisting(draft_connec
             ("Narrator", 1),
             ("ALICE", 2),
         ]
+        assert [event["duration_ms"] for event in events if event["event"] == "utterance_pause"] == [1000, 1000]
         assert tts.calls == [
             {"text": "ROOM - DAY", "voice_id": "voice_synthetic_narrator"},
             {"text": "First.", "voice_id": "voice_synthetic_narrator"},

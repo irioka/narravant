@@ -19,6 +19,64 @@ from narravant.services.narrative_adaptation import (
 from narravant.services.vertex_analysis import CollectedStream, VertexDocumentAnalyzer
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ('{"events": []}', []),
+        ('{"events": [], "no_story_content": false}', []),
+        ('{"events": [], "no_story_content": true}', None),
+    ],
+)
+def test_text_reader_distinguishes_unexplained_empty_and_non_story(payload, expected):
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    analyzer.reader_max_output_tokens = 8192
+    requests = []
+
+    def collect(**kwargs):
+        requests.append(kwargs)
+        return CollectedStream(payload, len(payload), ("STOP",))
+
+    analyzer._collect_stream_text = collect
+    assert analyzer.read_text_window("底本と発行日", SourceAnchor.text(0, 6)) == expected
+    assert "no_story_content" in requests[0]["contents"]
+
+
+def test_text_reader_keeps_events_even_with_conflicting_non_story_flag():
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    analyzer.reader_max_output_tokens = 8192
+    payload = '{"events": [{"summary": "ミナが家を出る"}], "no_story_content": true}'
+    analyzer._collect_stream_text = lambda **kwargs: CollectedStream(payload, len(payload), ("STOP",))
+    events = analyzer.read_text_window("ミナが家を出る。奥付。", SourceAnchor.text(0, 12))
+    assert events is not None and len(events) == 1
+    assert events[0].summary == "ミナが家を出る"
+
+
+@pytest.mark.parametrize("model", ["gemini-3.8-flash", "gemini-4-argon"])
+def test_analysis_request_respects_model_output_and_transport_requirements(model):
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    analyzer.model = model
+    analyzer.max_output_tokens = 65536
+    analyzer.minimum_output_tokens = 32768 if model == "gemini-4-argon" else 1
+    analyzer.thinking_level = "MEDIUM"
+    config = analyzer._request_config({"response_mime_type": "application/json"}, max_output_tokens=2048)
+    assert config["max_output_tokens"] == (32768 if model == "gemini-4-argon" else 2048)
+    assert config["thinking_config"] == {"thinking_level": "MEDIUM"}
+    assert config["response_mime_type"] == "application/json"
+
+
+def test_argon_client_uses_long_http_timeout(monkeypatch):
+    from google import genai
+
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    analyzer.model = "gemini-4-argon"
+    analyzer.api_key = "synthetic-key"
+    analyzer.http_timeout_milliseconds = 1303000
+    captured = {}
+    monkeypatch.setattr(genai, "Client", lambda **kwargs: captured.update(kwargs))
+    analyzer._create_client()
+    assert captured["http_options"]["timeout"] == 1303000
+
+
 @pytest.mark.parametrize("language", ["en", "ja", "und"])
 def test_scene_writer_requests_adaptation_in_fresh_wording(language):
     analyzer = object.__new__(VertexDocumentAnalyzer)

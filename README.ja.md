@@ -2,11 +2,9 @@
 
 [English](README.md)
 
-現在のバージョン: **0.3.0**。
-
 NARRAVANT は、小説や脚本から、AIで**ナレーション・登場人物の台詞・演技指導を含むオーディオブック用スクリプト**を [Fountain](https://fountain.io/) 形式で生成し、Gemini TTSで朗読する、軽量なローカルアプリケーションです。
 
-**0.3.0**では、小説の**出来事・人物状態・伏線**と原文を参照して場面を計画・執筆します。**Gemini 3.8 Flash TTSのスタイルフィールドとインラインタグに対応する演技指示もAIが自動生成**します。既存の脚本は物語と場面順を保持し、地の文・台詞・演出記法を朗読向けに整えます。
+小説の**出来事・人物状態・伏線**と原文を参照して場面を計画・執筆します。**Gemini 3.8 Flash TTSのスタイルフィールドとインラインタグに対応する演技指示もAIが自動生成**します。既存の脚本は物語と場面順を保持し、地の文・台詞・演出記法を朗読向けに整えます。
 
 **必要な外部サービスの認証情報は、Gemini APIキー1つだけです。** アプリをセットアップした後は、付属の設定にキーを入れて手元のPCで動かせます。保存にはSQLiteを使い、GPU・ローカルAIモデルのダウンロード・別途のDBサーバーは不要です。Gemini APIの利用料金は別途発生します。
 
@@ -14,19 +12,17 @@ NARRAVANT は、小説や脚本から、AIで**ナレーション・登場人物
 
 ## スクリーンショット
 
-
 | 分析ワークベンチ | 5 つの転換点 |
 | --- | --- |
-| ![分析ワークベンチ：文書一覧、再生付き脚本エディタ、登場人物／声のペイン](docs/images/workbench.png) | ![物語の 5 つの転換点](docs/images/turning-points.png) |
+| ![NARRAVANT 0.3.1の日本語画面：注文の多い料理店の脚本、感情アーク、再生操作、登場人物の分析](docs/images/workbench-ja.png) | ![NARRAVANT 0.3.1の日本語画面：注文の多い料理店の転換点の詳細](docs/images/turning-points-ja.png) |
+
+サンプル作品：宮沢賢治『注文の多い料理店』（[青空文庫の図書カード](https://www.aozora.gr.jp/cards/000081/card43754.html)）。
 
 ### デモ
 
-リアルタイム朗読 — Import・分析・声のデザイン・自動スクロール付き再生:
+https://github.com/user-attachments/assets/7b5f117f-1a1b-4eb0-84fe-9057de714e9d
 
-
-https://github.com/user-attachments/assets/511a7b1d-07ab-4e1b-8aa5-9045ebe5dd8c
-
-> ここで示すサンプル作品は、著作権が消滅した日本語文学のライブラリ [青空文庫](https://www.aozora.gr.jp/) のものです。
+> サンプル作品：宮沢賢治『注文の多い料理店』。出典：[青空文庫の図書カード](https://www.aozora.gr.jp/cards/000081/card43754.html)。
 
 ## 主な機能
 
@@ -38,18 +34,6 @@ https://github.com/user-attachments/assets/511a7b1d-07ab-4e1b-8aa5-9045ebe5dd8c
 - **リアルタイム再生** — 各発話を脚本順に Gemini TTS で音声化し、WebSocket でストリーミング再生します。生成音声は保存せず、再生のたびに生成します。
 - **ローカル保存** — スクリプト・声の特徴・声の割り当て・分析をローカルのデータベースに保存します。Native JSON で Export・Import できます。
 - **日英切替 UI** — 画面表示を英語・日本語で切り替えられます。
-
-## 0.3.0の主な変更
-
-0.3.0には次の変更を含みます。
-
-- 小説の場面計画・執筆へ、対応する原文本文またはPDFページ、出来事、人物の状態・知識、伏線、関連する先行場面を渡します。原作の提示順と因果関係を分けて扱います。
-- 初稿の分析後に原文根拠付きで照合し、問題場面を共有上限1回以内で改稿します。本文変更後は分析も更新してから未保存draftを返します。原文と中間計画は文書へ保存しません。
-- 地の文は `@ナレーター`／`@Narrator` で記述します。持続する演技をFountainの括弧書きとしてAIが生成し、再生時にGemini 3.8 Flash TTSの `speechMetadata.style` へ反映します。`<short pause>`／`<long pause>`／`<breath>` などのインラインタグも必要な箇所へ自動生成します。
-- 文単位のストリーミングとシーン切替の間を保ち、同一シーン内に追加する固定無音を廃止しました。タグは正確なミリ秒やAPI待ちの解消を保証しません。未保存・編集中の本文ではカーソルを含む文から再生できます。
-- カスタム声による重なり再生は未対応です。
-
-Native JSON、保存文書、声割当、公開API・イベントのフィールド形状は維持しています。生成音声の老人・子供らしさの品質改善は将来の課題です。
 
 ## 技術スタック
 
@@ -72,12 +56,16 @@ Native JSON、保存文書、声割当、公開API・イベントのフィール
 cp .env.example .env
 ```
 - `GEMINI_API_KEY`: **必須**。Gemini Developer API の API キーを指定します。
-- `GEMINI_MODEL`: 原稿分析・脚色用モデル（既定: `gemini-3.8-flash`）。
+- `GEMINI_MODEL`: 原稿分析・脚色用モデル。`gemini-3.8-flash`（既定）と `gemini-4-argon` に対応。
 - `GEMINI_TTS_MODEL`: 音声合成モデル（既定: `gemini-3.8-flash-tts`）。
 - `SQLITE_DB_PATH`: SQLite データベースファイルのパス（既定: `./runtime/narravant.sqlite3`）。相対パスは `.env` があるリポジトリルートから解決されます。
 - `LOCAL_STORAGE_PATH`: スクリプト保存ディレクトリ（既定: `./runtime/storage`）。相対パスは `.env` があるリポジトリルートから解決されます。
 
-付属のローカル構成では、他の既定値を保ったまま `GEMINI_API_KEY` のプレースホルダーを自分のキーへ置き換えて起動できます。生成・分析の設定は `backend/config.yaml` にあり、既定では `gemini.thinking_level: MEDIUM` を使用します。設定変更後はbackendを再起動してください。この値はTTSの再生設定ではありません。
+付属のローカル構成では、他の既定値を保ったまま `GEMINI_API_KEY` のプレースホルダーを自分のキーへ置き換えて起動できます。生成・分析の設定は `backend/config.yaml` にあり、`gemini.thinking_level` で LOW・MEDIUM・HIGH の思考量を選択します。設定変更後はbackendを再起動してください。この値はTTSの再生設定ではありません。
+
+Gemini 4 Argon を使う場合は `.env` に `GEMINI_MODEL=gemini-4-argon` を設定します。Flash を使う場合は `gemini-3.8-flash` に戻します。どちらも同じ Gemini Developer API キーを使い、音声合成には引き続き `GEMINI_TTS_MODEL=gemini-3.8-flash-tts` を指定します。
+
+モデル別の設定は [backend/config.yaml](backend/config.yaml) の `gemini.model_overrides` に定義し、`GEMINI_MODEL` に応じて適用します。Flash は共通の工程別出力上限・stream待機設定を使います。付属の Argon 設定は、思考を含む出力予算の最低値を32,768トークン、接続・chunk待機を1,200秒、HTTP timeout を1,200,000ミリ秒としています。共通の `processing_timeout_seconds` による処理全体の期限も適用されます。値を調整するときは YAML を編集し、backendを再起動してください。更新後の SDK は `cd backend && uv sync --locked` で導入できます。
 
 > [!WARNING]
 > **API 利用料金について**

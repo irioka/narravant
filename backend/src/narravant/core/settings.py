@@ -65,6 +65,8 @@ class Settings:
     gemini_connection_timeout_seconds: int
     gemini_chunk_timeout_seconds: int
     gemini_processing_timeout_seconds: int
+    gemini_http_timeout_milliseconds: int
+    gemini_minimum_output_tokens: int
     gemini_max_output_tokens: int
     gemini_max_main_characters: int
     gemini_thinking_level: str
@@ -82,8 +84,10 @@ class Settings:
     gemini_planning_max_output_tokens: int
     gemini_scene_writing_max_output_tokens: int
     gemini_verification_max_output_tokens: int
+    gemini_verification_max_attempts: int
     playback_tts_max_attempts: int
     playback_scene_pause_duration_ms: int
+    playback_speaker_change_pause_duration_ms: int
     emotion_arc_max_points: int
     sse_heartbeat_interval_seconds: int
     sse_poll_interval_milliseconds: int
@@ -139,6 +143,23 @@ class Settings:
         gemini_model = (os.getenv("GEMINI_MODEL") or "").strip() or "gemini-3.8-flash"
         gemini_tts_model = (os.getenv("GEMINI_TTS_MODEL") or "").strip() or "gemini-3.8-flash-tts"
 
+        # モデル名に対応する上書きを解決し、以後は共通の設定検証を通す。
+        overrides = _required_yaml_value(raw_config, "gemini", "model_overrides")
+        if not isinstance(overrides, dict):
+            raise SettingsError("gemini.model_overrides must be a mapping")
+        selected_override = overrides.get(gemini_model, {})
+        if not isinstance(selected_override, dict):
+            raise SettingsError(f"gemini.model_overrides.{gemini_model} must be a mapping")
+        allowed_override_keys = {
+            "minimum_output_tokens",
+            "connection_timeout_seconds",
+            "chunk_timeout_seconds",
+            "http_timeout_milliseconds",
+        }
+        if set(selected_override) - allowed_override_keys:
+            raise SettingsError(f"gemini.model_overrides.{gemini_model} contains unsupported settings")
+        raw_config["gemini"].update(selected_override)
+
         try:
             valence_vectorization = load_valence_vectorization_profile(
                 _required_yaml_value(raw_config, "valence_vectorization")
@@ -175,6 +196,8 @@ class Settings:
             "connection_timeout_seconds",
             "chunk_timeout_seconds",
             "processing_timeout_seconds",
+            "http_timeout_milliseconds",
+            "minimum_output_tokens",
             "max_output_tokens",
             "max_main_characters",
             "import_continuation_max_attempts",
@@ -191,6 +214,7 @@ class Settings:
             "planning_max_output_tokens",
             "scene_writing_max_output_tokens",
             "verification_max_output_tokens",
+            "verification_max_attempts",
         ):
             try:
                 positive_gemini_integers[key] = int(_required_yaml_value(raw_config, "gemini", key))
@@ -201,6 +225,9 @@ class Settings:
         playback_tts_max_attempts = cls._required_positive_integer(raw_config, "playback", "tts_max_attempts")
         playback_scene_pause_duration_ms = cls._required_nonnegative_integer(
             raw_config, "playback", "scene_pause_duration_ms"
+        )
+        playback_speaker_change_pause_duration_ms = cls._required_nonnegative_integer(
+            raw_config, "playback", "speaker_change_pause_duration_ms"
         )
         try:
             emotion_arc_max_points = int(_required_yaml_value(raw_config, "emotion_arc", "max_points"))
@@ -236,6 +263,8 @@ class Settings:
             gemini_connection_timeout_seconds=positive_gemini_integers["connection_timeout_seconds"],
             gemini_chunk_timeout_seconds=positive_gemini_integers["chunk_timeout_seconds"],
             gemini_processing_timeout_seconds=positive_gemini_integers["processing_timeout_seconds"],
+            gemini_http_timeout_milliseconds=positive_gemini_integers["http_timeout_milliseconds"],
+            gemini_minimum_output_tokens=positive_gemini_integers["minimum_output_tokens"],
             gemini_max_output_tokens=positive_gemini_integers["max_output_tokens"],
             gemini_max_main_characters=positive_gemini_integers["max_main_characters"],
             gemini_thinking_level=thinking_level,
@@ -257,8 +286,10 @@ class Settings:
             gemini_planning_max_output_tokens=positive_gemini_integers["planning_max_output_tokens"],
             gemini_scene_writing_max_output_tokens=positive_gemini_integers["scene_writing_max_output_tokens"],
             gemini_verification_max_output_tokens=positive_gemini_integers["verification_max_output_tokens"],
+            gemini_verification_max_attempts=positive_gemini_integers["verification_max_attempts"],
             playback_tts_max_attempts=playback_tts_max_attempts,
             playback_scene_pause_duration_ms=playback_scene_pause_duration_ms,
+            playback_speaker_change_pause_duration_ms=playback_speaker_change_pause_duration_ms,
             emotion_arc_max_points=emotion_arc_max_points,
             sse_heartbeat_interval_seconds=int(_required_yaml_value(raw_config, "sse", "heartbeat_interval_seconds")),
             sse_poll_interval_milliseconds=int(_required_yaml_value(raw_config, "sse", "poll_interval_milliseconds")),

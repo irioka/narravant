@@ -483,6 +483,69 @@ def _verify_adaptation(service: NarrativeAdaptationService, result: AdaptationRe
     )
 
 
+def test_text_reader_skips_explicit_non_story_window_but_preserves_story() -> None:
+    client = FakeNarrativeClient()
+    original_reader = client.read_text_window
+    config = _make_test_config().model_copy(
+        update={
+            "text_reader_source_unit_max_characters": 30,
+            "text_reader_source_unit_overlap_characters": 0,
+        }
+    )
+    source = "アリスが庭を歩き、ウサギを追いかける。".ljust(30) + "発行日・出版社・底本情報"
+    calls = []
+
+    def read(text, anchor, **kwargs):
+        calls.append(anchor.start)
+        return original_reader(text, anchor, **kwargs) if anchor.start == 0 else None
+
+    client.read_text_window = read
+    result = NarrativeAdaptationService(client, config).adapt_text(source)
+    assert result.fountain
+    assert calls == [0, 30]
+
+
+@pytest.mark.parametrize("response", [None, []])
+def test_text_reader_rejects_document_without_any_events(response) -> None:
+    client = FakeNarrativeClient()
+    client.read_text_window = lambda *args, **kwargs: response
+    with pytest.raises(NarrativeAdaptationError) as exc:
+        NarrativeAdaptationService(client, _make_test_config()).adapt_text("合成データ")
+    assert exc.value.code == "ADAPTATION_VERIFICATION_FAILED"
+
+
+def test_text_reader_rejects_invalid_anchor_after_bounded_retries(caplog) -> None:
+    client = FakeNarrativeClient()
+    calls = []
+
+    def read(text, anchor, **kwargs):
+        calls.append(anchor.start)
+        return [ReaderCandidateEvent(summary="出来事", source_anchor=SourceAnchor.text(0, 999))]
+
+    client.read_text_window = read
+    with pytest.raises(NarrativeAdaptationError) as exc:
+        NarrativeAdaptationService(client, _make_test_config()).adapt_text("合成原稿")
+    assert exc.value.code == "ADAPTATION_VERIFICATION_FAILED"
+    assert calls == [0, 0]
+    assert "invalid_event_anchor_or_summary" in caplog.text
+    assert "合成原稿" not in caplog.text
+
+
+def test_text_reader_unexplained_empty_response_retries_and_keeps_story() -> None:
+    client = FakeNarrativeClient()
+    original_reader = client.read_text_window
+    calls = []
+
+    def read(text, anchor, **kwargs):
+        calls.append(anchor.start)
+        return [] if len(calls) == 1 else original_reader(text, anchor, **kwargs)
+
+    client.read_text_window = read
+    result = NarrativeAdaptationService(client, _make_test_config()).adapt_text("アリスはウサギを追う。")
+    assert result.fountain
+    assert calls == [0, 0]
+
+
 def test_narrative_adaptation_service_adapts_text_prose_successfully() -> None:
     client = FakeNarrativeClient()
     config = _make_test_config()

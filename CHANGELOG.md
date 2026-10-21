@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-10-21
+
+### Added
+
+- Add a configurable pause at speaker changes and between a spoken Scene Heading and the following speech, including narration using the same voice. The default is one second via `playback.speaker_change_pause_duration_ms` in `backend/config.yaml`; set it to zero to disable it. Other sentence boundaries and consecutive turns by the same speaker add no pause, and scene transitions keep their existing pause without adding another.
+- Support Gemini 4 Argon for analysis and adaptation alongside Gemini 3.8 Flash. Select the model with `GEMINI_MODEL`; configure its output budget and timeouts in `backend/config.yaml` under `gemini.model_overrides`. Update the Google Gen AI SDK for Argon compatibility.
+
+### Fixed
+
+- Retry malformed or incorrectly grounded scene-verification responses within the configured attempt limit and processing deadline. Log the scene number and validation reason without source text; continue rejecting invalid evidence if attempts are exhausted.
+- Allow explicitly identified non-story text windows during import while continuing to reject unexplained empty results, invalid source references, and documents without any narrative events.
+
 ## [0.3.0] - 2026-10-19
 
 ### Added

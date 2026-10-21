@@ -2,11 +2,9 @@
 
 [日本語](README.ja.md)
 
-Current release: **0.3.0**.
-
 NARRAVANT is a lightweight, local-first application that uses AI to turn novels and screenplays into [Fountain](https://fountain.io/) audiobook scripts with **narration, character dialogue, and acting directions**, then reads them aloud with Gemini TTS.
 
-NARRAVANT **0.3.0** plans and writes novel adaptations with the original **events, character states, and foreshadowing** in view. It also automatically generates delivery instructions for **Gemini 3.8 Flash TTS's style field and inline tags**. Existing screenplays keep their story and scene order while their narration, dialogue, and delivery notation are prepared for reading.
+NARRAVANT plans and writes novel adaptations with the original **events, character states, and foreshadowing** in view. It also automatically generates delivery instructions for **Gemini 3.8 Flash TTS's style field and inline tags**. Existing screenplays keep their story and scene order while their narration, dialogue, and delivery notation are prepared for reading.
 
 **One Gemini API key covers script generation, voice design, and speech.** After installing the app, add your key to the supplied local configuration and run it on your computer. The app uses SQLite for local storage; no GPU, local model download, or separate database server is required. Gemini API calls are billed separately.
 
@@ -14,19 +12,17 @@ Story analysis includes a synopsis, five turning points, and an emotional arc. B
 
 ## Screenshots
 
-
 | Analysis workbench | Five turning points |
 | --- | --- |
-| ![Analysis workbench: document list, script editor with playback, and character/voice pane](docs/images/workbench.png) | ![The five turning points of the story](docs/images/turning-points.png) |
+| ![NARRAVANT 0.3.1 in English: Oz script, emotional arc, playback controls, and character profiles](docs/images/workbench-en.png) | ![NARRAVANT 0.3.1 in English: turning point details for Oz](docs/images/turning-points-en.png) |
+
+Sample: *The Wonderful Wizard of Oz*, Chapters 6–9, by L. Frank Baum ([Project Gutenberg, eBook #55](https://www.gutenberg.org/ebooks/55)).
 
 ### Demo
 
-Real-time reading — import, analysis, voice design, and playback with auto-scroll:
+https://github.com/user-attachments/assets/857be910-ec02-4969-8bbf-928e0b68de57
 
-
-https://github.com/user-attachments/assets/511a7b1d-07ab-4e1b-8aa5-9045ebe5dd8c
-
-> The sample work shown here is from [Aozora Bunko](https://www.aozora.gr.jp/), a library of public-domain Japanese literature.
+> Sample: *The Wonderful Wizard of Oz*, Chapters 6–9, by L. Frank Baum. Source: [Project Gutenberg, eBook #55](https://www.gutenberg.org/ebooks/55).
 
 ## Features
 
@@ -38,18 +34,6 @@ https://github.com/user-attachments/assets/511a7b1d-07ab-4e1b-8aa5-9045ebe5dd8c
 - **Real-time playback** — Synthesize each utterance in script order with Gemini TTS and stream it over WebSocket. Generated audio is not stored; playback is regenerated each time.
 - **Local-first storage** — Scripts, voice traits, voice assignments, and analysis are saved in a local database. Export and re-import via Native JSON.
 - **Bilingual UI** — Switch the interface between English and Japanese.
-
-## What's new in 0.3.0
-
-Version 0.3.0 includes these changes:
-
-- Novel imports use the original text or PDF pages, source events, character states and knowledge, foreshadowing, and related earlier scenes when planning and writing each scene. The original presentation order is kept separate from causal order.
-- After analyzing the first draft, source-grounded checks can revise a problematic scene within a shared one-revision limit. Changes trigger updated analysis before the unsaved draft is returned. Original source material and intermediate plans are not saved with the document.
-- Narration uses `@Narrator` or `@ナレーター`. AI generates optional Fountain parentheticals for sustained acting directions, which playback maps to Gemini 3.8 Flash TTS's `speechMetadata.style` field. It also generates inline tags such as `<short pause>`, `<long pause>`, and `<breath>` for local delivery choices.
-- Playback keeps sentence-sized streaming requests and the scene-transition pause, while removing added fixed silence within a scene. Tags do not guarantee an exact pause duration or remove API waiting time. Unsaved or edited scripts can start at the sentence containing the cursor.
-- Custom-voice overlap is unsupported.
-
-Native JSON, saved document fields, voice assignments, and public API/event payloads retain their existing shapes. Perceived child/elderly voice quality remains future work.
 
 ## Tech Stack
 
@@ -72,12 +56,16 @@ Copy `.env.example` to `.env` and configure the required environment variables:
 cp .env.example .env
 ```
 - `GEMINI_API_KEY`: **Required**. Your Google Gemini Developer API key.
-- `GEMINI_MODEL`: Analysis and adaptation model (default: `gemini-3.8-flash`).
+- `GEMINI_MODEL`: Analysis and adaptation model. Supports `gemini-3.8-flash` (default) and `gemini-4-argon`.
 - `GEMINI_TTS_MODEL`: Speech synthesis model (default: `gemini-3.8-flash-tts`).
 - `SQLITE_DB_PATH`: Path to the local SQLite database file (default: `./runtime/narravant.sqlite3`). Relative paths are resolved from the repository root (the directory containing `.env`).
 - `LOCAL_STORAGE_PATH`: Directory for local script storage (default: `./runtime/storage`). Relative paths are resolved from the repository root (the directory containing `.env`).
 
-For the supplied local setup, keep the other defaults and replace the `GEMINI_API_KEY` placeholder. Text generation and analysis settings are in `backend/config.yaml`; the default is `gemini.thinking_level: MEDIUM`. Restart the backend after changing these settings. This setting does not control TTS playback.
+For the supplied local setup, keep the other defaults and replace the `GEMINI_API_KEY` placeholder. Text generation and analysis settings are in `backend/config.yaml`; `gemini.thinking_level` selects LOW, MEDIUM, or HIGH thinking effort. Restart the backend after changing these settings. This setting does not control TTS playback.
+
+To use Gemini 4 Argon, set `GEMINI_MODEL=gemini-4-argon` in `.env`. Set it back to `gemini-3.8-flash` to use Flash. Both models use the same Gemini Developer API key; keep `GEMINI_TTS_MODEL=gemini-3.8-flash-tts` for speech synthesis.
+
+Model-specific settings are defined in [backend/config.yaml](backend/config.yaml) under `gemini.model_overrides` and selected by `GEMINI_MODEL`. Flash uses the common stage-specific output limits and stream timeouts. The supplied Argon override sets a minimum output budget of 32,768 tokens, including thinking, and 1,200-second connection/chunk waits with a 1,200,000-millisecond HTTP timeout. The shared `processing_timeout_seconds` still limits the entire operation. Adjust these values in YAML, then restart the backend. Run `cd backend && uv sync --locked` to install the required SDK after updating.
 
 > [!WARNING]
 > **API Billing Notice**

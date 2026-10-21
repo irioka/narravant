@@ -130,6 +130,7 @@ def test_scene_verification_returns_structured_rooted_issues() -> None:
 
     analyzer = object.__new__(VertexDocumentAnalyzer)
     analyzer.verification_max_output_tokens = 1000
+    analyzer.verification_max_attempts = 3
     requests = []
     response = {
         "issues": [

@@ -7,7 +7,7 @@ import json
 import pytest
 
 from narravant.core.speech_notation import parse_speech_notation
-from narravant.services.playback import PlannedUtterance
+from narravant.services.playback import PlannedUtterance, build_playback_plan
 from narravant.services.speech_segments import SegmentVoice
 from narravant.services.tts import (
     FakeTtsClient,
@@ -213,6 +213,54 @@ async def test_tts_coordinator_does_not_add_fixed_pause_within_a_scene(fake_tts:
     events = [event async for event in TtsPlaybackCoordinator(fake_tts).run_stream(utterances)]
 
     assert "utterance_pause" not in [event["type"] for event in events]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration_ms", [1000, 650, 0])
+async def test_speaker_change_pause_preserves_sentence_and_scene_boundaries(fake_tts, duration_ms):
+    utterances = [
+        PlannedUtterance(1, 0, "ナレーター", "narrator", "最初の文。次の文。", "voice-narrator"),
+        PlannedUtterance(1, 1, "Narrator", "narrator", "続き。", "voice-narrator"),
+        PlannedUtterance(1, 2, "アリス", "character", "こんにちは。元気？", "voice-shared"),
+        PlannedUtterance(1, 3, "アリス（小声）", "character", "もう一言。", "voice-shared"),
+        PlannedUtterance(1, 4, "ボブ", "character", "元気だよ。", "voice-shared"),
+        PlannedUtterance(1, 5, "ナレーター", "narrator", "二人は歩き出した。", "voice-narrator"),
+        PlannedUtterance(2, 0, "アリス", "character", "次の場面。", "voice-shared"),
+    ]
+    coordinator = TtsPlaybackCoordinator(fake_tts, speaker_change_pause_duration_ms=duration_ms)
+    events = [event async for event in coordinator.run_stream(utterances)]
+    pauses = [event for event in events if event["type"] == "utterance_pause"]
+    assert [event["duration_ms"] for event in pauses] == ([duration_ms] * 3 if duration_ms else [])
+    for index, event in enumerate(events):
+        if event["type"] == "utterance_pause":
+            assert events[index + 1]["type"] == "audio_chunk"
+            assert event["scene_number"] == 1
+    assert len([event for event in events if event["type"] == "scene_pause"]) == 1
+    assert events[-1]["type"] == "playback_complete"
+    resumed = [event async for event in coordinator.run_stream(utterances[2:3])]
+    assert not any(event["type"] in {"utterance_pause", "scene_pause"} for event in resumed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("speaker", ["Narrator", "MAYA"])
+@pytest.mark.parametrize("duration_ms", [1000, 650, 0])
+async def test_scene_heading_to_speech_uses_configured_pause_once(fake_tts, speaker, duration_ms):
+    data = {
+        "source_fountain": f"INT. ROOM - DAY #1#\n\n@{speaker}\nFirst sentence. Second sentence.\n",
+        "voice_assignments": [
+            {"speaker": "Narrator", "voice_id": "voice-narrator"},
+            {"speaker": "MAYA", "voice_id": "voice-maya"},
+        ],
+    }
+    plan = build_playback_plan(data)
+    coordinator = TtsPlaybackCoordinator(fake_tts, speaker_change_pause_duration_ms=duration_ms)
+    events = [event async for event in coordinator.run_stream(plan.utterances)]
+    pauses = [event for event in events if event["type"] == "utterance_pause"]
+    assert [event["duration_ms"] for event in pauses] == ([duration_ms] if duration_ms else [])
+    assert events[-1]["type"] == "playback_complete"
+    resumed = build_playback_plan(data, start_utterance_index=1)
+    resumed_events = [event async for event in coordinator.run_stream(resumed.utterances)]
+    assert not any(event["type"] == "utterance_pause" for event in resumed_events)
 
 
 @pytest.mark.asyncio

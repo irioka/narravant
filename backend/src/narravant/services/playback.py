@@ -48,6 +48,7 @@ class PlannedUtterance:
     performance_direction: str = ""  # Fountain parenthetical, sent to TTS as guidance
     notation: SpeechNotation | None = None
     listener_voice: SegmentVoice | None = None
+    is_scene_heading: bool = False  # 再生内部専用。保存・公開イベントには含めない。
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,9 @@ def build_playback_plan(
 
     parsed = FountainParser.parse(source_fountain)
     raw_utterances = _playback_utterances(parsed)
+    spoken_heading_scenes = {
+        scene.scene_number for scene in parsed.scenes if FountainParser.spoken_scene_heading(scene.heading)
+    }
 
     if not raw_utterances:
         raise PlaybackPlanError(
@@ -162,6 +166,7 @@ def build_playback_plan(
                 performance_direction=getattr(u, "performance_direction", "") or "",
                 notation=notation,
                 listener_voice=listener_voice,
+                is_scene_heading=u.utterance_index == 0 and u.scene_number in spoken_heading_scenes,
             )
         )
 

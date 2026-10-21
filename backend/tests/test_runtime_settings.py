@@ -96,8 +96,10 @@ def test_settings_loads_supported_gemini_generation_parameters(
     assert settings.gemini_retry_backoff_seconds == 3
     assert settings.playback_tts_max_attempts == 6
     assert settings.playback_scene_pause_duration_ms == 3000
+    assert settings.playback_speaker_change_pause_duration_ms == 1000
     assert settings.emotion_arc_max_points == 36
-    assert settings.gemini_thinking_level == "MEDIUM"
+    config = yaml.safe_load((BACKEND_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    assert settings.gemini_thinking_level == config["gemini"]["thinking_level"]
 
 
 def test_settings_ignores_removed_inter_utterance_pause_key(
@@ -116,6 +118,69 @@ def test_settings_ignores_removed_inter_utterance_pause_key(
     assert not hasattr(settings, "playback_inter_utterance_pause_duration_ms")
 
 
+@pytest.mark.parametrize(
+    ("model", "minimum_tokens", "connection", "chunk", "http_ms"),
+    [
+        ("gemini-3.8-flash", 1, 300, 60, 1800000),
+        ("gemini-4-argon", 32768, 1200, 1200, 1200000),
+    ],
+)
+def test_model_settings_reach_generation_and_http_client(
+    monkeypatch, model, minimum_tokens, connection, chunk, http_ms
+) -> None:
+    from google import genai
+
+    from narravant.core.settings import Settings
+    from narravant.services.vertex_analysis import VertexDocumentAnalyzer
+
+    _set_required_environment(monkeypatch)
+    monkeypatch.setenv("GEMINI_MODEL", model)
+    captured = {}
+    monkeypatch.setattr(genai, "Client", lambda **kwargs: captured.update(kwargs))
+    settings = Settings.load(BACKEND_ROOT)
+    analyzer = VertexDocumentAnalyzer(settings)
+    analyzer._create_client()
+    assert analyzer.connection_timeout_seconds == connection
+    assert analyzer.chunk_timeout_seconds == chunk
+    assert captured["http_options"]["timeout"] == http_ms
+    assert analyzer._request_config(None, max_output_tokens=2048)["max_output_tokens"] == max(minimum_tokens, 2048)
+    assert analyzer.processing_timeout_seconds == 1800
+
+
+def test_model_override_values_are_read_from_yaml(monkeypatch, tmp_path) -> None:
+    from narravant.core.settings import Settings
+    from narravant.services.vertex_analysis import VertexDocumentAnalyzer
+
+    _set_required_environment(monkeypatch)
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-4-argon")
+    config = yaml.safe_load((BACKEND_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    config["gemini"]["model_overrides"]["gemini-4-argon"] = {
+        "minimum_output_tokens": 40960,
+        "connection_timeout_seconds": 1301,
+        "chunk_timeout_seconds": 1302,
+        "http_timeout_milliseconds": 1303000,
+    }
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    analyzer = VertexDocumentAnalyzer(Settings.load(tmp_path))
+    assert analyzer.connection_timeout_seconds == 1301
+    assert analyzer.chunk_timeout_seconds == 1302
+    assert analyzer.http_timeout_milliseconds == 1303000
+    assert analyzer._request_config(None, max_output_tokens=2048)["max_output_tokens"] == 40960
+
+
+@pytest.mark.parametrize("value", [0, "invalid"])
+def test_settings_rejects_invalid_model_override(monkeypatch, tmp_path, value) -> None:
+    from narravant.core.settings import Settings, SettingsError
+
+    _set_required_environment(monkeypatch)
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-4-argon")
+    config = yaml.safe_load((BACKEND_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    config["gemini"]["model_overrides"] = {"gemini-4-argon": {"minimum_output_tokens": value}}
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    with pytest.raises(SettingsError, match="minimum_output_tokens"):
+        Settings.load(tmp_path)
+
+
 def test_settings_rejects_missing_required_yaml_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from narravant.core.settings import Settings, SettingsError
 
@@ -128,7 +193,7 @@ def test_settings_rejects_missing_required_yaml_key(monkeypatch: pytest.MonkeyPa
         Settings.load(tmp_path)
 
 
-@pytest.mark.parametrize("key", ["tts_max_attempts", "scene_pause_duration_ms"])
+@pytest.mark.parametrize("key", ["tts_max_attempts", "scene_pause_duration_ms", "speaker_change_pause_duration_ms"])
 def test_settings_requires_playback_configuration(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, key: str) -> None:
     from narravant.core.settings import Settings, SettingsError
 
@@ -147,6 +212,7 @@ def test_settings_requires_playback_configuration(monkeypatch: pytest.MonkeyPatc
         "analysis_max_attempts",
         "generation_max_attempts",
         "voice_design_max_attempts",
+        "verification_max_attempts",
         "retry_backoff_seconds",
         "connection_timeout_seconds",
         "chunk_timeout_seconds",
@@ -373,6 +439,7 @@ def test_settings_loads_narrative_adaptation_parameters(
     assert settings.gemini_planning_max_output_tokens == 16384
     assert settings.gemini_scene_writing_max_output_tokens == 16384
     assert settings.gemini_verification_max_output_tokens == 4096
+    assert settings.gemini_verification_max_attempts == 3
 
 
 @pytest.mark.parametrize(

@@ -70,6 +70,7 @@ def _playback_ws_env(db: DatabaseManager, storage: InMemoryScriptStorageClient, 
     app.state.settings = SimpleNamespace(
         gemini_api_key="fake",
         gemini_tts_model="gemini-3.8-flash-tts",
+        playback_speaker_change_pause_duration_ms=1000,
         emotion_arc_max_points=36,
         valence_max_arc_distance=1.0,
     )
@@ -954,7 +955,8 @@ INT. 古時計店 - NIGHT #1#
 
     assert events[-1]["event"] == "playback_complete", events[-1]
     assert validated_voice_ids == ["voice_fake_narrator", "voice_fake_alice", "voice_fake_bob"]
-    assert "utterance_pause" not in [event["event"] for event in events]
+    pauses = [event for event in events if event["event"] == "utterance_pause"]
+    assert [event["duration_ms"] for event in pauses] == [1000]
     assert any(event["event"] == "audio_chunk" for event in events)
 
     segments = fake_tts.synthesized_segments

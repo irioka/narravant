@@ -959,7 +959,9 @@ class NarrativeGenerationClient(Protocol):
         on_progress: Callable[[int], None] | None = None,
         deadline: float | None = None,
         source_language: SourceLanguage = "und",
-    ) -> list[ReaderCandidateEvent]: ...
+    ) -> list[ReaderCandidateEvent] | None:
+        """None は非本文と明示判定した窓。理由のない空一覧とは区別する。"""
+        ...
 
     def read_pdf_window(
         self,
@@ -1151,6 +1153,7 @@ class NarrativeAdaptationService:
             raw_events.extend(events)
 
         if not raw_events:
+            logger.warning("Text reader validation failed reason=no_events_in_document window_count=%d", len(windows))
             raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
 
         events_by_key: dict[tuple[int, int, str, str], StoryEvent] = {}
@@ -1507,6 +1510,13 @@ class NarrativeAdaptationService:
                 deadline=deadline,
                 source_language=source_language,
             )
+            if events is None:
+                logger.info(
+                    "Text reader skipped non-story window start=%s end=%s",
+                    source_anchor.start_offset,
+                    source_anchor.end_offset,
+                )
+                return []
             valid = True
             for ev in events:
                 anchor = ev.source_anchor
@@ -1525,6 +1535,15 @@ class NarrativeAdaptationService:
                     break
             if valid and events:
                 return events
+            logger.warning(
+                "Text reader validation failed start=%s end=%s attempt=%d max_attempts=%d reason=%s event_count=%d",
+                source_anchor.start_offset,
+                source_anchor.end_offset,
+                attempt + 1,
+                self.config.reader_refinement_max_attempts + 1,
+                "empty_events_without_non_story_confirmation" if not events else "invalid_event_anchor_or_summary",
+                len(events),
+            )
             if attempt >= self.config.reader_refinement_max_attempts:
                 raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
         return []

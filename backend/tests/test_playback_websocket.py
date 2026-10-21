@@ -200,6 +200,7 @@ def test_setup(fake_tts: FakeTtsClient, monkeypatch: pytest.MonkeyPatch):
         gemini_api_key="fake",
         gemini_tts_model="gemini-3.8-flash-tts",
         playback_scene_pause_duration_ms=1750,
+        playback_speaker_change_pause_duration_ms=625,
         emotion_arc_max_points=36,
         valence_max_arc_distance=1.0,
     )
@@ -236,7 +237,8 @@ async def test_playback_ws_full_flow(test_setup):
         event_types = [e["event"] for e in events]
         assert "utterance_start" in event_types
         assert "scene_pause" in event_types
-        assert "utterance_pause" not in event_types
+        assert "utterance_pause" in event_types
+        assert all(event["duration_ms"] == 625 for event in events if event["event"] == "utterance_pause")
         assert "audio_chunk" in event_types
         assert "audio_segment_end" in event_types
         assert "utterance_end" in event_types
@@ -301,7 +303,7 @@ async def test_playback_ws_validates_listener_voice_with_primary_voices_before_s
     assert validated == [(LOCAL_USER_ID, ["voice_fake_narrator", "voice_fake_alice", "voice_fake_bob"], False)]
     reaction_segment = next(segment for segment in fake_tts.synthesized_segments if segment.listener is not None)
     assert reaction_segment.listener == SegmentVoice("BOB", "voice_fake_bob")
-    assert all(message["event"] != "utterance_pause" for message in events)
+    assert any(message["event"] == "utterance_pause" and message["duration_ms"] == 625 for message in events)
 
 
 async def test_playback_ws_start_from_specific_position(test_setup):
@@ -461,6 +463,7 @@ async def test_playback_ws_resolves_deps_without_request_override(
     app.state.settings = SimpleNamespace(
         gemini_api_key="fake",
         gemini_tts_model="gemini-3.8-flash-tts",
+        playback_speaker_change_pause_duration_ms=1000,
         emotion_arc_max_points=36,
         valence_max_arc_distance=1.0,
     )

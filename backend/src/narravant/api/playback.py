@@ -180,6 +180,7 @@ async def document_playback_websocket(
             coordinator = TtsPlaybackCoordinator(
                 tts_client=tts_client,
                 scene_pause_duration_ms=getattr(settings, "playback_scene_pause_duration_ms", 3000),
+                speaker_change_pause_duration_ms=settings.playback_speaker_change_pause_duration_ms,
             )
             async for ev in coordinator.run_stream(plan.utterances):
                 ev_type = ev["type"]

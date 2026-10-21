@@ -89,6 +89,7 @@ Dust rises.
         for item in plan.utterances
         for marker in ("INT./EXT.", "#12#", "#13#")
     )
+    assert [item.is_scene_heading for item in plan.utterances] == [True, False, False, True, False]
 
 
 @pytest.mark.parametrize(
