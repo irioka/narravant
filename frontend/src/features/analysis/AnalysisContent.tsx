@@ -7,7 +7,7 @@ import { toast } from 'sonner'
 
 import { ApiClientError } from '@/api/client'
 import type { Character, DocumentDetail, IdentifiedTurningPoint, NotApplicableTurningPoint, TurningPoint } from '@/api/contracts'
-import { createVoice, getVoice, previewVoice, VOICE_LIMIT_EXCEEDED, VOICE_PROVIDER_UNAVAILABLE, type VoiceSummary } from '@/api/voices'
+import { createVoice, getVoice, previewVoice, VOICE_LIMIT_EXCEEDED, type VoiceSummary } from '@/api/voices'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { playPcm16 } from './audio-decoder'
 import { firstUtteranceLine, narratorSpeakerName, spokenCharacterNames } from './fountain-scenes'
 import { charactersWithSpokenCues, upsertVoiceAssignment, voiceIdForSpeaker, voiceLibraryKey, type VoiceAssignment } from './voice-assignments'
+import { voiceCreationFailure, type VoiceCreationFailure } from './voice-creation-errors'
 import { VoiceLibraryDialog } from './VoiceLibraryDialog'
 import { localizeUiError, toUiError } from '@/i18n/errors'
 
@@ -76,7 +77,7 @@ export function AnalysisContent({ document, isDraft = false, onDraftChange, titl
   const [generatingAll, setGeneratingAll] = useState(false)
   const [voiceGenerationProgress, setVoiceGenerationProgress] = useState<VoiceGenerationProgress>()
   const [limitExceeded, setLimitExceeded] = useState(false)
-  const [voiceCreationFailed, setVoiceCreationFailed] = useState(false)
+  const [voiceCreationFailureState, setVoiceCreationFailureState] = useState<VoiceCreationFailure>()
   const [voiceLibraryOpen, setVoiceLibraryOpen] = useState(false)
   const [voiceStates, setVoiceStates] = useState<Record<string, VoiceSummary>>({})
   const [checkingAssignedVoices, setCheckingAssignedVoices] = useState(false)
@@ -263,9 +264,11 @@ export function AnalysisContent({ document, isDraft = false, onDraftChange, titl
       return
     }
     setGeneratingAll(true)
+    let failedSpeaker = ''
     try {
       let next = document.voice_assignments ?? []
       for (const [index, target] of targets.entries()) {
+        failedSpeaker = target.speaker
         setVoiceGenerationProgress({ current: index + 1, speaker: target.speaker, total: targets.length })
         const input = {
           speaker: target.speaker,
@@ -286,10 +289,8 @@ export function AnalysisContent({ document, isDraft = false, onDraftChange, titl
     } catch (error) {
       if (error instanceof ApiClientError && error.code === VOICE_LIMIT_EXCEEDED) {
         setLimitExceeded(true)
-      } else if (error instanceof ApiClientError && error.code === VOICE_PROVIDER_UNAVAILABLE) {
-        toast.error(t('analysis:voices.providerUnavailable'))
       } else {
-        setVoiceCreationFailed(true)
+        setVoiceCreationFailureState(voiceCreationFailure(error, failedSpeaker))
       }
     } finally {
       setGeneratingAll(false)
@@ -351,7 +352,7 @@ export function AnalysisContent({ document, isDraft = false, onDraftChange, titl
       onSynopsisChange={() => undefined}
       onTurningPointChange={() => undefined}
       onVoiceGenerated={handleVoiceGenerated}
-      onVoiceCreationFailed={() => setVoiceCreationFailed(true)}
+      onVoiceCreationFailed={setVoiceCreationFailureState}
       onVoiceLimitExceeded={() => setLimitExceeded(true)}
       onVoiceDeleted={markVoiceDeleted}
       onVoicesChange={updateVoiceStates}
@@ -362,7 +363,7 @@ export function AnalysisContent({ document, isDraft = false, onDraftChange, titl
       voiceStates={voiceStates}
     />
     <VoiceLimitDialog onManage={() => setVoiceLibraryOpen(true)} onOpenChange={setLimitExceeded} open={limitExceeded} />
-    <VoiceCreationFailureDialog onOpenChange={setVoiceCreationFailed} open={voiceCreationFailed} />
+    <VoiceCreationFailureDialog failure={voiceCreationFailureState} onOpenChange={(open) => { if (!open) setVoiceCreationFailureState(undefined) }} />
     <VoiceLibraryDialog assignedVoiceIds={assignedVoiceIds} onOpenChange={setVoiceLibraryOpen} onVoiceDeleted={markVoiceDeleted} onVoicesChange={updateVoiceStates} open={voiceLibraryOpen} />
     <Dialog onOpenChange={(open) => { setAddCharacterOpen(open); if (!open) { setNewCharacterName(''); setCharacterNameError(false) } }} open={addCharacterOpen}>
       <DialogContent><DialogHeader><DialogTitle>{t('analysis:characterManagement.add')}</DialogTitle></DialogHeader><label className="grid gap-1 text-sm font-medium">{t('analysis:attributes.name')}<Input aria-label={t('analysis:characterManagement.nameInput')} autoFocus onChange={(event) => { setNewCharacterName(event.target.value); setCharacterNameError(false) }} value={newCharacterName} /></label>{characterNameError && <p className="text-sm text-destructive" role="alert">{t('analysis:characterManagement.invalidName')}</p>}<DialogFooter><Button onClick={() => setAddCharacterOpen(false)} variant="outline">{t('common:actions.cancel')}</Button><Button onClick={commitNewCharacter}>{t('common:actions.add')}</Button></DialogFooter></DialogContent>
@@ -472,7 +473,7 @@ export interface AnalysisEditorDialogProps {
   onSynopsisChange: (value: string) => void
   onTurningPointChange: (value: TurningPoint) => void
   onVoiceGenerated: (result: VoiceAssignment) => void
-  onVoiceCreationFailed?: () => void
+  onVoiceCreationFailed?: (failure: VoiceCreationFailure) => void
   onVoiceLimitExceeded: () => void
   onVoicesChange?: (voices: VoiceSummary[]) => void
   onVoiceDeleted?: (voice: VoiceSummary) => void
@@ -518,7 +519,7 @@ function VoiceControls({ canEdit, documentId, documentTitle, isDraft, onVoiceCre
   documentId: string
   documentTitle: string
   isDraft: boolean
-  onVoiceCreationFailed: () => void
+  onVoiceCreationFailed: (failure: VoiceCreationFailure) => void
   onVoiceGenerated: (result: VoiceAssignment) => void
   onVoiceLimitExceeded: () => void
   onVoiceDeleted: (voice: VoiceSummary) => void
@@ -548,10 +549,8 @@ function VoiceControls({ canEdit, documentId, documentTitle, isDraft, onVoiceCre
     } catch (error) {
       if (error instanceof ApiClientError && error.code === VOICE_LIMIT_EXCEEDED) {
         onVoiceLimitExceeded()
-      } else if (error instanceof ApiClientError && error.code === VOICE_PROVIDER_UNAVAILABLE) {
-        toast.error(t('analysis:voices.providerUnavailable'))
       } else {
-        onVoiceCreationFailed()
+        onVoiceCreationFailed(voiceCreationFailure(error, speaker))
       }
     } finally {
       setGenerating(false)
@@ -611,9 +610,10 @@ function VoiceLimitDialog({ onManage, onOpenChange, open }: { onManage: () => vo
   return <AlertDialog onOpenChange={onOpenChange} open={open}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{t('analysis:sections.characters')}</AlertDialogTitle><AlertDialogDescription>{t('analysis:voices.limitExceeded')}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><Button onClick={() => { onOpenChange(false); onManage() }} variant="outline">{t('analysis:voices.openLibrary')}</Button><AlertDialogAction onClick={() => onOpenChange(false)}>{t('common:actions.close')}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
 }
 
-function VoiceCreationFailureDialog({ onOpenChange, open }: { onOpenChange: (open: boolean) => void; open: boolean }) {
+function VoiceCreationFailureDialog({ failure, onOpenChange }: { failure?: VoiceCreationFailure; onOpenChange: (open: boolean) => void }) {
   const { t } = useTranslation(['analysis', 'common'])
-  return <AlertDialog onOpenChange={onOpenChange} open={open}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{t('analysis:voices.creationFailedTitle')}</AlertDialogTitle><AlertDialogDescription>{t('analysis:voices.creationFailed')}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogAction onClick={() => onOpenChange(false)}>{t('common:actions.close')}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+  const reason = failure?.reason ?? 'unknown'
+  return <AlertDialog onOpenChange={onOpenChange} open={Boolean(failure)}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{t('analysis:voices.creationFailedTitle')}</AlertDialogTitle><AlertDialogDescription asChild><div className="space-y-2"><p>{failure?.speaker}</p><p>{t(`analysis:voices.failureReasons.${reason}`)}</p><p>{t(`analysis:voices.failureActions.${reason}`)}</p></div></AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogAction onClick={() => onOpenChange(false)}>{t('common:actions.close')}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
 }
 
 function CharacterFieldCollapsible({ children, defaultOpen = true, fieldLabel }: { children: ReactNode; defaultOpen?: boolean; fieldLabel: string }) {

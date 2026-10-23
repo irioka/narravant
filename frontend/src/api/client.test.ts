@@ -74,3 +74,10 @@ describe('apiErrorFromPayload', () => {
     expect(error.message).toBe('認証が必要です。')
   })
 })
+
+it.each([409, 503])('context:nullの既存envelopeもcodeとmessageを保持する status=%s', (status) => {
+  const error = apiErrorFromPayload(status, { error: { code: 'VALIDATION_ERROR', message: 'synthetic message', context: null } })
+  expect(error.code).toBe('VALIDATION_ERROR')
+  expect(error.message).toBe('synthetic message')
+  expect(error.context).toBeUndefined()
+})

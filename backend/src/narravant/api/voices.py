@@ -25,6 +25,7 @@ from narravant.db.database import DocumentRepository
 from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.services.tts import TtsClient, TtsError
 from narravant.services.voice_design import VoiceDesignClient, VoiceDesignError
+from narravant.services.voice_design_errors import safe_provider_code, safe_provider_status
 from narravant.services.voice_management import VoiceManagementError, VoiceManagementService
 from narravant.services.voice_models import StoredVoiceRecord, canonical_voice_id, utc_iso
 
@@ -79,22 +80,31 @@ async def _create_voice(
             language_code=request.language_code,
             display_name=request.display_name,
         )
-        voice_id = canonical_voice_id(created_voice.voice_id)
+        try:
+            voice_id = canonical_voice_id(created_voice.voice_id)
+        except ValueError as exc:
+            raise VoiceDesignError("Invalid voice ID", reason="invalid_response") from exc
+        if created_voice.voice_id != voice_id:
+            raise VoiceDesignError("Non-canonical voice ID", reason="invalid_response")
     except VoiceDesignError as exc:
-        # Voice quota exceeded: surface a distinct code so the UI can tell the
-        # user to delete old voices (voice ids are version-managed and never
-        # auto-deleted). Detected from the provider error text/status.
-        message = str(exc)
-        if _is_voice_quota_error(message, exc.provider_code):
+        # 上限と一時障害は既存のHTTPException prefixを維持する。
+        # providerの自由文を理由判定へ使わない。
+        provider_status = safe_provider_status(exc.provider_status)
+        provider_code = safe_provider_code(exc.provider_code)
+        logger.warning(
+            "operation=voice_design reason=%s provider_status=%s provider_code=%s attempt=%s",
+            exc.reason,
+            provider_status,
+            provider_code,
+            exc.attempt,
+        )
+        if exc.reason == "quota":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="VOICE_LIMIT_EXCEEDED: 作成できる声の上限に達しました。不要な古い声を削除してください。",
             ) from exc
-        # Transient provider outage (503 UNAVAILABLE / gateway hiccup / network):
-        # not a client input or configuration problem. Surface a distinct 503 so
-        # the UI can advise retrying later instead of telling the user to fix
-        # their voice traits or API settings.
-        if _is_transient_provider_error(exc.provider_status, exc.provider_code):
+        # 通信断は作成結果不明なので、一時障害とは別の502 contextへ送る。
+        if exc.reason == "provider_unavailable" and _is_transient_provider_error(provider_status, provider_code):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
@@ -102,27 +112,26 @@ async def _create_voice(
                     "音声生成サービスが一時的に利用できません。時間をおいて再試行してください。"
                 ),
             ) from exc
-        provider_code = f" ({exc.provider_code})" if exc.provider_code else ""
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gemini Voice Design request failed{provider_code}.",
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Gemini Voice Design returned an invalid voice ID.",
+        raise ApiError(
+            status.HTTP_502_BAD_GATEWAY,
+            ApiErrorCode.VALIDATION_ERROR,
+            "Voice creation was rejected. The submitted description was not changed.",
+            {
+                "operation": "voice_design",
+                "reason": exc.reason,
+                "provider_status": provider_status,
+                "provider_code": provider_code,
+                "retryable": False,
+            },
         ) from exc
     except Exception as exc:
+        logger.warning(
+            "operation=voice_design reason=unknown provider_status=None provider_code=UNKNOWN attempt=unknown"
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unexpected error creating voice.",
         ) from exc
-
-    if created_voice.voice_id != voice_id:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Gemini Voice Design returned a non-canonical voice ID.",
-        )
 
     created_at = utc_iso()
     record = StoredVoiceRecord(
@@ -258,7 +267,7 @@ def _is_transient_provider_error(
     provider_code: str | None = None,
 ) -> bool:
     """Detect a temporary provider outage that the user should simply retry."""
-    if provider_code in {"UNAVAILABLE", "NETWORK_ERROR", "DEADLINE_EXCEEDED"}:
+    if provider_code in {"UNAVAILABLE", "DEADLINE_EXCEEDED"}:
         return True
     return provider_status in {502, 503, 504}
 

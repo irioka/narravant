@@ -5,13 +5,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import re
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 import httpx
 
 from narravant.core.settings import Settings
+from narravant.services.voice_design_errors import (
+    VoiceDesignFailureReason,
+    classify_voice_design_failure,
+    safe_provider_code,
+    safe_provider_status,
+)
 from narravant.services.voice_models import (
     ProviderVoice,
     VoicePage,
@@ -21,37 +26,6 @@ from narravant.services.voice_models import (
 
 logger = logging.getLogger(__name__)
 
-
-# Voice Design accepts a natural-language description, but the provider can
-# reject otherwise valid requests when the generated description asks for a
-# non-human sound or contains a safety-sensitive action.  Keep this list
-# deliberately small and use it only for the provider retry; the original
-# traits remain the user's editable value and are returned unchanged by the
-# API.
-_UNSAFE_VOICE_PROMPT_TERMS = (
-    "獣",
-    "動物",
-    "犬",
-    "猫",
-    "鳥",
-    "虫",
-    "怪物",
-    "ロボット",
-    "機械音",
-    "鳴き声",
-    "咆哮",
-    "うなり声",
-    "殺害",
-    "殺す",
-    "流血",
-    "拷問",
-    "虐待",
-    "自傷",
-    "自殺",
-    "性的",
-    "裸体",
-)
-_VOICE_PROMPT_SENTENCE_RE = re.compile(r"[^。！？!?]*[。！？!?]?", re.UNICODE)
 
 # Transient upstream failures that are safe to retry: a rejected (non-200)
 # response has not created a stored, billable voice, so re-issuing the request
@@ -69,10 +43,18 @@ class VoiceDesignError(Exception):
         *,
         provider_status: int | None = None,
         provider_code: str | None = None,
+        reason: VoiceDesignFailureReason | None = None,
+        attempt: int = 1,
     ) -> None:
         super().__init__(message)
         self.provider_status = provider_status
         self.provider_code = provider_code
+        self.attempt = attempt
+        self.reason = reason or (
+            "invalid_response"
+            if provider_code == "INVALID_RESPONSE"
+            else classify_voice_design_failure(provider_status, provider_code)
+        )
 
 
 class VoiceDesignClient(Protocol):
@@ -195,7 +177,7 @@ class GeminiVoiceDesignClient:
         display_name: str | None = None,
     ) -> ProviderVoice:
         if not self._api_key:
-            raise VoiceDesignError("GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in .env")
+            raise VoiceDesignError("GEMINI_API_KEY is not configured", reason="configuration", attempt=0)
 
         # Voice Design (prompted): store must be true. The display name labels
         # the voice by document and speaker; voice_traits stays a separate prompt.
@@ -206,6 +188,7 @@ class GeminiVoiceDesignClient:
             display_name=display_name,
         )
 
+        attempt_count = 1
         try:
             # Voice Design waits for a complete persistent voice resource.  It can
             # legitimately exceed a short TTS-preview request, so use the shared
@@ -214,54 +197,13 @@ class GeminiVoiceDesignClient:
             # (non-200) transient responses, which cannot have stored a voice,
             # are retried below.
             async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
-
-                async def _post_with_argument_fallback() -> httpx.Response:
-                    response = await client.post(
-                        self._endpoint,
-                        headers={"x-goog-api-key": self._api_key},
-                        json=payload,
-                    )
-                    if response.status_code == 400 and _provider_error_code(response) == "INVALID_ARGUMENT":
-                        # model and language_code are optional Voice fields. Some
-                        # provider rollouts reject one of these optional values
-                        # before reaching the prompted voice generator (notably
-                        # for a language/model combination that is temporarily
-                        # unavailable). Retry the same rejected request once with
-                        # only the required prompted-voice fields. A rejected 400
-                        # has not created a stored voice, so these rejected-request
-                        # fallbacks are safe and do not duplicate a billable
-                        # successful creation.
-                        logger.debug("Retrying Gemini Voice Design without optional model and language fields")
-                        response = await client.post(
-                            self._endpoint,
-                            headers={"x-goog-api-key": self._api_key},
-                            json=_voice_design_payload(voice_traits, display_name=display_name),
-                        )
-                        if response.status_code == 400 and _provider_error_code(response) == "INVALID_ARGUMENT":
-                            # A second INVALID_ARGUMENT means the prompt itself is
-                            # likely being rejected (for example, a generated
-                            # metaphor asking for an animal/non-human sound).  Make
-                            # one final provider-safe attempt.  All preceding
-                            # requests were rejected, so this cannot duplicate a
-                            # successfully stored voice.
-                            logger.debug("Retrying Gemini Voice Design with a provider-safe voice prompt")
-                            response = await client.post(
-                                self._endpoint,
-                                headers={"x-goog-api-key": self._api_key},
-                                json=_voice_design_payload(
-                                    _provider_safe_voice_traits(voice_traits),
-                                    display_name=display_name,
-                                ),
-                            )
-                    return response
-
                 # Retry transient upstream failures (503 UNAVAILABLE and gateway
                 # 502/504) up to the configured number of attempts before
                 # surfacing the error. These are temporary provider outages, and
                 # a rejected response cannot have created a stored voice, so the
                 # retry is safe and idempotent. The wait grows in proportion to
                 # the attempt number, matching the TTS client.
-                response = await _post_with_argument_fallback()
+                response = await client.post(self._endpoint, headers={"x-goog-api-key": self._api_key}, json=payload)
                 for attempt in range(1, self._max_attempts):
                     if response.status_code not in _TRANSIENT_RETRY_STATUSES:
                         break
@@ -273,15 +215,13 @@ class GeminiVoiceDesignClient:
                     )
                     if self._retry_backoff_seconds:
                         await asyncio.sleep(self._retry_backoff_seconds * attempt)
-                    response = await _post_with_argument_fallback()
+                    attempt_count += 1
+                    response = await client.post(
+                        self._endpoint, headers={"x-goog-api-key": self._api_key}, json=payload
+                    )
 
                 if response.status_code != 200:
-                    provider_code = _provider_error_code(response)
-                    logger.warning(
-                        "Gemini Voice Design request was rejected status=%s provider_code=%s",
-                        response.status_code,
-                        provider_code or "UNKNOWN",
-                    )
+                    provider_code = safe_provider_code(_provider_error_code(response))
                     raise VoiceDesignError(
                         "Gemini Voice Design request was rejected",
                         provider_status=response.status_code,
@@ -290,15 +230,31 @@ class GeminiVoiceDesignClient:
                 try:
                     data = response.json()
                 except ValueError as exc:
-                    raise VoiceDesignError("Gemini Voice Design returned an invalid response") from exc
+                    raise VoiceDesignError(
+                        "Gemini Voice Design returned an invalid response", reason="invalid_response"
+                    ) from exc
                 if not isinstance(data, dict):
-                    raise VoiceDesignError("Gemini Voice Design returned an invalid response")
+                    raise VoiceDesignError(
+                        "Gemini Voice Design returned an invalid response", reason="invalid_response"
+                    )
                 return _provider_voice_from_payload(data, default_type="prompted")
         except httpx.RequestError as exc:
-            logger.warning("Gemini Voice Design request failed exception_type=%s", type(exc).__name__)
             raise VoiceDesignError(
-                "Unable to reach Gemini Voice Design API",
-                provider_code="NETWORK_ERROR",
+                "Gemini Voice Design creation result is unknown",
+                provider_code="UNKNOWN",
+                reason="transport_unknown",
+                attempt=attempt_count,
+            ) from exc
+        except VoiceDesignError as exc:
+            # 作成経路のみ診断値を正規化する。取得・削除の既存内部codeは維持する。
+            raise VoiceDesignError(
+                "Gemini Voice Design creation failed",
+                provider_status=safe_provider_status(
+                    exc.provider_status if exc.provider_status is not None else response.status_code
+                ),
+                provider_code=safe_provider_code(exc.provider_code),
+                reason=exc.reason,
+                attempt=attempt_count,
             ) from exc
 
     async def _get_json(
@@ -442,35 +398,6 @@ def _voice_design_payload(
     if display_name is not None:
         voice["display_name"] = display_name
     return {"store": True, "voice": voice}
-
-
-def _provider_safe_voice_traits(voice_traits: str) -> str:
-    """Return a conservative Voice Design prompt for an INVALID_ARGUMENT retry.
-
-    Analysis output is user-editable and is normally sent unchanged.  When the
-    provider rejects that prompt with ``INVALID_ARGUMENT``, remove sentences
-    that describe non-human sounds or safety-sensitive actions and add an
-    explicit human/Japanese context.  This preserves useful vocal identity
-    details such as age and timbre while preventing a single metaphor (for
-    example, an animal cry) from making the whole speaker impossible to create.
-    The original text is never replaced in local document state.
-    """
-
-    normalized = " ".join(voice_traits.replace("\x00", " ").split())
-    if not normalized:
-        return "A natural human voice speaking Japanese with a clear, consistent timbre and steady delivery."
-
-    sentences = [part.strip() for part in _VOICE_PROMPT_SENTENCE_RE.findall(normalized) if part.strip()]
-    safe_sentences = [
-        sentence for sentence in sentences if not any(term in sentence for term in _UNSAFE_VOICE_PROMPT_TERMS)
-    ]
-    if safe_sentences and len(safe_sentences) != len(sentences):
-        return "A natural human voice speaking Japanese. " + " ".join(safe_sentences)
-
-    # If the rejection was caused by a provider rule that is not represented in
-    # the conservative local term list, use a guaranteed-neutral prompt rather
-    # than retrying the same rejected content indefinitely.
-    return "A natural human voice speaking Japanese with a clear, consistent timbre and steady delivery."
 
 
 class FakeVoiceDesignClient:

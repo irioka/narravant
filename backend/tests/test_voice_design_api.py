@@ -320,7 +320,7 @@ async def test_create_voice_failure_returns_502_and_preserves_document(
     assert response.status_code == 502
     data = response.json()
     assert "error" in data
-    assert data["error"]["message"] == "Gemini Voice Design request failed."
+    assert data["error"]["message"] == "Voice creation was rejected. The submitted description was not changed."
     assert "Simulated Voice Design failure" not in data["error"]["message"]
 
     # Document version and data remain intact
@@ -469,86 +469,30 @@ async def test_gemini_voice_design_client_exposes_provider_code_without_error_bo
 
 
 @pytest.mark.asyncio
-async def test_gemini_voice_design_retries_invalid_optional_fields_with_minimal_payload(monkeypatch):
-    """A provider 400 on optional model/language metadata gets one safe retry."""
-    import httpx
+async def test_invalid_argument_never_changes_or_retries_input(monkeypatch):
+    from narravant.services.voice_design import GeminiVoiceDesignClient, VoiceDesignError
 
-    from narravant.services.voice_design import GeminiVoiceDesignClient
+    requests = []
 
-    captured_payloads: list[dict] = []
-
-    async def mock_post(self, url, *args, **kwargs):
-        captured_payloads.append(kwargs["json"])
-        if len(captured_payloads) == 1:
-            return httpx.Response(
-                status_code=400,
-                json={"error": {"status": "INVALID_ARGUMENT"}},
-                request=httpx.Request("POST", str(url)),
-            )
+    async def post(self, url, **kwargs):
+        requests.append(kwargs["json"])
         return httpx.Response(
-            status_code=200,
-            json={"id": "voice_after_fallback"},
+            400 if len(requests) == 1 else 200,
+            json={"error": {"status": "INVALID_ARGUMENT"}} if len(requests) == 1 else {"id": "voice_synthetic"},
             request=httpx.Request("POST", str(url)),
         )
 
-    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
-
-    client = GeminiVoiceDesignClient(api_key="test-api-key-123", tts_model="gemini-3.8-flash-tts")
-    voice_id = await client.create_voice(
-        speaker="紳士二",
-        voice_traits="知ったかぶりをする理屈っぽいトーンの中低音",
-    )
-
-    assert voice_id.voice_id == "voice_after_fallback"
-    assert captured_payloads[0]["voice"]["model"] == "gemini-3.8-flash-tts"
-    assert captured_payloads[0]["voice"]["language_code"] == "ja-JP"
-    assert captured_payloads[1] == {
-        "store": True,
-        "voice": {
-            "type": "prompted",
-            "prompted": {"input": "知ったかぶりをする理屈っぽいトーンの中低音"},
-        },
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    client = GeminiVoiceDesignClient(api_key="synthetic-key", tts_model="gemini-3.8-flash-tts")
+    with pytest.raises(VoiceDesignError):
+        await client.create_voice("合成人物", "猫のような比喩を含む合成説明")
+    assert len(requests) == 1
+    assert requests[0]["voice"] == {
+        "type": "prompted",
+        "prompted": {"input": "猫のような比喩を含む合成説明"},
+        "model": "gemini-3.8-flash-tts",
+        "language_code": "ja-JP",
     }
-
-
-@pytest.mark.asyncio
-async def test_gemini_voice_design_retries_with_provider_safe_prompt_after_prompt_rejection(monkeypatch):
-    """A safety-sensitive generated metaphor must not block the speaker forever."""
-    import httpx
-
-    from narravant.services.voice_design import GeminiVoiceDesignClient
-
-    captured_payloads: list[dict] = []
-
-    async def mock_post(self, url, *args, **kwargs):
-        captured_payloads.append(kwargs["json"])
-        if len(captured_payloads) < 3:
-            return httpx.Response(
-                status_code=400,
-                json={"error": {"status": "INVALID_ARGUMENT"}},
-                request=httpx.Request("POST", str(url)),
-            )
-        return httpx.Response(
-            status_code=200,
-            json={"id": "voice_after_safe_prompt"},
-            request=httpx.Request("POST", str(url)),
-        )
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
-
-    client = GeminiVoiceDesignClient(api_key="test-api-key-123")
-    voice_id = await client.create_voice(
-        speaker="老婆",
-        voice_traits="70代女性のかすれた声質。獣の鳴き声のように震える語り口。",
-    )
-
-    assert voice_id.voice_id == "voice_after_safe_prompt"
-    assert len(captured_payloads) == 3
-    assert captured_payloads[1]["voice"]["prompted"]["input"].startswith("70代女性")
-    safe_input = captured_payloads[2]["voice"]["prompted"]["input"]
-    assert "獣" not in safe_input
-    assert "鳴き声" not in safe_input
-    assert safe_input.startswith("A natural human voice speaking Japanese.")
 
 
 def test_voice_quota_detection_uses_structured_provider_code() -> None:
@@ -623,7 +567,7 @@ async def test_gemini_voice_design_retries_transient_unavailable_then_succeeds(m
     attempts: list[int] = []
 
     async def mock_post(self, url, *args, **kwargs):
-        attempts.append(1)
+        attempts.append(kwargs["json"])
         if len(attempts) == 1:
             return httpx.Response(
                 status_code=503,
@@ -643,6 +587,7 @@ async def test_gemini_voice_design_retries_transient_unavailable_then_succeeds(m
 
     assert voice_id.voice_id == "voice_after_transient_retry"
     assert len(attempts) == 2
+    assert attempts[0] == attempts[1]
 
 
 @pytest.mark.asyncio
@@ -678,13 +623,14 @@ async def test_gemini_voice_design_gives_up_after_persistent_unavailable(monkeyp
     assert len(attempts) == 3
     assert raised.value.provider_status == 503
     assert raised.value.provider_code == "UNAVAILABLE"
+    assert raised.value.attempt == 3
 
 
 def test_transient_provider_error_maps_to_503_service_unavailable() -> None:
     from narravant.api.voices import _is_transient_provider_error
 
     assert _is_transient_provider_error(503, "UNAVAILABLE")
-    assert _is_transient_provider_error(None, "NETWORK_ERROR")
+    assert not _is_transient_provider_error(None, "NETWORK_ERROR")
     assert _is_transient_provider_error(504, None)
     assert not _is_transient_provider_error(400, "INVALID_ARGUMENT")
     assert not _is_transient_provider_error(None, None)
@@ -746,3 +692,161 @@ def test_create_voice_design_client_threads_retry_configuration() -> None:
     assert isinstance(client, GeminiVoiceDesignClient)
     assert client._max_attempts == 5
     assert client._retry_backoff_seconds == 3
+
+
+@pytest.mark.parametrize(
+    "status,code,expected",
+    [
+        (400, "INVALID_ARGUMENT", "invalid_argument"),
+        (401, "UNAUTHENTICATED", "credentials"),
+        (403, "PERMISSION_DENIED", "permission_denied"),
+        (429, "RESOURCE_EXHAUSTED", "quota"),
+        (503, "UNAVAILABLE", "provider_unavailable"),
+        (418, "private-sentinel", "unknown"),
+        (400, "RESOURCE_EXHAUSTED", "invalid_argument"),
+        (503, "INVALID_ARGUMENT", "invalid_argument"),
+    ],
+)
+def test_voice_failure_classification_is_fixed(status, code, expected):
+    from narravant.services.voice_design_errors import classify_voice_design_failure
+
+    assert classify_voice_design_failure(status, code) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["timeout", "disconnect", "invalid_json", "invalid_metadata"])
+async def test_unknown_creation_result_is_not_retried(monkeypatch, mode):
+    from narravant.services.voice_design import GeminiVoiceDesignClient, VoiceDesignError
+
+    calls = []
+
+    async def post(self, url, **kwargs):
+        calls.append(kwargs["json"])
+        request = httpx.Request("POST", str(url))
+        if mode == "timeout":
+            raise httpx.ReadTimeout("private-sentinel", request=request)
+        if mode == "disconnect":
+            raise httpx.ConnectError("private-sentinel", request=request)
+        if mode == "invalid_json":
+            return httpx.Response(200, content=b"private-sentinel", request=request)
+        return httpx.Response(200, json={"id": "private-sentinel/invalid"}, request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    with pytest.raises(VoiceDesignError) as raised:
+        await GeminiVoiceDesignClient(api_key="synthetic-key").create_voice("合成人物", "合成説明")
+    assert len(calls) == 1
+    assert raised.value.reason == ("transport_unknown" if mode in {"timeout", "disconnect"} else "invalid_response")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/v1/voices", "/api/v1/documents/doc-test-123/voices"])
+@pytest.mark.parametrize("mode", ["rejected", "invalid_json", "configuration", "transport"])
+async def test_creation_failure_safe_context_and_log(client, monkeypatch, caplog, path, mode):
+    from narravant.services.voice_design import GeminiVoiceDesignClient
+
+    provider = GeminiVoiceDesignClient(api_key="" if mode == "configuration" else "synthetic-secret-key")
+
+    async def provider_override():
+        return provider
+
+    async def post(self, url, **kwargs):
+        request = httpx.Request("POST", str(url))
+        if mode == "transport":
+            raise httpx.ReadTimeout("private-sentinel", request=request)
+        if mode == "invalid_json":
+            return httpx.Response(200, content=b"private-sentinel", request=request)
+        return httpx.Response(
+            400, json={"error": {"status": "private-sentinel", "message": "private-sentinel"}}, request=request
+        )
+
+    app.dependency_overrides[get_voice_design_client] = provider_override
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    # ASGIの送信自体はモック対象のpostを使わない。
+    before = (await client.get("/api/v1/documents/doc-test-123")).json()
+    response = await client.request(
+        "POST", path, json={"speaker": "synthetic-speaker-secret", "voice_traits": "synthetic-traits-secret"}
+    )
+    expected = {
+        "rejected": "invalid_argument",
+        "invalid_json": "invalid_response",
+        "configuration": "configuration",
+        "transport": "transport_unknown",
+    }[mode]
+    assert response.status_code == 502
+    context = response.json()["error"]["context"]
+    assert context == {
+        "operation": "voice_design",
+        "reason": expected,
+        "provider_status": 400 if mode == "rejected" else 200 if mode == "invalid_json" else None,
+        "provider_code": "UNKNOWN",
+        "retryable": False,
+    }
+    assert f"reason={expected}" in caplog.text
+    for secret in ["private-sentinel", "synthetic-secret-key", "synthetic-traits-secret", "synthetic-speaker-secret"]:
+        assert secret not in caplog.text + response.text
+    assert (await client.get("/api/v1/documents/doc-test-123")).json() == before
+    registry = await app.dependency_overrides[get_voice_registry_repo]()
+    assert registry.list(LOCAL_USER_ID) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/v1/voices", "/api/v1/documents/doc-test-123/voices"])
+@pytest.mark.parametrize(
+    "status,code,http_status,reason",
+    [
+        (400, "INVALID_ARGUMENT", 502, "invalid_argument"),
+        (401, "UNAUTHENTICATED", 502, "credentials"),
+        (403, "PERMISSION_DENIED", 502, "permission_denied"),
+        (429, "RESOURCE_EXHAUSTED", 409, "quota"),
+        (429, None, 409, "quota"),
+        (503, "UNAVAILABLE", 503, "provider_unavailable"),
+        (418, "private-sentinel", 502, "unknown"),
+        (400, "RESOURCE_EXHAUSTED", 502, "invalid_argument"),
+        (503, "INVALID_ARGUMENT", 502, "invalid_argument"),
+        (400, "INVALID_RESPONSE", 502, "invalid_argument"),
+    ],
+)
+async def test_creation_error_http_compatibility(client, monkeypatch, caplog, path, status, code, http_status, reason):
+    from narravant.services.voice_design import GeminiVoiceDesignClient
+
+    provider = GeminiVoiceDesignClient(api_key="synthetic-key", max_attempts=1)
+
+    async def override():
+        return provider
+
+    async def post(self, url, **kwargs):
+        return httpx.Response(
+            status,
+            json={"error": {"status": code, "message": "private-sentinel"}},
+            request=httpx.Request("POST", str(url)),
+        )
+
+    app.dependency_overrides[get_voice_design_client] = override
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    response = await client.request("POST", path, json={"speaker": "合成人物", "voice_traits": "合成説明"})
+    assert response.status_code == http_status
+    error = response.json()["error"]
+    if http_status == 409:
+        assert error["code"] == "CONFLICT"
+        assert error["message"].startswith("VOICE_LIMIT_EXCEEDED:")
+        assert error["context"] is None
+    elif http_status == 503:
+        assert error["message"].startswith("VOICE_PROVIDER_UNAVAILABLE:")
+        assert error["context"] is None
+    else:
+        assert error["context"]["reason"] == reason
+    assert f"reason={reason}" in caplog.text
+    assert "attempt=1" in caplog.text
+    assert "private-sentinel" not in caplog.text + response.text
+
+
+def test_voice_diagnostics_allowlist():
+    from narravant.services.voice_design_errors import safe_provider_code, safe_provider_status
+
+    for status in [True, False, "400", 99, 600, None]:
+        assert safe_provider_status(status) is None
+    assert safe_provider_status(200) == 200
+    assert safe_provider_status(599) == 599
+    for code in [None, [], "private-sentinel", "invalid_argument"]:
+        assert safe_provider_code(code) == "UNKNOWN"
+    assert safe_provider_code("INVALID_ARGUMENT") == "INVALID_ARGUMENT"

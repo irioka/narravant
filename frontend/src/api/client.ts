@@ -28,7 +28,7 @@ const errorSchema = z.object({
   error: z.object({
     code: z.string(),
     message: z.string(),
-    context: z.record(z.string(), z.unknown()).optional(),
+    context: z.record(z.string(), z.unknown()).nullish(),
   }),
 })
 
@@ -44,7 +44,7 @@ export function apiErrorFromPayload(
       status,
       error.data.error.code,
       error.data.error.message,
-      error.data.error.context,
+      error.data.error.context ?? undefined,
     )
   }
   return new ApiClientError(status, fallbackCode, fallbackMessage)

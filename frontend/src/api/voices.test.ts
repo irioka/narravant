@@ -125,3 +125,16 @@ describe('previewVoice', () => {
     await expect(previewVoice('doc-1', { voice_id: 'voice-1', text: 'x' }, fetcher)).rejects.toBeInstanceOf(ApiClientError)
   })
 })
+
+it.each([false, true])('作成拒否502のcontextをそのまま届ける draft=%s', async (draft) => {
+  const context = { operation: 'voice_design', reason: 'invalid_argument', provider_status: 400, provider_code: 'INVALID_ARGUMENT', retryable: false }
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'VALIDATION_ERROR', message: 'safe', context } }), { status: 502 }))
+  await expect(createVoice('doc-1', { speaker: 'Alice', voice_traits: '合成説明' }, fetcher, draft)).rejects.toMatchObject({ status: 502, code: 'VALIDATION_ERROR', context })
+  expect(fetcher).toHaveBeenCalledTimes(1)
+})
+
+it('contextのない503 prefixを既存wrapperで分類する', async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'VALIDATION_ERROR', message: 'VOICE_PROVIDER_UNAVAILABLE: temporary', context: null } }), { status: 503 }))
+  await expect(createVoice('doc-1', { speaker: 'Alice', voice_traits: '合成説明' }, fetcher)).rejects.toMatchObject({ status: 503, code: 'VOICE_PROVIDER_UNAVAILABLE' })
+  expect(fetcher).toHaveBeenCalledTimes(1)
+})

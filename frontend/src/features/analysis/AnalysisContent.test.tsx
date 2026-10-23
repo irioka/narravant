@@ -125,13 +125,14 @@ function availableVoice(voice_id: string): VoiceSummary {
 afterEach(() => cleanup())
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(createVoice).mockReset()
   vi.mocked(getVoice).mockImplementation(async (voiceId) => availableVoice(voiceId))
 })
 
-function renderContent(document: DocumentDetail = mockDocument, onDraftChange?: (update: AnalysisDraftUpdate) => void) {
+function renderContent(document: DocumentDetail = mockDocument, onDraftChange?: (update: AnalysisDraftUpdate) => void, isDraft = false, locale: 'ja' | 'en' = 'ja') {
   return render(
-    <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
-      <AnalysisContent document={document} onDraftChange={onDraftChange ?? (() => undefined)} titleMode="editable" />
+    <LocaleProvider runtime={createLocaleRuntime({ initialLocale: locale })}>
+      <AnalysisContent isDraft={isDraft} document={document} onDraftChange={onDraftChange ?? (() => undefined)} titleMode="editable" />
     </LocaleProvider>,
   )
 }
@@ -139,7 +140,7 @@ function renderContent(document: DocumentDetail = mockDocument, onDraftChange?: 
 async function getVoiceActionMenuItem(user: ReturnType<typeof userEvent.setup>, label: string) {
   const existingItem = screen.queryByRole('menuitem', { name: label })
   if (existingItem) return existingItem
-  await user.click(screen.getByRole('button', { name: '話者の操作メニュー' }))
+  await user.click(screen.getByRole('button', { name: /話者の操作メニュー|Character actions/ }))
   return screen.findByRole('menuitem', { name: label })
 }
 
@@ -160,8 +161,8 @@ describe('AnalysisContent 登場人物セクション', () => {
     const user = userEvent.setup()
     renderContent()
 
-    expect(screen.getByRole('button', { name: '話者の操作メニュー' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '話者の操作メニュー' }))
+    expect(screen.getByRole('button', { name: /話者の操作メニュー|Character actions/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /話者の操作メニュー|Character actions/ }))
     expect(screen.getByRole('menuitem', { name: '作成済みの声' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'キャラクターを追加' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: '全話者の声を生成' })).toBeInTheDocument()
@@ -569,7 +570,7 @@ describe('AnalysisContent 編集ダイアログの声コントロール', () => 
     await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith({
       voice_assignments: [{ speaker: 'ナレーター', voice_id: 'voice-narrator', voice_traits: '知的な語り手' }],
     }))
-    expect(await screen.findByText('声を作成できませんでした。声の特徴とGemini APIの設定を確認して、再試行してください。')).toBeInTheDocument()
+    expect(await screen.findByText('声を作成できませんでした。詳細な原因は不明です。')).toBeInTheDocument()
   })
 })
 
@@ -633,6 +634,99 @@ describe('AnalysisContent 声の上限エラー', () => {
 
     await clickVoiceActionMenuItem(user, '全話者の声を生成')
 
-    expect(await screen.findByText('声を作成できませんでした。声の特徴とGemini APIの設定を確認して、再試行してください。')).toBeInTheDocument()
+    expect(await screen.findByText('声を作成できませんでした。詳細な原因は不明です。')).toBeInTheDocument()
   })
+})
+
+
+describe('Voice Designの失敗理由と入力保持', () => {
+  it.each([false, true])('個別の拒否後に入力を編集して明示的に再実行できる draft=%s', async (isDraft) => {
+    const actual = await vi.importActual<typeof import('@/api/voices')>('@/api/voices')
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'VALIDATION_ERROR', message: 'private sentinel', context: { operation: 'voice_design', reason: 'invalid_argument' } } }), { status: 502 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ speaker: 'Alice', voice_id: 'voice_edited', voice_traits: '編集した合成説明' }), { status: 200 }))
+    vi.mocked(createVoice).mockImplementation((id, input, _fetcher, draft) => actual.createVoice(id, input, fetcher, draft))
+    const onDraftChange = vi.fn()
+    const user = userEvent.setup()
+    renderContent(documentWithVoice(), onDraftChange, isDraft)
+    await user.click(screen.getByLabelText('Aliceを開く'))
+    await user.click(screen.getByLabelText('Aliceを編集'))
+    const editor = screen.getByRole('dialog')
+    await user.click(within(editor).getByRole('button', { name: 'Alice 生成' }))
+    const failure = await screen.findByRole('alertdialog')
+    expect(failure).toHaveTextContent('入力または設定が拒否されました。詳細な原因は不明です。')
+    expect(failure).toHaveTextContent('Voice traits・モデル・言語の設定を確認して修正してください。')
+    expect(failure).toHaveTextContent('Alice')
+    expect(failure).not.toHaveTextContent('private sentinel')
+    expect(onDraftChange).not.toHaveBeenCalled()
+    await user.click(within(failure).getByRole('button', { name: '閉じる' }))
+    const traits = within(editor).getByLabelText('Alice 特徴')
+    expect(traits).toHaveValue('勇敢な少女声')
+    await user.clear(traits)
+    await user.type(traits, '編集した合成説明')
+    await user.click(within(editor).getByRole('button', { name: 'Alice 生成' }))
+    await waitFor(() => expect(createVoice).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(createVoice).mock.calls.map((call) => call[1].voice_traits)).toEqual(['勇敢な少女声', '編集した合成説明'])
+    expect(vi.mocked(createVoice).mock.calls.every((call) => Boolean(call[3]) === isDraft)).toBe(true)
+    const payloads = fetcher.mock.calls.map((call) => JSON.parse(call[1].body as string))
+    expect(payloads[0]).toEqual({ speaker: 'Alice', voice_traits: '勇敢な少女声', language_code: 'ja-JP', display_name: 'Test Script ; Alice' })
+    expect(payloads[1]).toEqual({ ...payloads[0], voice_traits: '編集した合成説明' })
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith({ voice_assignments: [{ speaker: 'Alice', voice_id: 'voice_edited', voice_traits: '編集した合成説明' }] }))
+  })
+
+  it.each([false, true])('一括の2人目拒否で停止し成功済みと既存割当を保持する draft=%s', async (isDraft) => {
+    vi.mocked(createVoice)
+      .mockResolvedValueOnce({ speaker: 'ナレーター', voice_id: 'voice_first', voice_traits: '知的な語り手' })
+      .mockRejectedValueOnce(new ApiClientError(502, 'VALIDATION_ERROR', 'private sentinel', { operation: 'voice_design', reason: 'invalid_argument' }))
+    const onDraftChange = vi.fn()
+    const user = userEvent.setup()
+    const document = { ...mockDocument, source_fountain: mockDocument.source_fountain + '\nBOB\nSynthetic line.\n', voice_assignments: [{ speaker: '既存人物', voice_id: 'voice_existing', voice_traits: '既存の説明' }] }
+    renderContent(document, onDraftChange, isDraft)
+    await clickVoiceActionMenuItem(user, '全話者の声を生成')
+    const failure = await screen.findByRole('alertdialog')
+    expect(failure).toHaveTextContent('Alice')
+    expect(failure).toHaveTextContent('入力または設定が拒否されました。詳細な原因は不明です。')
+    await user.click(within(failure).getByRole('button', { name: '閉じる' }))
+    expect(createVoice).toHaveBeenCalledTimes(2)
+    expect(onDraftChange).toHaveBeenCalledTimes(1)
+    expect(onDraftChange).toHaveBeenCalledWith({ voice_assignments: [...document.voice_assignments, { speaker: 'ナレーター', voice_id: 'voice_first', voice_traits: '知的な語り手' }] })
+  })
+
+  it.each([false, true])('英語の一括失敗も理由・対処を表示する draft=%s', async (isDraft) => {
+    vi.mocked(createVoice).mockRejectedValueOnce(new ApiClientError(502, 'VALIDATION_ERROR', 'private sentinel', { operation: 'voice_design', reason: 'invalid_argument' }))
+    const user = userEvent.setup()
+    renderContent(mockDocument, undefined, isDraft, 'en')
+    await clickVoiceActionMenuItem(user, 'Generate all voices')
+    const failure = await screen.findByRole('alertdialog')
+    expect(failure).toHaveTextContent('The input or settings were rejected. The specific cause is unknown.')
+    expect(failure).toHaveTextContent('Review and edit Voice traits, model, and language settings.')
+    expect(failure).not.toHaveTextContent('private sentinel')
+  })
+})
+
+it.each([false, true])('英語の個別作成で結果不明を示し、一覧確認を案内する draft=%s', async (isDraft) => {
+  vi.mocked(createVoice).mockRejectedValueOnce(new ApiClientError(502, 'VALIDATION_ERROR', 'private sentinel', {
+    operation: 'voice_design', reason: 'transport_unknown',
+  }))
+  const user = userEvent.setup()
+  renderContent(mockDocument, undefined, isDraft, 'en')
+  await user.click(screen.getByLabelText('Expand Alice'))
+  await user.click(screen.getByLabelText('Edit Alice'))
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Alice Generate' }))
+  const failure = await screen.findByRole('alertdialog')
+  expect(failure).toHaveTextContent('The connection was interrupted. It is unknown whether the voice was created.')
+  expect(failure).toHaveTextContent('Reload the voice library and check for a created voice before creating it again.')
+  expect(failure).not.toHaveTextContent('private sentinel')
+  expect(createVoice).toHaveBeenCalledTimes(1)
+})
+
+it('contextのない503を一括作成ダイアログへ接続する', async () => {
+  vi.mocked(createVoice).mockRejectedValueOnce(new ApiClientError(503, 'VOICE_PROVIDER_UNAVAILABLE', 'private sentinel'))
+  const user = userEvent.setup()
+  renderContent()
+  await clickVoiceActionMenuItem(user, '全話者の声を生成')
+  const failure = await screen.findByRole('alertdialog')
+  expect(failure).toHaveTextContent('音声生成サービスが一時的に利用できません。')
+  expect(failure).toHaveTextContent('時間をおいてから、同じ内容で再試行してください。')
+  expect(failure).not.toHaveTextContent('private sentinel')
 })
