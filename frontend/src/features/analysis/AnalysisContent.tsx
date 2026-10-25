@@ -22,6 +22,7 @@ import { firstUtteranceLine, narratorSpeakerName, spokenCharacterNames } from '.
 import { charactersWithSpokenCues, upsertVoiceAssignment, voiceIdForSpeaker, voiceLibraryKey, type VoiceAssignment } from './voice-assignments'
 import { voiceCreationFailure, type VoiceCreationFailure } from './voice-creation-errors'
 import { VoiceLibraryDialog } from './VoiceLibraryDialog'
+import { useEditorVoiceDraft } from './use-editor-voice-draft'
 import { localizeUiError, toUiError } from '@/i18n/errors'
 
 export type EditableSection = 'character' | 'narrator' | 'turning_point' | 'synopsis' | undefined
@@ -160,9 +161,10 @@ export function AnalysisContent({ document, isDraft = false, onDraftChange, titl
     setNarratorDraft(narratorTraits)
     setEditor('narrator')
   }
-  const apply = () => {
+  const apply = (voiceAssignment?: VoiceAssignment) => {
+    const voiceUpdate = voiceAssignment ? { voice_assignments: upsertVoiceAssignment(assignments, voiceAssignment) } : {}
     if (editor === 'narrator') {
-      onDraftChange?.({ narrator: { ...document.narrator, voice_traits: narratorDraft } })
+      onDraftChange?.({ narrator: { ...document.narrator, voice_traits: narratorDraft }, ...voiceUpdate })
     }
     if (editor === 'character' && characterIndex !== undefined) {
       const originalName = characters[characterIndex]?.name
@@ -170,7 +172,7 @@ export function AnalysisContent({ document, isDraft = false, onDraftChange, titl
       const editedName = edited?.name.trim()
       if (!originalName || !edited || !editedName || document.analysis.characters.some((item) => item.name === editedName && item.name !== originalName)) {
         setCharacterNameError(true)
-        return
+        return false
       }
       const registeredIndex = document.analysis.characters.findIndex((item) => item.name === originalName)
       const profile = { ...edited, name: editedName }
@@ -185,12 +187,14 @@ export function AnalysisContent({ document, isDraft = false, onDraftChange, titl
       }
       if (registeredIndex === -1) emotionCharacters[editedName] = Array(document.emotion_arc.valence.length).fill(0)
       onDraftChange?.({
+        ...voiceUpdate,
         analysis: { ...document.analysis, characters: nextProfiles },
         emotion_arc: { ...document.emotion_arc, characters: emotionCharacters },
       })
     }
     setEditor(undefined)
     setCharacterIndex(undefined)
+    return true
   }
 
   const commitNewCharacter = () => {
@@ -298,10 +302,6 @@ export function AnalysisContent({ document, isDraft = false, onDraftChange, titl
     }
   }
 
-  const handleVoiceGenerated = (result: VoiceAssignment) => {
-    persistAssignments(upsertVoiceAssignment(document.voice_assignments, result))
-  }
-
   return <div className="flex h-full min-h-0 flex-col">
     <section className="flex min-h-0 flex-1 flex-col rounded-md border bg-background">
       <div className="sticky top-0 z-10 flex shrink-0 items-center justify-between gap-2 border-b bg-background p-4">
@@ -337,6 +337,7 @@ export function AnalysisContent({ document, isDraft = false, onDraftChange, titl
       </div></div>
     </section>
     <AnalysisEditorDialog
+      key={`${editor ?? 'closed'}-${characterIndex ?? ''}`}
       canEdit={canEdit}
       character={editor === 'narrator' ? undefined : characterIndex === undefined ? undefined : charactersDraft[characterIndex]}
       characterNameError={characterNameError}
@@ -351,7 +352,6 @@ export function AnalysisContent({ document, isDraft = false, onDraftChange, titl
       onSave={apply}
       onSynopsisChange={() => undefined}
       onTurningPointChange={() => undefined}
-      onVoiceGenerated={handleVoiceGenerated}
       onVoiceCreationFailed={setVoiceCreationFailureState}
       onVoiceLimitExceeded={() => setLimitExceeded(true)}
       onVoiceDeleted={markVoiceDeleted}
@@ -469,10 +469,9 @@ export interface AnalysisEditorDialogProps {
   onCharacterChange: (value: Character) => void
   onNarratorChange: (value: string) => void
   onOpenChange: (open: boolean) => void
-  onSave: () => void
+  onSave: (assignment?: VoiceAssignment) => boolean | void
   onSynopsisChange: (value: string) => void
   onTurningPointChange: (value: TurningPoint) => void
-  onVoiceGenerated: (result: VoiceAssignment) => void
   onVoiceCreationFailed?: (failure: VoiceCreationFailure) => void
   onVoiceLimitExceeded: () => void
   onVoicesChange?: (voices: VoiceSummary[]) => void
@@ -484,9 +483,23 @@ export interface AnalysisEditorDialogProps {
   voiceStates?: Record<string, VoiceSummary>
 }
 
-export function AnalysisEditorDialog({ canEdit, character, characterNameError = false, documentId, documentTitle, isDraft, editor, narratorTraits, onCharacterChange, onNarratorChange, onOpenChange, onSave, onSynopsisChange, synopsis, tp, onTurningPointChange, onVoiceGenerated, onVoiceCreationFailed = () => undefined, onVoiceLimitExceeded, onVoicesChange = () => undefined, onVoiceDeleted = () => undefined, sourceFountain, voiceAssignments, voiceStates = {} }: AnalysisEditorDialogProps) {
+export function AnalysisEditorDialog({ canEdit, character, characterNameError = false, documentId, documentTitle, isDraft, editor, narratorTraits, onCharacterChange, onNarratorChange, onOpenChange, onSave, onSynopsisChange, synopsis, tp, onTurningPointChange, onVoiceCreationFailed = () => undefined, onVoiceLimitExceeded, onVoicesChange = () => undefined, onVoiceDeleted = () => undefined, sourceFountain, voiceAssignments, voiceStates = {} }: AnalysisEditorDialogProps) {
   const { t } = useTranslation(['analysis', 'common'])
   const [tpTab, setTpTab] = useState(0)
+  const voiceDraft = useEditorVoiceDraft({
+    assignments: voiceAssignments, documentId, documentTitle, isDraft,
+    onCreationFailed: onVoiceCreationFailed,
+    onLimitExceeded: onVoiceLimitExceeded,
+    onDeleted: (voiceId) => onVoiceDeleted(unavailableVoiceSummary(voiceId)),
+  })
+  const closeEditor = (open: boolean) => {
+    if (!open) void voiceDraft.cancel(() => onOpenChange(false))
+  }
+  const saveEditor = () => voiceDraft.save(onSave)
+  const handleDeletedVoice = (voice: VoiceSummary) => {
+    voiceDraft.forgetDeleted(voice.voice_id)
+    onVoiceDeleted(voice)
+  }
   const updateCharacter = (field: 'voice_traits' | 'external_goal' | 'internal_need' | 'fear_or_cost' | 'obstacle' | 'choice' | 'agency' | 'goal_to_outcome' | 'name', value: string) => character && onCharacterChange({ ...character, [field]: value })
   const toggleTurningPoint = (tpNumber: number) => {
     if (!character) return
@@ -507,21 +520,21 @@ export function AnalysisEditorDialog({ canEdit, character, characterNameError = 
   }
   const activePersonIndex = tp && tp.availability === 'identified' ? Math.min(tpTab, tp.involved_characters.length - 1) : 0
   const personTabLabel = (name: string, index: number) => name.trim() || `#${index + 1}`
-  return <Dialog onOpenChange={onOpenChange} open={editor !== undefined}><DialogContent className="sm:max-w-xl">{editor === 'synopsis' && <DialogHeader><DialogTitle>{t('analysis:sections.synopsis')}</DialogTitle></DialogHeader>}{editor === 'narrator' && <DialogHeader><DialogTitle>{t('analysis:sections.narrator')}</DialogTitle></DialogHeader>}{editor === 'character' && <DialogTitle className="sr-only">{t('analysis:sections.characters')}</DialogTitle>}{editor === 'turning_point' && tp && <DialogTitle className="sr-only">TP{tp.tp_number}</DialogTitle>}{editor === 'synopsis' && <Textarea aria-label={t('analysis:editor.synopsisAria')} disabled={!canEdit} onChange={(event) => onSynopsisChange(event.target.value)} rows={9} value={synopsis} />}{editor === 'narrator' && <div className="space-y-3"><label className="grid gap-1 text-sm font-medium">{t('analysis:attributes.voiceTraits')}<Textarea aria-label={`${t('analysis:sections.narrator')} ${t('analysis:attributes.voiceTraits')}`} disabled={!canEdit} onChange={(event) => onNarratorChange(event.target.value)} rows={4} value={narratorTraits} /></label><VoiceControls canEdit={canEdit} documentId={documentId} documentTitle={documentTitle} isDraft={isDraft} onVoiceCreationFailed={onVoiceCreationFailed} onVoiceGenerated={onVoiceGenerated} onVoiceLimitExceeded={onVoiceLimitExceeded} onVoiceDeleted={onVoiceDeleted} onVoicesChange={onVoicesChange} sourceFountain={sourceFountain} speaker={narratorSpeakerName(sourceFountain)} voiceAssignments={voiceAssignments} voiceState={voiceStates[voiceLibraryKey(voiceIdForSpeaker(voiceAssignments, narratorSpeakerName(sourceFountain)) ?? '')]} voiceTraits={narratorTraits} /></div>}
-    {editor === 'turning_point' && tp && tp.availability === 'identified' && <div className="space-y-3"><div className="flex items-center justify-between pr-8"><h3 className="text-sm font-semibold">TP{tp.tp_number}：{tpLabel(t as unknown as (key: string) => string, tp)}</h3><Badge variant="outline">{t('analysis:turningPoints.scene', { count: tp.scene_number })}</Badge></div><label className="grid gap-1 text-sm font-medium">{t('analysis:attributes.storyChange')}<Textarea aria-label={t('analysis:attributes.storyChange')} disabled={!canEdit} onChange={(event) => onTurningPointChange({ ...tp, change: event.target.value })} rows={3} value={tp.change} /></label>{tp.involved_characters.length > 0 && <Tabs onValueChange={(value) => setTpTab(Number(value))} value={String(activePersonIndex)}><TabsList className="w-full justify-start" variant="line">{tp.involved_characters.map((person, index) => <TabsTrigger key={`${tp.tp_number}-${index}`} value={String(index)}>{personTabLabel(person.name, index)}</TabsTrigger>)}</TabsList>{tp.involved_characters.map((person, index) => <TabsContent className="space-y-2" key={`${tp.tp_number}-${index}`} value={String(index)}><label className="grid gap-1 text-sm font-medium">{t('analysis:attributes.name')}<Input aria-label={t('analysis:editor.personName', { count: index + 1 })} disabled={!canEdit} onChange={(event) => updatePerson(index, 'name', event.target.value)} value={person.name} /></label>{(['goal', 'conflict', 'choice', 'action', 'change'] as const).map((field) => <label className="grid gap-1 text-sm font-medium" key={field}>{t(`analysis:attributes.${field}`)}<Textarea aria-label={`${t('analysis:editor.personName', { count: index + 1 })} ${t(`analysis:attributes.${field}`)}`} disabled={!canEdit} onChange={(event) => updatePerson(index, field, event.target.value)} rows={2} value={person[field]} /></label>)}</TabsContent>)}</Tabs>}{canEdit && <div className="flex items-center gap-2"><Button onClick={() => { setTpTab(tp.involved_characters.length); onTurningPointChange({ ...tp, involved_characters: [...tp.involved_characters, { name: '', goal: '', conflict: '', choice: '', action: '', change: '' }] }) }} size="sm" variant="outline"><Plus />{t('analysis:editor.addPerson')}</Button>{tp.involved_characters.length > 0 && <Button aria-label={t('analysis:editor.removePerson', { count: activePersonIndex + 1 })} onClick={() => removePerson(activePersonIndex)} size="sm" variant="outline"><Trash2 />{t('common:actions.delete')}</Button>}</div>}</div>}{editor === 'character' && character && <div className="space-y-3"><label className="grid gap-1 text-sm font-medium">{t('analysis:attributes.name')}<Input aria-label={t('analysis:editor.characterName')} disabled={!canEdit} onChange={(event) => updateCharacter('name', event.target.value)} value={character.name} /></label>{characterNameError && <p className="text-sm text-destructive" role="alert">{t('analysis:characterManagement.invalidName')}</p>}<label className="grid gap-1 text-sm font-medium">{t('analysis:attributes.voiceTraits')}<Textarea aria-label={`${character.name} ${t('analysis:attributes.voiceTraits')}`} disabled={!canEdit} onChange={(event) => updateCharacter('voice_traits', event.target.value)} rows={2} value={character.voice_traits ?? ''} /></label><VoiceControls canEdit={canEdit} documentId={documentId} documentTitle={documentTitle} isDraft={isDraft} onVoiceCreationFailed={onVoiceCreationFailed} onVoiceGenerated={onVoiceGenerated} onVoiceLimitExceeded={onVoiceLimitExceeded} onVoiceDeleted={onVoiceDeleted} onVoicesChange={onVoicesChange} sourceFountain={sourceFountain} speaker={character.name} voiceAssignments={voiceAssignments} voiceState={voiceStates[voiceLibraryKey(voiceIdForSpeaker(voiceAssignments, character.name) ?? '')]} voiceTraits={character.voice_traits ?? ''} />{([['external_goal', 'externalGoal'], ['internal_need', 'internalNeed'], ['fear_or_cost', 'fearCost'], ['obstacle', 'obstacle'], ['choice', 'choice'], ['agency', 'agency'], ['goal_to_outcome', 'goalOutcome']] as const).map(([field, label]) => <CharacterFieldCollapsible defaultOpen={false} fieldLabel={t(`analysis:attributes.${label}`)} key={field}><Textarea aria-label={`${character.name} ${t(`analysis:attributes.${label}`)}`} disabled={!canEdit} onChange={(event) => updateCharacter(field, event.target.value)} rows={2} value={character[field] ?? ''} /></CharacterFieldCollapsible>)}<div className="text-sm font-medium">{t('analysis:attributes.relatedTurningPoints')}<div className="mt-1 flex gap-3">{[1, 2, 3, 4, 5].map((tpNumber) => <label className="flex items-center gap-1 text-xs font-normal" key={tpNumber}><input aria-label={`${character.name} TP${tpNumber}`} checked={(character.related_turning_points ?? []).includes(tpNumber)} className="size-4" disabled={!canEdit} onChange={() => toggleTurningPoint(tpNumber)} type="checkbox" />TP{tpNumber}</label>)}</div></div></div>}<DialogFooter><Button onClick={() => onOpenChange(false)} variant="outline">{canEdit ? t('common:actions.cancel') : t('common:actions.ok')}</Button>{canEdit && <Button onClick={onSave}>{t('common:actions.ok')}</Button>}</DialogFooter></DialogContent></Dialog>
+  return <Dialog onOpenChange={closeEditor} open={editor !== undefined}><DialogContent className="sm:max-w-xl">{voiceDraft.error && <p className="text-sm text-destructive" role="alert">{voiceDraft.error}</p>}{voiceDraft.cancelling && <p role="status">{t('analysis:voices.cancellingVoiceChanges')}</p>}{editor === 'synopsis' && <DialogHeader><DialogTitle>{t('analysis:sections.synopsis')}</DialogTitle></DialogHeader>}{editor === 'narrator' && <DialogHeader><DialogTitle>{t('analysis:sections.narrator')}</DialogTitle></DialogHeader>}{editor === 'character' && <DialogTitle className="sr-only">{t('analysis:sections.characters')}</DialogTitle>}{editor === 'turning_point' && tp && <DialogTitle className="sr-only">TP{tp.tp_number}</DialogTitle>}{editor === 'synopsis' && <Textarea aria-label={t('analysis:editor.synopsisAria')} disabled={!canEdit} onChange={(event) => onSynopsisChange(event.target.value)} rows={9} value={synopsis} />}{editor === 'narrator' && <div className="space-y-3"><label className="grid gap-1 text-sm font-medium">{t('analysis:attributes.voiceTraits')}<Textarea aria-label={`${t('analysis:sections.narrator')} ${t('analysis:attributes.voiceTraits')}`} disabled={!canEdit} onChange={(event) => onNarratorChange(event.target.value)} rows={4} value={narratorTraits} /></label><VoiceControls canEdit={canEdit} documentId={documentId} isDraft={isDraft} onGenerate={voiceDraft.generate} onAssign={voiceDraft.assign} busy={voiceDraft.busy} generating={voiceDraft.generating} onVoiceDeleted={handleDeletedVoice} onVoicesChange={onVoicesChange} sourceFountain={sourceFountain} speaker={narratorSpeakerName(sourceFountain)} voiceAssignments={voiceDraft.assignments} voiceState={voiceStates[voiceLibraryKey(voiceIdForSpeaker(voiceDraft.assignments, narratorSpeakerName(sourceFountain)) ?? '')]} voiceTraits={narratorTraits} /></div>}
+    {editor === 'turning_point' && tp && tp.availability === 'identified' && <div className="space-y-3"><div className="flex items-center justify-between pr-8"><h3 className="text-sm font-semibold">TP{tp.tp_number}：{tpLabel(t as unknown as (key: string) => string, tp)}</h3><Badge variant="outline">{t('analysis:turningPoints.scene', { count: tp.scene_number })}</Badge></div><label className="grid gap-1 text-sm font-medium">{t('analysis:attributes.storyChange')}<Textarea aria-label={t('analysis:attributes.storyChange')} disabled={!canEdit} onChange={(event) => onTurningPointChange({ ...tp, change: event.target.value })} rows={3} value={tp.change} /></label>{tp.involved_characters.length > 0 && <Tabs onValueChange={(value) => setTpTab(Number(value))} value={String(activePersonIndex)}><TabsList className="w-full justify-start" variant="line">{tp.involved_characters.map((person, index) => <TabsTrigger key={`${tp.tp_number}-${index}`} value={String(index)}>{personTabLabel(person.name, index)}</TabsTrigger>)}</TabsList>{tp.involved_characters.map((person, index) => <TabsContent className="space-y-2" key={`${tp.tp_number}-${index}`} value={String(index)}><label className="grid gap-1 text-sm font-medium">{t('analysis:attributes.name')}<Input aria-label={t('analysis:editor.personName', { count: index + 1 })} disabled={!canEdit} onChange={(event) => updatePerson(index, 'name', event.target.value)} value={person.name} /></label>{(['goal', 'conflict', 'choice', 'action', 'change'] as const).map((field) => <label className="grid gap-1 text-sm font-medium" key={field}>{t(`analysis:attributes.${field}`)}<Textarea aria-label={`${t('analysis:editor.personName', { count: index + 1 })} ${t(`analysis:attributes.${field}`)}`} disabled={!canEdit} onChange={(event) => updatePerson(index, field, event.target.value)} rows={2} value={person[field]} /></label>)}</TabsContent>)}</Tabs>}{canEdit && <div className="flex items-center gap-2"><Button onClick={() => { setTpTab(tp.involved_characters.length); onTurningPointChange({ ...tp, involved_characters: [...tp.involved_characters, { name: '', goal: '', conflict: '', choice: '', action: '', change: '' }] }) }} size="sm" variant="outline"><Plus />{t('analysis:editor.addPerson')}</Button>{tp.involved_characters.length > 0 && <Button aria-label={t('analysis:editor.removePerson', { count: activePersonIndex + 1 })} onClick={() => removePerson(activePersonIndex)} size="sm" variant="outline"><Trash2 />{t('common:actions.delete')}</Button>}</div>}</div>}{editor === 'character' && character && <div className="space-y-3"><label className="grid gap-1 text-sm font-medium">{t('analysis:attributes.name')}<Input aria-label={t('analysis:editor.characterName')} disabled={!canEdit} onChange={(event) => updateCharacter('name', event.target.value)} value={character.name} /></label>{characterNameError && <p className="text-sm text-destructive" role="alert">{t('analysis:characterManagement.invalidName')}</p>}<label className="grid gap-1 text-sm font-medium">{t('analysis:attributes.voiceTraits')}<Textarea aria-label={`${character.name} ${t('analysis:attributes.voiceTraits')}`} disabled={!canEdit} onChange={(event) => updateCharacter('voice_traits', event.target.value)} rows={2} value={character.voice_traits ?? ''} /></label><VoiceControls canEdit={canEdit} documentId={documentId} isDraft={isDraft} onGenerate={voiceDraft.generate} onAssign={voiceDraft.assign} busy={voiceDraft.busy} generating={voiceDraft.generating} onVoiceDeleted={handleDeletedVoice} onVoicesChange={onVoicesChange} sourceFountain={sourceFountain} speaker={character.name} voiceAssignments={voiceDraft.assignments} voiceState={voiceStates[voiceLibraryKey(voiceIdForSpeaker(voiceDraft.assignments, character.name) ?? '')]} voiceTraits={character.voice_traits ?? ''} />{([['external_goal', 'externalGoal'], ['internal_need', 'internalNeed'], ['fear_or_cost', 'fearCost'], ['obstacle', 'obstacle'], ['choice', 'choice'], ['agency', 'agency'], ['goal_to_outcome', 'goalOutcome']] as const).map(([field, label]) => <CharacterFieldCollapsible defaultOpen={false} fieldLabel={t(`analysis:attributes.${label}`)} key={field}><Textarea aria-label={`${character.name} ${t(`analysis:attributes.${label}`)}`} disabled={!canEdit} onChange={(event) => updateCharacter(field, event.target.value)} rows={2} value={character[field] ?? ''} /></CharacterFieldCollapsible>)}<div className="text-sm font-medium">{t('analysis:attributes.relatedTurningPoints')}<div className="mt-1 flex gap-3">{[1, 2, 3, 4, 5].map((tpNumber) => <label className="flex items-center gap-1 text-xs font-normal" key={tpNumber}><input aria-label={`${character.name} TP${tpNumber}`} checked={(character.related_turning_points ?? []).includes(tpNumber)} className="size-4" disabled={!canEdit} onChange={() => toggleTurningPoint(tpNumber)} type="checkbox" />TP{tpNumber}</label>)}</div></div></div>}<DialogFooter><Button disabled={voiceDraft.cancelling} onClick={() => closeEditor(false)} variant="outline">{canEdit ? t('common:actions.cancel') : t('common:actions.ok')}</Button>{canEdit && <Button disabled={voiceDraft.busy} onClick={saveEditor}>{t('common:actions.ok')}</Button>}</DialogFooter></DialogContent></Dialog>
 }
 
 // Per-speaker voice controls shown below the Voice traits field: an editable,
 // ephemeral check-text field, a Play button (enabled only when a voice exists),
 // and a Generate button. Rendered for both characters and the narrator.
-function VoiceControls({ canEdit, documentId, documentTitle, isDraft, onVoiceCreationFailed, onVoiceGenerated, onVoiceLimitExceeded, onVoiceDeleted, onVoicesChange, sourceFountain, speaker, voiceAssignments, voiceState, voiceTraits }: {
+function VoiceControls({ canEdit, documentId, isDraft, onGenerate, onAssign, busy, generating, onVoiceDeleted, onVoicesChange, sourceFountain, speaker, voiceAssignments, voiceState, voiceTraits }: {
   canEdit: boolean
   documentId: string
-  documentTitle: string
   isDraft: boolean
-  onVoiceCreationFailed: (failure: VoiceCreationFailure) => void
-  onVoiceGenerated: (result: VoiceAssignment) => void
-  onVoiceLimitExceeded: () => void
+  onGenerate: (speaker: string, traits: string) => Promise<boolean>
+  onAssign: (voice: VoiceSummary, speaker: string, traits: string) => Promise<boolean>
+  busy: boolean
+  generating: boolean
   onVoiceDeleted: (voice: VoiceSummary) => void
   onVoicesChange: (voices: VoiceSummary[]) => void
   sourceFountain: string
@@ -531,34 +544,13 @@ function VoiceControls({ canEdit, documentId, documentTitle, isDraft, onVoiceCre
   voiceTraits: string
 }) {
   const { t } = useTranslation(['analysis', 'common'])
-  const [generating, setGenerating] = useState(false)
   const [playing, setPlaying] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [checkText, setCheckText] = useState(() => firstUtteranceLine(sourceFountain, speaker, narratorSpeakerName(sourceFountain)))
   const voiceId = voiceIdForSpeaker(voiceAssignments, speaker)
 
-  const generate = async () => {
-    if (generating || !voiceTraits.trim()) return
-    setGenerating(true)
-    try {
-      const result = isDraft
-        ? await createVoice(documentId, { speaker, voice_traits: voiceTraits, display_name: voiceDisplayName(documentTitle, speaker) }, undefined, true)
-        : await createVoice(documentId, { speaker, voice_traits: voiceTraits, display_name: voiceDisplayName(documentTitle, speaker) })
-      if (result.registry_sync_pending) toast.warning(t('analysis:voices.registrySyncPending'))
-      onVoiceGenerated(result)
-    } catch (error) {
-      if (error instanceof ApiClientError && error.code === VOICE_LIMIT_EXCEEDED) {
-        onVoiceLimitExceeded()
-      } else {
-        onVoiceCreationFailed(voiceCreationFailure(error, speaker))
-      }
-    } finally {
-      setGenerating(false)
-    }
-  }
-
   const play = async () => {
-    if (playing || !voiceId || !checkText || (voiceState && !voiceCanBeUsed(voiceState))) return
+    if (busy || playing || !voiceId || !checkText || (voiceState && !voiceCanBeUsed(voiceState))) return
     setPlaying(true)
     try {
       const pcm = isDraft
@@ -573,18 +565,16 @@ function VoiceControls({ canEdit, documentId, documentTitle, isDraft, onVoiceCre
   }
 
   return <div className="space-y-2 rounded-md border bg-muted/30 p-2">
-    <div>
-      <label className="grid gap-1 text-xs font-medium text-muted-foreground">{t('analysis:voices.checkText')}
-        <Textarea aria-label={`${speaker} ${t('analysis:voices.checkText')}`} className="min-h-16 bg-background text-sm leading-6 text-foreground" onChange={(event) => setCheckText(event.target.value)} rows={2} value={checkText} />
-      </label>
-    </div>
+    <label className="grid gap-1 text-xs font-medium text-muted-foreground">{t('analysis:voices.checkText')}
+      <Textarea aria-label={`${speaker} ${t('analysis:voices.checkText')}`} className="min-h-16 bg-background text-sm leading-6 text-foreground" onChange={(event) => setCheckText(event.target.value)} rows={2} value={checkText} />
+    </label>
     {generating && <p aria-live="polite" className="text-xs text-muted-foreground" role="status">{t('analysis:voices.generatingSpeaker', { speaker })}</p>}
     {voiceState && !voiceCanBeUsed(voiceState) && <p className="text-xs text-destructive" role="status">{t('analysis:voices.voiceCannotBeAssigned')}</p>}
     <div className="flex flex-wrap items-center gap-2">
-      {canEdit && <><Button aria-label={`${speaker} ${t('analysis:voices.generate')}`} disabled={generating || !voiceTraits.trim()} onClick={() => { void generate() }} size="sm" variant="default">{generating ? <LoaderCircle className="animate-spin" /> : <Sparkles />}{generating ? t('analysis:voices.generating') : t('analysis:voices.generate')}</Button><Button onClick={() => setLibraryOpen(true)} size="sm" variant="outline"><Library />{t('analysis:voices.useVoice')}</Button></>}
-      <Button aria-label={`${speaker} ${t('analysis:voices.play')}`} disabled={!voiceId || !checkText || playing || Boolean(voiceState && !voiceCanBeUsed(voiceState))} onClick={() => { void play() }} size="sm" variant="outline"><Play />{t('analysis:voices.play')}</Button>
+      {canEdit && <><Button aria-label={`${speaker} ${t('analysis:voices.generate')}`} disabled={busy || playing || !voiceTraits.trim()} onClick={() => { void onGenerate(speaker, voiceTraits) }} size="sm" variant="default">{busy ? <LoaderCircle className="animate-spin" /> : <Sparkles />}{generating ? t('analysis:voices.generating') : t('analysis:voices.generate')}</Button><Button disabled={busy || playing} onClick={() => setLibraryOpen(true)} size="sm" variant="outline"><Library />{t('analysis:voices.useVoice')}</Button></>}
+      <Button aria-label={`${speaker} ${t('analysis:voices.play')}`} disabled={busy || !voiceId || !checkText || playing || Boolean(voiceState && !voiceCanBeUsed(voiceState))} onClick={() => { void play() }} size="sm" variant="outline"><Play />{t('analysis:voices.play')}</Button>
     </div>
-    <VoiceLibraryDialog assignedVoiceIds={voiceAssignments.map((assignment) => assignment.voice_id).filter((assignedVoiceId): assignedVoiceId is string => typeof assignedVoiceId === 'string')} onOpenChange={setLibraryOpen} onSelect={(voice) => onVoiceGenerated({ speaker, voice_id: voice.voice_id, voice_traits: voice.voice_traits ?? voiceTraits })} onVoiceDeleted={onVoiceDeleted} onVoicesChange={onVoicesChange} open={libraryOpen} selectedVoiceId={voiceId} />
+    <VoiceLibraryDialog assignedVoiceIds={voiceAssignments.map((assignment) => assignment.voice_id).filter((id): id is string => typeof id === 'string')} onOpenChange={setLibraryOpen} onSelect={(voice) => onAssign(voice, speaker, voiceTraits)} onVoiceDeleted={onVoiceDeleted} onVoicesChange={onVoicesChange} open={libraryOpen} selectedVoiceId={voiceId} />
   </div>
 }
 

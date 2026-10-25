@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
+from narravant.core.content_language import infer_source_language
 from narravant.core.fountain import (
     NARRATOR_SPEAKERS,
     FountainParser,
@@ -14,6 +15,7 @@ from narravant.core.fountain import (
 )
 from narravant.core.speech_notation import SpeechNotation, parse_speech_notation
 from narravant.services.speech_segments import SegmentVoice
+from narravant.services.voice_prompt_guidance import compose_delivery, split_voice_traits
 
 
 class PlaybackPlanError(Exception):
@@ -49,6 +51,7 @@ class PlannedUtterance:
     notation: SpeechNotation | None = None
     listener_voice: SegmentVoice | None = None
     is_scene_heading: bool = False  # 再生内部専用。保存・公開イベントには含めない。
+    language_code: str | None = None  # 原稿全体からの推定。短い台詞にも引き継ぐ。
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,8 @@ def build_playback_plan(
     version_id = document_data.get("version_id", 1)
     source_fountain = document_data.get("source_fountain", "")
 
+    source_language = infer_source_language(source_fountain)
+    language_code = {"en": "en-US", "ja": "ja-JP"}.get(source_language)
     parsed = FountainParser.parse(source_fountain)
     raw_utterances = _playback_utterances(parsed)
     spoken_heading_scenes = {
@@ -101,14 +106,19 @@ def build_playback_plan(
     raw_assignments = document_data.get("voice_assignments") or []
     voice_map: dict[str, str] = {}
     normalized_voice_map: dict[str, str] = {}
+    delivery_map: dict[str, str] = {}
+    normalized_delivery_map: dict[str, str] = {}
     for item in raw_assignments:
         speaker = item.get("speaker")
         voice_id = item.get("voice_id")
         if speaker and voice_id:
             voice_map[speaker] = voice_id
+            delivery = split_voice_traits(item.get("voice_traits") or "")[1]
+            delivery_map[speaker] = delivery
             normalized_key = normalize_speaker_name(speaker)
             if normalized_key:
                 normalized_voice_map.setdefault(normalized_key, voice_id)
+                normalized_delivery_map.setdefault(normalized_key, delivery)
 
     # Validate all utterances and resolve voices
     all_planned: list[PlannedUtterance] = []
@@ -123,9 +133,14 @@ def build_playback_plan(
             )
 
         voice_id = voice_map.get(speaker) or normalized_voice_map.get(normalize_speaker_name(speaker))
+        default_delivery = delivery_map.get(
+            speaker, normalized_delivery_map.get(normalize_speaker_name(speaker), "")
+        )
         if not voice_id and u.target_type == "narrator":
             # 旧版の日本語キーと英語 cue は、同じナレーター役の声として照合する。
-            voice_id = next((voice_map[name] for name in NARRATOR_SPEAKERS if name in voice_map), None)
+            assigned_narrator = next((name for name in NARRATOR_SPEAKERS if name in voice_map), None)
+            voice_id = voice_map.get(assigned_narrator)
+            default_delivery = delivery_map.get(assigned_narrator, "")
         if not voice_id:
             raise PlaybackPlanError(
                 code="UNASSIGNED_VOICE",
@@ -163,7 +178,10 @@ def build_playback_plan(
                 target_type=u.target_type,
                 text=u.text,
                 voice_id=voice_id,
-                performance_direction=getattr(u, "performance_direction", "") or "",
+                performance_direction=compose_delivery(
+                    default_delivery, getattr(u, "performance_direction", "") or ""
+                ),
+                language_code=language_code,
                 notation=notation,
                 listener_voice=listener_voice,
                 is_scene_heading=u.utterance_index == 0 and u.scene_number in spoken_heading_scenes,

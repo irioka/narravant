@@ -1,0 +1,36 @@
+name: Feature or improvement request
+description: Suggest a new feature or improvement.
+title: '[Suggestion] '
+body:
+- type: markdown
+  attributes:
+    value: Suggestions are public. Acceptance and response times depend on the proposal and the maintainer's availability.
+      Do not include private manuscripts or personal information.
+- type: textarea
+  id: need
+  attributes:
+    label: Problem or use case
+    description: What problem would you like to solve?
+  validations:
+    required: true
+- type: textarea
+  id: proposal
+  attributes:
+    label: Suggested change
+    description: How would you like the app to work?
+  validations:
+    required: true
+- type: textarea
+  id: alternatives
+  attributes:
+    label: Alternatives or workarounds
+    description: Any workarounds you've tried or other ideas.
+  validations:
+    required: false
+- type: checkboxes
+  id: privacy
+  attributes:
+    label: Before posting
+    options:
+    - label: I have removed API keys, private manuscripts, actual voice IDs, and personal information.
+      required: true

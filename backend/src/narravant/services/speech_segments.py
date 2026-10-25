@@ -46,6 +46,7 @@ class SpeechSegment:
     primary: SegmentVoice
     listener: SegmentVoice | None
     style: str
+    language_code: str | None = None
 
 
 class SpeechSegmentError(ValueError):
@@ -246,7 +247,9 @@ def build_speech_segments(utterance: PlannedUtterance) -> tuple[SpeechSegment, .
                 scene_number=utterance.scene_number,
                 utterance_index=utterance.utterance_index,
             )
-        segments.append(SpeechSegment(rendered, primary, listener_voice, utterance.performance_direction))
+        segments.append(SpeechSegment(
+            rendered, primary, listener_voice, utterance.performance_direction, utterance.language_code
+        ))
         current = []
 
     for atom in atoms:

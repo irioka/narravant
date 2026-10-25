@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import httpx
 import pytest
 
@@ -148,6 +150,43 @@ async def test_delete_uses_one_request_and_does_not_retry_timeout(monkeypatch) -
     assert raised.value.provider_code == "NETWORK_ERROR"
     assert calls == 1
     assert urls == ["https://generativelanguage.googleapis.com/v1beta/voices/voice_delete_1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("operation", "status", "expected_level"), [
+    ("get", 404, logging.DEBUG),
+    ("list", 404, logging.WARNING),
+    ("get", 403, logging.WARNING),
+])
+async def test_only_individual_missing_voice_is_debug_logged(operation, status, expected_level, monkeypatch, caplog):
+    calls = 0
+
+    async def mock_get(self, url, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            status,
+            json={"error": {"status": "NOT_FOUND" if status == 404 else "PERMISSION_DENIED",
+                            "message": "synthetic-private-body"}},
+            request=httpx.Request("GET", str(url)),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    caplog.set_level(logging.DEBUG, logger="narravant.services.voice_design")
+    client = GeminiVoiceDesignClient(api_key="synthetic-secret-key")
+    with pytest.raises(VoiceDesignError) as raised:
+        if operation == "get":
+            await client.get_voice("voice_missing_test")
+        else:
+            await client.list_voices()
+    assert raised.value.provider_status == status
+    assert calls == 1
+    records = [record for record in caplog.records if "rejected status=" in record.message]
+    assert len(records) == 1
+    assert records[0].levelno == expected_level
+    assert "synthetic-private-body" not in caplog.text
+    assert "synthetic-secret-key" not in caplog.text
+    assert "voice_missing_test" not in caplog.text
 
 
 @pytest.mark.asyncio

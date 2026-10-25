@@ -2,6 +2,8 @@
 
 [日本語](README.ja.md)
 
+Version: **0.4.0** — see [CHANGELOG.md](CHANGELOG.md).
+
 NARRAVANT is a lightweight, local-first application that uses AI to turn novels and screenplays into [Fountain](https://fountain.io/) audiobook scripts with **narration, character dialogue, and acting directions**, then reads them aloud with Gemini TTS.
 
 NARRAVANT plans and writes novel adaptations with the original **events, character states, and foreshadowing** in view. It also automatically generates delivery instructions for **Gemini 3.8 Flash TTS's style field and inline tags**. Existing screenplays keep their story and scene order while their narration, dialogue, and delivery notation are prepared for reading.
@@ -30,7 +32,7 @@ https://github.com/user-attachments/assets/857be910-ec02-4969-8bbf-928e0b68de57
 - **Automatic delivery instructions** — AI adds acting directions and inline tags where useful. Playback sends sustained directions through `speechMetadata.style` and keeps local tags such as `<short pause>` and `<breath>` in the spoken text supplied to Gemini 3.8 Flash TTS.
 - **Lightweight local setup** — One Gemini Developer API key, a local Python service, and a browser UI. SQLite stores your work locally.
 - **Story analysis** — Generate and keep a synopsis, five turning points, and an emotional arc from the uploaded work.
-- **Voice design** — Generate voice traits for the narrator and each character, then create voices with Gemini and assign them per speaker. Gemini retains stateful custom voices for one year after their last use; using a voice for TTS resets this period ([Google's guide](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation)).
+- **Voice design** — Ground character voice traits in the original novel or screenplay, retaining age impressions, timbre and accent even when introductions are omitted from the generated script. Edit voice qualities and default delivery separately in English or Japanese, create a voice with Gemini, and assign it per speaker. Gemini retains stateful custom voices for one year after their last use; using a voice for TTS resets this period ([Google's guide](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation)).
 - **Real-time playback** — Synthesize each utterance in script order with Gemini TTS and stream it over WebSocket. Generated audio is not stored; playback is regenerated each time.
 - **Local-first storage** — Scripts, voice traits, voice assignments, and analysis are saved in a local database. Export and re-import via Native JSON.
 - **Bilingual UI** — Switch the interface between English and Japanese.
@@ -62,6 +64,8 @@ cp .env.example .env
 - `LOCAL_STORAGE_PATH`: Directory for local script storage (default: `./runtime/storage`). Relative paths are resolved from the repository root (the directory containing `.env`).
 
 For the supplied local setup, keep the other defaults and replace the `GEMINI_API_KEY` placeholder. Text generation and analysis settings are in `backend/config.yaml`; `gemini.thinking_level` selects LOW, MEDIUM, or HIGH thinking effort. Restart the backend after changing these settings. This setting does not control TTS playback.
+
+`gemini.safety_threshold` in `backend/config.yaml` shares one threshold across the four configurable safety categories for script generation, analysis, and TTS. It is currently `BLOCK_NONE`. Restart the backend after changing it; quote `"OFF"` if choosing that value. Voice Design has no corresponding setting, and built-in protections still apply.
 
 To use Gemini 4 Argon, set `GEMINI_MODEL=gemini-4-argon` in `.env`. Set it back to `gemini-3.8-flash` to use Flash. Both models use the same Gemini Developer API key; keep `GEMINI_TTS_MODEL=gemini-3.8-flash-tts` for speech synthesis.
 
@@ -116,6 +120,10 @@ This project follows [Semantic Versioning](https://semver.org/). The release ver
 ## References
 
 See [REFERENCES.md](REFERENCES.md) for the research and technical specifications behind NARRAVANT, their use, and their limits.
+
+## Contributing and reporting
+
+See [Contributing](CONTRIBUTING.md) for bug reports and suggestions. You can also read the [security policy](SECURITY.md) and [accessibility statement](ACCESSIBILITY.md).
 
 ## License
 

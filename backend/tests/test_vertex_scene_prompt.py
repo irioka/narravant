@@ -58,6 +58,7 @@ def test_analysis_request_respects_model_output_and_transport_requirements(model
     analyzer.max_output_tokens = 65536
     analyzer.minimum_output_tokens = 32768 if model == "gemini-4-argon" else 1
     analyzer.thinking_level = "MEDIUM"
+    analyzer.safety_threshold = "BLOCK_NONE"
     config = analyzer._request_config({"response_mime_type": "application/json"}, max_output_tokens=2048)
     assert config["max_output_tokens"] == (32768 if model == "gemini-4-argon" else 2048)
     assert config["thinking_config"] == {"thinking_level": "MEDIUM"}

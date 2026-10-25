@@ -210,6 +210,7 @@ def test_reanalysis_returns_an_unsaved_arc_draft_without_publishing_a_new_versio
             processing_deadline: float | None = None,
             source_filename: str | None = None,
             expected_characters: list[str] | None = None,
+            source_character_cards=(),
         ) -> CanonicalAnalysis:
             analyzed_source_fountains.append(source_fountain)
             assert expected_characters == ["A"]
@@ -344,6 +345,7 @@ def test_reanalysis_uses_fountain_speakers_instead_of_registered_character_names
             processing_deadline: float | None = None,
             source_filename: str | None = None,
             expected_characters: list[str] | None = None,
+            source_character_cards=(),
         ) -> CanonicalAnalysis:
             assert "@茨城暦" in source_fountain
             assert expected_characters is None
@@ -500,6 +502,7 @@ async def test_reanalysis_endpoint_queues_an_owner_task() -> None:
             processing_deadline: float | None = None,
             source_filename: str | None = None,
             expected_characters: list[str] | None = None,
+            source_character_cards=(),
         ) -> CanonicalAnalysis:
             raise AssertionError("background worker must not run before the 202 response")
 

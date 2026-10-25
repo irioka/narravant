@@ -94,9 +94,17 @@ Google. **Text-to-speech generation (TTS)** and **Generating content: SpeechMeta
 
 Google. **Voice design.**
 
-- Sources: [Voice Design guide](https://ai.google.dev/gemini-api/docs/voice-design), [Speech generation guide](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation).
+- Sources: [Voice Design guide](https://ai.google.dev/gemini-api/docs/voice-design), [Voices API reference](https://ai.google.dev/api/voices), [Speech generation guide](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation).
 - Use: custom voices with persistent traits such as perceived age, timbre, and accent. Stateful custom voices are retained for one year after their last use; synthesizing speech with a voice or using it as a remix base resets the retention period. Situational acting instructions are handled separately through TTS style.
 - Limits: specifying a trait does not establish that the generated voice expresses it successfully. Perceived age and other voice qualities require listening evaluation. Retention policy and API behavior can change; check Google's current documentation when updating the integration.
+
+### REF-GEMINI-SAFETY
+
+Google. **GenerateContent safety settings** and **Gemini Voices API**. Checked 2026-10-25.
+
+- Sources: [GenerateContent safety settings](https://ai.google.dev/gemini-api/docs/generate-content/safety-settings), [GenerateContent API reference](https://ai.google.dev/api/generate-content), [Voices API reference](https://ai.google.dev/api/voices).
+- Use: share the configured `gemini.safety_threshold` across text generation, analysis, and TTS GenerateContent requests, using the SDK's `safety_settings` or REST's `safetySettings` as appropriate.
+- Limits: the setting controls four adjustable categories; it does not disable built-in protections. The Voice Design CreateVoice request has no corresponding field. Configuring a threshold does not establish that an earlier rejection was caused by that threshold or that a future request will be accepted.
 
 ## Numerical methods
 

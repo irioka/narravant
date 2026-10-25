@@ -13,6 +13,7 @@ from typing import Any, Protocol
 import httpx
 
 from narravant.core.fountain import NARRATOR_SPEAKERS, normalize_speaker_name
+from narravant.core.gemini_safety import DEFAULT_SAFETY_THRESHOLD, gemini_safety_settings
 from narravant.core.settings import Settings
 from narravant.services.playback import PlannedUtterance
 from narravant.services.speech_segments import (
@@ -81,7 +82,9 @@ def _normalize_tts_voice_id(voice_id: str) -> str:
     return voice_id
 
 
-def build_tts_request(segment: SpeechSegment, model: str, language_code: str) -> dict[str, Any]:
+def build_tts_request(
+    segment: SpeechSegment, model: str, language_code: str, *, safety_threshold: str = DEFAULT_SAFETY_THRESHOLD
+) -> dict[str, Any]:
     """Build the REST body for one supported Gemini sentence segment."""
     if segment.listener is not None:
         raise TtsError(
@@ -99,9 +102,10 @@ def build_tts_request(segment: SpeechSegment, model: str, language_code: str) ->
     _ = model
     return {
         "contents": [{"parts": [part]}],
+        "safetySettings": gemini_safety_settings(safety_threshold),
         "generationConfig": {
             "responseModalities": ["AUDIO"],
-            "speechConfig": {**voice_configuration, "languageCode": language_code},
+            "speechConfig": {**voice_configuration, "languageCode": segment.language_code or language_code},
         },
     }
 
@@ -117,10 +121,12 @@ class GeminiTtsClient:
         timeout_seconds: float = 120.0,
         max_attempts: int = 3,
         retry_backoff_seconds: float = 1.0,
+        safety_threshold: str = DEFAULT_SAFETY_THRESHOLD,
     ) -> None:
         self._api_key = api_key
         self._default_model = default_model
         self._language_code = language_code
+        self._safety_threshold = safety_threshold
         self._timeout_seconds = timeout_seconds
         self._max_attempts = max(1, max_attempts)
         self._retry_backoff_seconds = max(0.0, retry_backoff_seconds)
@@ -155,7 +161,9 @@ class GeminiTtsClient:
         """一つの本文 segment を raw PCM chunk として逐次取得する。"""
         selected_model = model or self._default_model
         try:
-            body = build_tts_request(segment, selected_model, self._language_code)
+            body = build_tts_request(
+                segment, selected_model, self._language_code, safety_threshold=self._safety_threshold
+            )
         except ValueError as exc:
             raise TtsError("Invalid custom voice ID") from exc
         if not self._api_key:
@@ -402,6 +410,7 @@ def create_tts_client(settings: Settings) -> TtsClient:
     return GeminiTtsClient(
         api_key=settings.gemini_api_key or "",
         default_model=settings.gemini_tts_model,
+        safety_threshold=settings.gemini_safety_threshold,
         timeout_seconds=getattr(settings, "gemini_connection_timeout_seconds", 120),
         max_attempts=getattr(
             settings,

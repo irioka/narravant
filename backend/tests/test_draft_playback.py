@@ -337,3 +337,21 @@ async def test_saved_document_still_plays_without_a_draft(draft_connection, monk
             {"text": "First.", "voice_id": "voice_synthetic_narrator"},
             {"text": "Second.", "voice_id": "voice_synthetic_alice"},
         ]
+
+
+async def test_draft_playback_uses_assigned_default_delivery(draft_connection):
+    import copy
+
+    draft = copy.deepcopy(DRAFT)
+    draft["voice_assignments"][1]["voice_traits"] = (
+        "Voice: A synthetic actor voice.\nDelivery: Portray a fictional child naturally."
+    )
+    async with draft_connection() as (incoming, outgoing, tts):
+        await send_start(incoming, draft)
+        while True:
+            event = await receive_event(outgoing)
+            if event["event"] in ("error", "playback_complete"):
+                break
+        assert event["event"] == "playback_complete"
+        assert tts.synthesized_styles == ["", "Portray a fictional child naturally."]
+        assert [text for text, _ in tts.synthesized_utterances] == ["First.", "Second."]

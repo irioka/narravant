@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from narravant.core.gemini_safety import validate_safety_threshold
 from narravant.core.valence_pattern import (
     ValencePattern,
     ValencePatternConfigurationError,
@@ -58,6 +59,9 @@ class Settings:
     gemini_api_key: str
     gemini_model: str
     gemini_tts_model: str
+    gemini_safety_threshold: str
+    gemini_source_voice_traits_max_attempts: int
+    gemini_source_voice_traits_max_output_tokens: int
     gemini_analysis_max_attempts: int
     gemini_generation_max_attempts: int
     gemini_voice_design_max_attempts: int
@@ -189,6 +193,8 @@ class Settings:
             raise SettingsError("LOG_LEVEL must be a standard Python log level")
         positive_gemini_integers: dict[str, int] = {}
         for key in (
+            "source_voice_traits_max_attempts",
+            "source_voice_traits_max_output_tokens",
             "analysis_max_attempts",
             "generation_max_attempts",
             "voice_design_max_attempts",
@@ -245,6 +251,10 @@ class Settings:
             )
         if positive_gemini_integers["pdf_reader_page_overlap"] >= positive_gemini_integers["pdf_reader_page_window"]:
             raise SettingsError("gemini.pdf_reader_page_overlap must be less than pdf_reader_page_window")
+        try:
+            safety_threshold = validate_safety_threshold(_required_yaml_value(raw_config, "gemini", "safety_threshold"))
+        except ValueError as exc:
+            raise SettingsError(str(exc)) from exc
         thinking_level = str(_required_yaml_value(raw_config, "gemini", "thinking_level")).upper()
         if thinking_level not in {"LOW", "MEDIUM", "HIGH"}:
             raise SettingsError("gemini.thinking_level must be LOW, MEDIUM, or HIGH")
@@ -256,6 +266,11 @@ class Settings:
             gemini_api_key=gemini_api_key,
             gemini_model=gemini_model,
             gemini_tts_model=gemini_tts_model,
+            gemini_safety_threshold=safety_threshold,
+            gemini_source_voice_traits_max_attempts=positive_gemini_integers["source_voice_traits_max_attempts"],
+            gemini_source_voice_traits_max_output_tokens=positive_gemini_integers[
+                "source_voice_traits_max_output_tokens"
+            ],
             gemini_analysis_max_attempts=positive_gemini_integers["analysis_max_attempts"],
             gemini_generation_max_attempts=positive_gemini_integers["generation_max_attempts"],
             gemini_voice_design_max_attempts=positive_gemini_integers["voice_design_max_attempts"],

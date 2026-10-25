@@ -58,6 +58,57 @@ def test_settings_resolves_relative_runtime_paths_from_repository_root(
     assert settings.local_storage_path == repository_root / "runtime/storage"
 
 
+def test_source_trait_settings_reach_analyzer(monkeypatch):
+    from narravant.core.settings import Settings
+    from narravant.services.vertex_analysis import VertexDocumentAnalyzer
+
+    _set_required_environment(monkeypatch)
+    settings = Settings.load(BACKEND_ROOT)
+    analyzer = VertexDocumentAnalyzer(settings)
+    assert analyzer.source_voice_traits_max_attempts == 2
+    assert analyzer.source_voice_traits_max_output_tokens == 4096
+    assert analyzer._request_config({}, max_output_tokens=4096)["max_output_tokens"] >= 4096
+
+
+@pytest.mark.parametrize(
+    "threshold", ["OFF", "BLOCK_NONE", "BLOCK_ONLY_HIGH", "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_LOW_AND_ABOVE"]
+)
+def test_shared_safety_threshold_reaches_generation_and_tts(monkeypatch, tmp_path, threshold):
+    from narravant.core.settings import Settings
+    from narravant.services.tts import create_tts_client
+    from narravant.services.vertex_analysis import VertexDocumentAnalyzer
+
+    _set_required_environment(monkeypatch)
+    config = yaml.safe_load((BACKEND_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    config["gemini"]["safety_threshold"] = threshold
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    settings = Settings.load(tmp_path)
+    assert settings.gemini_safety_threshold == threshold
+    analyzer = VertexDocumentAnalyzer(settings)
+    for operation_tokens in (settings.gemini_reader_max_output_tokens,
+                             settings.gemini_planning_max_output_tokens,
+                             settings.gemini_scene_writing_max_output_tokens):
+        safety = analyzer._request_config(None, max_output_tokens=operation_tokens)["safety_settings"]
+        assert len(safety) == 4
+        assert {item["threshold"] for item in safety} == {threshold}
+    assert create_tts_client(settings)._safety_threshold == threshold
+
+
+@pytest.mark.parametrize("value", [None, "", "INVALID", False, [], {"threshold": "BLOCK_NONE"}])
+def test_settings_rejects_invalid_shared_safety_threshold(monkeypatch, tmp_path, value):
+    from narravant.core.settings import Settings, SettingsError
+
+    _set_required_environment(monkeypatch)
+    config = yaml.safe_load((BACKEND_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    if value is None:
+        config["gemini"].pop("safety_threshold", None)
+    else:
+        config["gemini"]["safety_threshold"] = value
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    with pytest.raises(SettingsError, match="safety_threshold"):
+        Settings.load(tmp_path)
+
+
 def test_settings_loads_gemini_models_defaults_and_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -209,6 +260,8 @@ def test_settings_requires_playback_configuration(monkeypatch: pytest.MonkeyPatc
 @pytest.mark.parametrize(
     "key",
     [
+        "source_voice_traits_max_attempts",
+        "source_voice_traits_max_output_tokens",
         "analysis_max_attempts",
         "generation_max_attempts",
         "voice_design_max_attempts",
@@ -239,6 +292,8 @@ def test_settings_rejects_missing_gemini_analysis_config(
 @pytest.mark.parametrize(
     "key",
     [
+        "source_voice_traits_max_attempts",
+        "source_voice_traits_max_output_tokens",
         "analysis_max_attempts",
         "generation_max_attempts",
         "voice_design_max_attempts",

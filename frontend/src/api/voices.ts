@@ -62,7 +62,7 @@ export async function createVoice(
         body: JSON.stringify({
           speaker: input.speaker,
           voice_traits: input.voice_traits,
-          language_code: input.language_code ?? 'ja-JP',
+          language_code: input.language_code,
           display_name: input.display_name,
         }),
         fetcher,
@@ -140,8 +140,8 @@ export async function previewVoice(
     body: JSON.stringify({
       voice_id: input.voice_id,
       text: input.text,
-      style: input.style ?? '',
-      language_code: input.language_code ?? 'ja-JP',
+      style: input.style,
+      language_code: input.language_code,
     }),
   })
 

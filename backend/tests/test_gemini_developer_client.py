@@ -19,6 +19,8 @@ def dummy_settings():
     return SimpleNamespace(
         gemini_api_key="synthetic-test-api-key-12345",
         gemini_model="gemini-3.8-flash",
+        gemini_source_voice_traits_max_attempts=2,
+        gemini_source_voice_traits_max_output_tokens=4096,
         gemini_analysis_max_attempts=3,
         gemini_generation_max_attempts=3,
         gemini_retry_backoff_seconds=1,
@@ -30,6 +32,7 @@ def dummy_settings():
         gemini_max_output_tokens=8192,
         gemini_max_main_characters=6,
         gemini_thinking_level="LOW",
+        gemini_safety_threshold="BLOCK_NONE",
         gemini_import_continuation_max_attempts=3,
         gemini_import_max_fountain_characters=50000,
         gemini_text_reader_source_unit_max_characters=24000,
@@ -65,7 +68,9 @@ def test_analyzer_uses_resolved_timeouts_without_replacing_processing_deadline(d
     assert analyzer.processing_timeout_seconds == 60
 
 
-def test_analyzer_passes_model_to_client_stream(dummy_settings) -> None:
+@pytest.mark.parametrize("threshold", ["BLOCK_NONE", "BLOCK_ONLY_HIGH"])
+def test_analyzer_passes_model_to_client_stream(dummy_settings, threshold) -> None:
+    dummy_settings.gemini_safety_threshold = threshold
     analyzer = VertexDocumentAnalyzer(dummy_settings)
 
     class DummyChunk:
@@ -98,7 +103,27 @@ def test_analyzer_passes_model_to_client_stream(dummy_settings) -> None:
 
     result = analyzer.convert_text_to_fountain("INT. ROOM - DAY", lambda x: None)
     assert "INT. ROOM - DAY #1#" in result
+    from narravant.services.narrative_adaptation import PlannedScene, SceneContext
+
+    plan = PlannedScene(
+        scene_number=1, heading="INT. ROOM - DAY #1#", source_unit_ids=["su_test"],
+        retained_event_ids=["ev_test"], omitted_event_ids=[], purpose="Synthetic scene",
+        characters=["MAYA"], causal_notes="Synthetic cause",
+    )
+    context = SceneContext(scene_number=1, source_unit_ids=("su_test",), retained_events=(), source_material=())
+    assert "INT. ROOM - DAY #1#" in analyzer.write_scene(plan, context)
     assert dummy_client.last_kwargs["model"] == "gemini-3.8-flash"
+    safety = dummy_client.last_kwargs["config"]["safety_settings"]
+    assert {item["category"]: item["threshold"] for item in safety} == {
+        "HARM_CATEGORY_HARASSMENT": threshold,
+        "HARM_CATEGORY_HATE_SPEECH": threshold,
+        "HARM_CATEGORY_SEXUALLY_EXPLICIT": threshold,
+        "HARM_CATEGORY_DANGEROUS_CONTENT": threshold,
+    }
+    from google.genai import types
+
+    parsed = types.GenerateContentConfig(**dummy_client.last_kwargs["config"])
+    assert all(item.threshold == types.HarmBlockThreshold(threshold) for item in parsed.safety_settings)
 
 
 def test_auth_rejection_fails_immediately_without_leaking_key(dummy_settings, caplog: pytest.LogCaptureFixture) -> None:

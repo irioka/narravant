@@ -131,9 +131,13 @@ def _provider_voice_from_payload(
     )
 
 
-def _voice_request_error(operation: str, response: httpx.Response) -> VoiceDesignError:
+def _voice_request_error(
+    operation: str, response: httpx.Response, *, not_found_expected: bool = False
+) -> VoiceDesignError:
     provider_code = _provider_error_code(response)
-    logger.warning(
+    # 個別照合の404は「削除済み・見つからない」という正常な確認結果。
+    log = logger.debug if not_found_expected and response.status_code == 404 else logger.warning
+    log(
         "Gemini Voices API %s rejected status=%s provider_code=%s",
         operation,
         response.status_code,
@@ -262,6 +266,7 @@ class GeminiVoiceDesignClient:
         url: str,
         *,
         params: dict[str, str | int] | None = None,
+        not_found_expected: bool = False,
     ) -> dict[str, Any]:
         if not self._api_key:
             raise VoiceDesignError("GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in .env")
@@ -296,7 +301,7 @@ class GeminiVoiceDesignClient:
             ) from exc
 
         if response.status_code != 200:
-            raise _voice_request_error("GET", response)
+            raise _voice_request_error("GET", response, not_found_expected=not_found_expected)
         try:
             data = response.json()
         except ValueError as exc:
@@ -341,7 +346,7 @@ class GeminiVoiceDesignClient:
 
     async def get_voice(self, voice_id: str) -> ProviderVoice:
         canonical_id = canonical_voice_id(voice_id)
-        data = await self._get_json(f"{self._endpoint}/{canonical_id}")
+        data = await self._get_json(f"{self._endpoint}/{canonical_id}", not_found_expected=True)
         return _provider_voice_from_payload(data)
 
     async def delete_voice(self, voice_id: str) -> None:

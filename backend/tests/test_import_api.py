@@ -285,7 +285,7 @@ def test_import_draft_reanalysis_uses_editor_fountain_without_publishing_a_docum
     analyzed_sources: list[str] = []
 
     class Analyzer:
-        def analyze(self, fountain, _on_progress, *, expected_characters=None):
+        def analyze(self, fountain, _on_progress, *, expected_characters=None, source_character_cards=()):
             analyzed_sources.append(fountain)
             assert expected_characters is None
             return CanonicalAnalysis(
@@ -542,8 +542,12 @@ def test_invalid_generated_response_does_not_log_source_or_intermediate_input(ca
     adapter.adapt_text = fail
     content = "合成した物語を読み取る検証です。".encode()
     imported = validate_import(
-        "synthetic.txt", content, 1024 * 1024,
-        pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.7,
+        "synthetic.txt",
+        content,
+        1024 * 1024,
+        pdf_max_pages=100,
+        fdx_max_depth=32,
+        txt_minimum_confidence=0.7,
     )
     task_id = service.start("owner-1", imported)
     with caplog.at_level(logging.ERROR):
@@ -667,6 +671,47 @@ class FakeNarrativeAdapter:
         return result
 
 
+@pytest.mark.parametrize("revised", [False, True])
+def test_novel_import_passes_source_cards(monkeypatch, revised):
+    from narravant.services.narrative_adaptation import CharacterKnowledge, SourceCharacterCard
+
+    adapter = FakeNarrativeAdapter()
+    original_adapt = adapter.adapt_text
+    knowledge = CharacterKnowledge(
+        character_name="石松",
+        evidence_event_ids=["ev_synthetic"],
+        defining_traits=["原文だけにある老職人の低くかすれた声"],
+        state_by_event={"ev_synthetic": "この場面では怒っている"},
+    )
+
+    def adapt(*args, **kwargs):
+        return replace(original_adapt(*args, **kwargs), character_knowledge=(knowledge,))
+
+    monkeypatch.setattr(adapter, "adapt_text", adapt)
+    if revised:
+        adapter.revised_fountain = adapter.fountain.replace("Adapted scene.", "Revised scene.")
+    analyzer = FakeDocumentAnalyzer()
+    received = []
+    original_analyze = analyzer.analyze
+
+    def analyze(*args, source_character_cards=(), **kwargs):
+        received.append(source_character_cards)
+        return original_analyze(*args, **kwargs)
+
+    monkeypatch.setattr(analyzer, "analyze", analyze)
+    service, _, _, _ = _service_with_adapter(adapter, analyzer)
+    content = "合成した短い小説本文です。".encode()
+    imported = validate_import(
+        "synthetic.txt", content, 1048576, pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.7
+    )
+    task_id = service.start("owner-1", imported)
+    service.run(task_id, content)
+    expected = (SourceCharacterCard("石松", ("原文だけにある老職人の低くかすれた声",)),)
+    assert received == [expected] * (2 if revised else 1)
+    if revised:
+        assert received[0] is received[1]
+
+
 class FakeDocumentAnalyzer:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -687,6 +732,36 @@ class FakeDocumentAnalyzer:
         self.normalize_languages.append(source_language)
         return self.fountain
 
+    def extract_screenplay_character_cards_text(
+        self,
+        source_text,
+        speakers,
+        on_progress,
+        *,
+        deadline,
+        source_language,
+        ensure_not_cancelled=None,
+    ):
+        if ensure_not_cancelled:
+            ensure_not_cancelled()
+        self.calls.append("extract_screenplay_character_cards_text")
+        return ()
+
+    def extract_screenplay_character_cards_pdf(
+        self,
+        source_pdf,
+        speakers,
+        on_progress,
+        *,
+        deadline,
+        source_language,
+        ensure_not_cancelled=None,
+    ):
+        if ensure_not_cancelled:
+            ensure_not_cancelled()
+        self.calls.append("extract_screenplay_character_cards_pdf")
+        return ()
+
     def normalize_screenplay_pdf(self, pdf_bytes: bytes, on_progress=None, deadline=None) -> str:
         self.calls.append("normalize_screenplay_pdf")
         return self.fountain
@@ -700,6 +775,7 @@ class FakeDocumentAnalyzer:
         source_filename: str | None = None,
         expected_characters: list[str] | None = None,
         source_language: str = "und",
+        source_character_cards=(),
     ) -> CanonicalAnalysis:
         self.calls.append("analyze")
         self.analyzed_fountains.append(fountain)
@@ -801,6 +877,169 @@ def _service_with_adapter(
     return service, repository, storage, tasks
 
 
+@pytest.mark.parametrize("extension", [".fountain", ".fdx", ".txt", ".pdf"])
+@pytest.mark.parametrize("language", ["ja", "en"])
+def test_screenplay_original_material_reaches_cards_without_persistence(extension, language, monkeypatch, caplog):
+    from narravant.services.narrative_adaptation import SourceCharacterCard
+
+    original = "原文紹介SENTINEL: 石松は老職人。" if language == "ja" else "SOURCE_SENTINEL: An elderly craftsman."
+    spoken = (
+        "ここでしばらく待っていれば、みんながきっと迎えに来てくれるでしょう。"
+        if language == "ja"
+        else "She was waiting with the children and they were looking for their friend."
+    )
+    analyzer = FakeDocumentAnalyzer()
+    analyzer.fountain = f"Title: Script\n\nINT. ROOM - DAY #1#\n\n@石松\n{spoken}\n"
+    content = original.encode()
+    if extension == ".fdx":
+        content = (
+            f"<FinalDraft><Content><Paragraph Type='Action'><Text>{original}</Text></Paragraph></Content></FinalDraft>"
+        ).encode()
+    elif extension == ".pdf":
+        output = BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.write(output)
+        content = output.getvalue()
+    imported = validate_import(
+        "synthetic" + extension, content, 1048576, pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.7
+    )
+    received = []
+    cards = (SourceCharacterCard("石松", ("中間カードSENTINEL: 老職人の低い声",)),)
+
+    def extract(material, speakers, on_progress, *, deadline, source_language, ensure_not_cancelled):
+        assert material == (content if extension == ".pdf" else imported.text)
+        assert speakers == ["石松"], repr(speakers)
+        assert source_language == language
+        ensure_not_cancelled()
+        received.append(("extract", deadline))
+        return cards
+
+    original_analyze = analyzer.analyze
+
+    def analyze(*args, source_character_cards=(), **kwargs):
+        assert source_character_cards is cards
+        received.append(("analyze", kwargs["processing_deadline"]))
+        result = original_analyze(*args, **kwargs)
+        result.characters[0]["voice_traits"] = "低く落ち着いた職人の声"
+        return result
+
+    monkeypatch.setattr(
+        analyzer,
+        "extract_screenplay_character_cards_pdf" if extension == ".pdf" else "extract_screenplay_character_cards_text",
+        extract,
+    )
+    monkeypatch.setattr(analyzer, "analyze", analyze)
+    adapter = FakeNarrativeAdapter(text_kind=SourceKind.SCREENPLAY, pdf_kind=SourceKind.SCREENPLAY)
+    service, repo, storage, tasks = _service_with_adapter(adapter, analyzer)
+    task_id = service.start("owner-1", imported)
+    with caplog.at_level(logging.INFO):
+        service.run(task_id, content)
+    draft = service.drafts.get(task_id)
+    assert draft is not None, repr(received)
+    assert received[0][0] == "extract" and received[1] == ("analyze", received[0][1])
+    view = json.dumps(
+        {
+            "draft": draft_response(draft).model_dump(mode="json"),
+            "events": [e.payload for e in tasks.events_after(task_id, 0)],
+            "db": tasks.repository.get(task_id),
+        },
+        ensure_ascii=False,
+    )
+    for sentinel in [original, "中間カードSENTINEL", "source_character_cards", "source_anchor"]:
+        assert sentinel not in view and sentinel not in caplog.text
+    assert "低く落ち着いた職人の声" in view
+    assert repo.list_documents(limit=10, offset=0)[1] == 0
+    assert storage._objects == {}
+    assert adapter.initial_analyses == []
+
+
+@pytest.mark.parametrize("failure", ["cancel", "deadline", "invalid"])
+def test_screenplay_extraction_failure_never_analyzes_or_publishes(failure, monkeypatch):
+    import narravant.services.ingestion as ingestion
+
+    analyzer = FakeDocumentAnalyzer()
+    service, repo, storage, tasks = _service_with_adapter(analyzer=analyzer)
+    imported = validate_import(
+        "synthetic.fountain",
+        b"INT. ROOM - DAY\n\nAction.",
+        1048576,
+        pdf_max_pages=100,
+        fdx_max_depth=32,
+        txt_minimum_confidence=0.7,
+    )
+    task_id = service.start("owner-1", imported)
+
+    def extract(*args, ensure_not_cancelled, deadline, **kwargs):
+        if failure == "cancel":
+            tasks.request_cancel(task_id)
+            ensure_not_cancelled()
+        if failure == "deadline":
+            monkeypatch.setattr(ingestion, "monotonic", lambda: deadline + 1)
+            return ()
+        raise ValueError("source_voice_trait_evidence_invalid")
+
+    monkeypatch.setattr(analyzer, "extract_screenplay_character_cards_text", extract)
+    service.run(task_id, b"INT. ROOM - DAY\n\nAction.")
+    assert "analyze" not in analyzer.calls
+    assert service.drafts.get(task_id) is None
+    assert repo.list_documents(limit=10, offset=0)[1] == 0
+    assert storage._objects == {}
+    assert tasks.events_after(task_id, 0)[-1].event_type in {"cancelled", "error"}
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_real_source_extractor_in_import_route(monkeypatch, invalid):
+    from test_source_voice_traits import make_analyzer
+
+    extractor = make_analyzer()
+    extractor.text_reader_source_unit_max_characters = 24000
+    extractor.text_reader_source_unit_overlap_characters = 3000
+    analyzer = FakeDocumentAnalyzer()
+    analyzer.fountain = "Title: Script\n\nINT. ROOM - DAY #1#\n\n@石松\nここで待とう。\n"
+    calls = []
+
+    def collect(**kwargs):
+        calls.append(kwargs)
+        material = json.loads(kwargs["contents"].split("\n")[-1])["source_material"][0]
+        anchor = material["anchor"]
+        if invalid:
+            anchor["end_offset"] += 1
+        return SimpleNamespace(
+            text=json.dumps(
+                {"traits": [{"character_name": "石松", "description": "老職人の低い声", "evidence": anchor}]}
+            )
+        )
+
+    extractor._collect_stream_text = collect
+    monkeypatch.setattr(
+        analyzer, "extract_screenplay_character_cards_text", extractor.extract_screenplay_character_cards_text
+    )
+    received = []
+    original_analyze = analyzer.analyze
+
+    def analyze(*args, source_character_cards=(), **kwargs):
+        received.extend(source_character_cards)
+        return original_analyze(*args, **kwargs)
+
+    monkeypatch.setattr(analyzer, "analyze", analyze)
+    service, _, _, tasks = _service_with_adapter(analyzer=analyzer)
+    content = "石松は低い声の老職人である。".encode()
+    imported = validate_import(
+        "synthetic.fountain", content, 1048576, pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.7
+    )
+    task_id = service.start("owner-1", imported)
+    service.run(task_id, content)
+    if invalid:
+        assert len(calls) == 2 and not received
+        assert service.drafts.get(task_id) is None
+        assert tasks.events_after(task_id, 0)[-1].event_type == "error"
+    else:
+        assert len(calls) == 1
+        assert received[0].defining_traits == ("老職人の低い声",)
+        assert service.drafts.get(task_id) is not None
+
+
 def test_import_routes_screenplay_and_prose_correctly() -> None:
     # 1. .fountain -> normalize_screenplay_text -> analyze (no adapter)
     adapter = FakeNarrativeAdapter()
@@ -817,7 +1056,7 @@ def test_import_routes_screenplay_and_prose_correctly() -> None:
     )
     task_id = service.start("owner-1", imported)
     service.run(task_id, content)
-    assert analyzer.calls == ["normalize_screenplay_text", "analyze"]
+    assert analyzer.calls == ["normalize_screenplay_text", "extract_screenplay_character_cards_text", "analyze"]
     assert adapter.calls == []
 
     # 2. .fdx -> normalize_screenplay_text -> analyze (no adapter)
@@ -838,7 +1077,7 @@ def test_import_routes_screenplay_and_prose_correctly() -> None:
     )
     task_id = service.start("owner-1", imported)
     service.run(task_id, fdx_content)
-    assert analyzer.calls == ["normalize_screenplay_text", "analyze"]
+    assert analyzer.calls == ["normalize_screenplay_text", "extract_screenplay_character_cards_text", "analyze"]
     assert adapter.calls == []
 
     # 3. .txt (SCREENPLAY) -> classify_text -> normalize_screenplay_text -> analyze
@@ -857,7 +1096,7 @@ def test_import_routes_screenplay_and_prose_correctly() -> None:
     task_id = service.start("owner-1", imported)
     service.run(task_id, txt_content)
     assert adapter.calls == ["classify_text"]
-    assert analyzer.calls == ["normalize_screenplay_text", "analyze"]
+    assert analyzer.calls == ["normalize_screenplay_text", "extract_screenplay_character_cards_text", "analyze"]
 
     # 4. .txt (NARRATIVE_PROSE) -> classify_text -> adapt_text -> analyze
     adapter = FakeNarrativeAdapter(text_kind=SourceKind.NARRATIVE_PROSE)
@@ -954,7 +1193,7 @@ def test_import_does_not_publish_when_final_analysis_verification_fails() -> Non
     task_id = service.start("owner-1", imported)
     service.run(task_id, pdf_bytes)
     assert adapter.calls == ["classify_pdf"]
-    assert analyzer.calls == ["normalize_screenplay_pdf", "analyze"]
+    assert analyzer.calls == ["normalize_screenplay_pdf", "extract_screenplay_character_cards_pdf", "analyze"]
 
     # 6. .pdf (NARRATIVE_PROSE) -> classify_pdf -> adapt_pdf -> analyze
     adapter = FakeNarrativeAdapter(pdf_kind=SourceKind.NARRATIVE_PROSE)
@@ -1447,8 +1686,7 @@ def test_all_import_formats_reject_invalid_cue_at_final_boundary(
     filename: str, ext: str, is_pdf: bool, text_kind: SourceKind, pdf_kind: SourceKind
 ) -> None:
     invalid_fountain = (
-        "Title: Test\n\nINT. CABIN - DAY #1#\n\n"
-        "@MAYA stands beside @JON, watching the rain.\nThe shutter rattles.\n"
+        "Title: Test\n\nINT. CABIN - DAY #1#\n\n@MAYA stands beside @JON, watching the rain.\nThe shutter rattles.\n"
     )
     analyzer = FakeDocumentAnalyzer()
     analyzer.fountain = invalid_fountain

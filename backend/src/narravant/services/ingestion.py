@@ -7,7 +7,7 @@ import logging
 import re
 import unicodedata
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
@@ -51,6 +51,7 @@ from narravant.domain.tasks import TERMINAL_TASK_STATUSES, TaskStatus
 from narravant.services.narrative_adaptation import (
     AdaptationResult,
     NarrativeAdaptationError,
+    SourceCharacterCard,
     SourceKind,
 )
 from narravant.services.tasks import TaskManager
@@ -243,7 +244,30 @@ class DocumentAnalyzer(Protocol):
         source_filename: str | None = None,
         expected_characters: list[str] | None = None,
         source_language: SourceLanguage = "und",
+        source_character_cards: Sequence[SourceCharacterCard] = (),
     ) -> CanonicalAnalysis: ...
+
+    def extract_screenplay_character_cards_text(
+        self,
+        source_text: str,
+        speakers: Sequence[str],
+        on_progress: ProgressReporter,
+        *,
+        deadline: float,
+        source_language: SourceLanguage,
+        ensure_not_cancelled: Callable[[], None] | None = None,
+    ) -> tuple[SourceCharacterCard, ...]: ...
+
+    def extract_screenplay_character_cards_pdf(
+        self,
+        source_pdf: bytes,
+        speakers: Sequence[str],
+        on_progress: ProgressReporter,
+        *,
+        deadline: float,
+        source_language: SourceLanguage,
+        ensure_not_cancelled: Callable[[], None] | None = None,
+    ) -> tuple[SourceCharacterCard, ...]: ...
 
 
 class NarrativeAdapter(Protocol):
@@ -486,12 +510,40 @@ class ImportService:
                         "message": "構造と感情アークを分析しています。",
                     },
                 )
+                if source_language == "und":
+                    source_language = infer_source_language(utterance_text)
+                if adaptation_result is not None:
+                    source_cards = adaptation_result.source_character_cards
+                else:
+                    normalized_speakers = parsed_source.dialogue_character_names()
+                    if imported.extension == ".pdf":
+                        source_cards = self.analyzer.extract_screenplay_character_cards_pdf(
+                            content,
+                            normalized_speakers,
+                            self._stream_reporter(task_id, "analyzing", 65),
+                            deadline=deadline,
+                            source_language=source_language,
+                            ensure_not_cancelled=lambda: self._ensure_not_cancelled(task_id),
+                        )
+                    else:
+                        source_cards = self.analyzer.extract_screenplay_character_cards_text(
+                            _required_text(imported),
+                            normalized_speakers,
+                            self._stream_reporter(task_id, "analyzing", 65),
+                            deadline=deadline,
+                            source_language=source_language,
+                            ensure_not_cancelled=lambda: self._ensure_not_cancelled(task_id),
+                        )
+                self._ensure_not_cancelled(task_id)
+                if monotonic() >= deadline:
+                    raise VertexStreamTimeoutError("processing", self.processing_timeout_seconds)
                 analysis = self.analyzer.analyze(
                     source_fountain,
                     self._stream_reporter(task_id, "analyzing", 65),
                     processing_deadline=deadline,
                     source_filename=imported.filename,
                     source_language=source_language,
+                    source_character_cards=source_cards,
                 )
                 if adaptation_result is not None:
                     self._ensure_not_cancelled(task_id)
@@ -515,9 +567,7 @@ class ImportService:
                                 "INVALID_SCRIPT_STRUCTURE",
                                 "生成された脚本にシーンまたは発話がありません。",
                             )
-                        utterance_text = "\n".join(
-                            item.text for item in parsed_source.all_utterances()
-                        )
+                        utterance_text = "\n".join(item.text for item in parsed_source.all_utterances())
                         validate_text_language(utterance_text, source_language)
                         self._ensure_not_cancelled(task_id)
                         analysis = self.analyzer.analyze(
@@ -526,6 +576,7 @@ class ImportService:
                             processing_deadline=deadline,
                             source_filename=imported.filename,
                             source_language=source_language,
+                            source_character_cards=source_cards,
                         )
                         final_verification = self.adapter.verify_after_analysis(
                             adaptation_result,

@@ -15,7 +15,7 @@ import { voiceLibraryKey } from './voice-assignments'
 export interface VoiceLibraryDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSelect?: (voice: VoiceSummary) => void
+  onSelect?: (voice: VoiceSummary) => boolean | void | Promise<boolean | void>
   onVoicesChange?: (voices: VoiceSummary[]) => void
   onVoiceDeleted?: (voice: VoiceSummary) => void
   selectedVoiceId?: string
@@ -59,7 +59,8 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
   const [loading, setLoading] = useState(false)
   const [busyVoiceId, setBusyVoiceId] = useState<string>()
   const [error, setError] = useState('')
-  const [deleteTarget, setDeleteTarget] = useState<{ voice: VoiceSummary; usages: VoiceUsageList }>()
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
+  const [deleteTargets, setDeleteTargets] = useState<{ voice: VoiceSummary; usages: VoiceUsageList }[]>([])
   const [deleting, setDeleting] = useState(false)
   const deleteInFlight = useRef(false)
   const refreshGeneration = useRef(0)
@@ -81,6 +82,7 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
       const result = await listVoices()
       if (generation !== refreshGeneration.current) return
       setVoices(result.voices)
+      setCheckedIds((current) => new Set([...current].filter((id) => result.voices.some((voice) => voice.voice_id === id))))
       voicesChangeRef.current?.(result.voices)
       if (!result.complete) setError(translationRef.current('analysis:voices.libraryIncomplete'))
     } catch (cause) {
@@ -115,7 +117,10 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
         setError(t('analysis:voices.voiceCannotBeAssigned'))
         return
       }
-      onSelect(current)
+      if (await onSelect(current) === false) {
+        setError(t('analysis:voices.temporaryDeleteFailed'))
+        return
+      }
       onOpenChange(false)
     } catch (cause) {
       setError(errorMessage(cause, tErrors))
@@ -146,18 +151,25 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
     }
   }
 
-  const prepareDelete = async (voice: VoiceSummary) => {
-    if (busyVoiceId) return
-    setBusyVoiceId(voice.voice_id)
+  const prepareDelete = async () => {
+    if (busyVoiceId || deleting || deleteInFlight.current) return
+    const targets = voices.filter((voice) => checkedIds.has(voice.voice_id))
+    if (!targets.length) return
+    setBusyVoiceId(targets[0].voice_id)
     setError('')
     try {
-      const usages = await getVoiceUsages(voice.voice_id)
-      setUsagesByVoice((current) => ({ ...current, [voice.voice_id]: usages }))
-      if (!usages.complete) {
-        setError(t('analysis:voices.libraryIncomplete'))
-        return
+      const checked = []
+      // 選択した全声の利用先を確認してから、一括の削除確認を出す。
+      for (const voice of targets) {
+        const usages = await getVoiceUsages(voice.voice_id)
+        setUsagesByVoice((current) => ({ ...current, [voice.voice_id]: usages }))
+        if (!usages.complete) {
+          setError(t('analysis:voices.libraryIncomplete'))
+          return
+        }
+        checked.push({ voice, usages })
       }
-      setDeleteTarget({ voice, usages })
+      setDeleteTargets(checked)
     } catch (cause) {
       setError(errorMessage(cause, tErrors))
     } finally {
@@ -166,33 +178,64 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
   }
 
   const confirmDelete = async () => {
-    if (!deleteTarget || deleteInFlight.current || !deleteTarget.usages.complete) return
+    if (!deleteTargets.length || deleteInFlight.current || deleteTargets.some(({ usages }) => !usages.complete)) return
     deleteInFlight.current = true
     setDeleting(true)
+    let deletedCount = 0
+    let remaining = voices
     try {
-      await deleteVoice(deleteTarget.voice.voice_id)
-      // Ignore list responses started before this mutation, or they can restore a deleted voice.
-      refreshGeneration.current += 1
-      setLoading(false)
-      const remaining = voices.filter((voice) => voice.voice_id !== deleteTarget.voice.voice_id)
-      setVoices(remaining)
-      onVoicesChange?.(remaining)
-      onVoiceDeleted?.(deleteTarget.voice)
-      setUsagesByVoice((current) => {
-        const next = { ...current }
-        delete next[deleteTarget.voice.voice_id]
-        return next
-      })
-      setDeleteTarget(undefined)
-      toast.success(t('analysis:voices.voiceDeleted'))
+      for (const { voice } of deleteTargets) {
+        // timeoutでは実際の削除結果が不明なため、DELETEを自動再試行しない。
+        await deleteVoice(voice.voice_id)
+        deletedCount += 1
+        // 削除前に始まった一覧取得の応答で声を復活させない。
+        refreshGeneration.current += 1
+        setLoading(false)
+        remaining = remaining.filter((item) => item.voice_id !== voice.voice_id)
+        setVoices(remaining)
+        onVoicesChange?.(remaining)
+        onVoiceDeleted?.(voice)
+        setCheckedIds((current) => {
+          const next = new Set(current)
+          next.delete(voice.voice_id)
+          return next
+        })
+        setUsagesByVoice((current) => {
+          const next = { ...current }
+          delete next[voice.voice_id]
+          return next
+        })
+      }
+      toast.success(t('analysis:voices.voicesDeleted', { count: deletedCount }))
     } catch (cause) {
-      const message = errorMessage(cause, tErrors)
+      const message = t('analysis:voices.bulkDeleteFailed', { count: deletedCount, message: errorMessage(cause, tErrors) })
       setError(message)
       toast.error(message)
     } finally {
+      setDeleteTargets([])
       deleteInFlight.current = false
       setDeleting(false)
     }
+  }
+
+  const blocked = Boolean(busyVoiceId) || deleting
+  const changeOpen = (nextOpen: boolean) => {
+    if (blocked) return
+    if (!nextOpen) {
+      refreshGeneration.current += 1
+      setCheckedIds(new Set())
+      setDeleteTargets([])
+    }
+    onOpenChange(nextOpen)
+  }
+  const allChecked = voices.length > 0 && voices.every((voice) => checkedIds.has(voice.voice_id))
+  const toggleChecked = (voiceId: string) => {
+    setCheckedIds((current) => {
+      const next = new Set(current)
+      if (next.has(voiceId)) next.delete(voiceId)
+      else next.add(voiceId)
+      return next
+    })
   }
 
   const assignedVoiceIdSet = new Set(assignedVoiceIds.map(voiceLibraryKey))
@@ -220,7 +263,7 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
   })
 
   return <>
-    <Dialog onOpenChange={onOpenChange} open={open}>
+    <Dialog onOpenChange={changeOpen} open={open}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t('analysis:voices.libraryTitle')}</DialogTitle>
@@ -229,6 +272,15 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
         {error && <p className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-sm text-destructive" role="alert">{error}</p>}
         {loading && voices.length === 0 && <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status"><LoaderCircle className="size-4 animate-spin" />{t('analysis:voices.libraryLoading')}</p>}
         {!loading && voices.length === 0 && !error && <p className="text-sm text-muted-foreground">{t('analysis:voices.libraryEmpty')}</p>}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input aria-checked={allChecked ? true : checkedIds.size > 0 ? 'mixed' : false} checked={allChecked} className="size-4" disabled={blocked || voices.length === 0} onChange={() => setCheckedIds(allChecked ? new Set() : new Set(voices.map((voice) => voice.voice_id)))} ref={(element) => { if (element) element.indeterminate = !allChecked && checkedIds.size > 0 }} type="checkbox" />
+            {t('analysis:voices.selectAll')}
+          </label>
+          <Button disabled={blocked || checkedIds.size === 0} onClick={() => { void prepareDelete() }} size="sm" variant="destructive">
+            {busyVoiceId ? <LoaderCircle className="animate-spin" /> : <Trash2 />}{t('analysis:voices.deleteSelected', { count: checkedIds.size })}
+          </Button>
+        </div>
         <div aria-label={t('analysis:voices.libraryTitle')} className="space-y-3" role="list">
           {sortedVoices.map((voice) => {
             const expandedUsages = usagesByVoice[voice.voice_id]
@@ -239,7 +291,10 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
             return <article className="space-y-2 rounded-md border p-3" key={voice.voice_id} role="listitem">
               <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3">
                 <div className="min-w-0 space-y-1">
-                  <h3 className="break-words font-medium">{voice.display_name || voice.speaker_label || voice.voice_id}</h3>
+                  <div className="flex items-start gap-2">
+                    <input aria-label={t('analysis:voices.selectVoice', { voice: voice.display_name || voice.speaker_label || voice.voice_id })} checked={checkedIds.has(voice.voice_id)} className="mt-1 size-4 shrink-0" disabled={blocked} onChange={() => toggleChecked(voice.voice_id)} type="checkbox" />
+                    <h3 className="break-words font-medium">{voice.display_name || voice.speaker_label || voice.voice_id}</h3>
+                  </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="min-w-0 break-all font-mono text-xs text-muted-foreground">{voice.voice_id}</p>
                     {selectedVoiceId && voiceLibraryKey(selectedVoiceId) === voice.voice_id && <Badge variant="secondary">{t('analysis:voices.currentlyAssigned')}</Badge>}
@@ -253,7 +308,7 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
                   </>}{expiresAt
                     ? t('analysis:voices.expiresAt', { date: expiresAt })
                     : t('analysis:voices.expiryUnknown')}</p>
-                  <Button aria-controls={`voice-usages-${voice.voice_id}`} aria-expanded={Boolean(expandedUsages)} className="h-auto justify-start gap-1 p-0 text-xs text-muted-foreground" disabled={Boolean(busyVoiceId)} onClick={() => { void toggleUsages(voice) }} size="sm" variant="ghost">
+                  <Button aria-controls={`voice-usages-${voice.voice_id}`} aria-expanded={Boolean(expandedUsages)} className="h-auto justify-start gap-1 p-0 text-xs text-muted-foreground" disabled={blocked} onClick={() => { void toggleUsages(voice) }} size="sm" variant="ghost">
                     {voice.usage_count === null
                       ? t('analysis:voices.usageCountUnknown')
                       : t('analysis:voices.usageCount', { count: voice.usage_count })}
@@ -261,12 +316,9 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
                   </Button>
                 </div>
                 <div className="flex shrink-0 items-start justify-end gap-1">
-                  {onSelect && <Button disabled={Boolean(busyVoiceId) || !isUsable(voice)} onClick={() => { void selectVoice(voice) }} size="sm" variant="default">
+                  {onSelect && <Button disabled={blocked || !isUsable(voice)} onClick={() => { void selectVoice(voice) }} size="sm" variant="default">
                     {busyVoiceId === voice.voice_id ? <LoaderCircle className="animate-spin" /> : null}{t('analysis:voices.useVoice')}
                   </Button>}
-                  <Button aria-label={t('analysis:voices.deleteVoice')} disabled={Boolean(busyVoiceId)} onClick={() => { void prepareDelete(voice) }} size="icon" variant="outline">
-                    {busyVoiceId === voice.voice_id ? <LoaderCircle className="animate-spin" /> : <Trash2 className="text-destructive" />}
-                  </Button>
                 </div>
               </div>
               <div className="rounded bg-muted/40 p-2 text-sm" hidden={!expandedUsages} id={`voice-usages-${voice.voice_id}`}>
@@ -281,24 +333,29 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
           })}
         </div>
         <DialogFooter>
-          <Button disabled={loading} onClick={() => { void refresh() }} variant="outline">{loading ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}{t('analysis:voices.refreshLibrary')}</Button>
-          <Button onClick={() => onOpenChange(false)} variant="outline">{t('common:actions.close')}</Button>
+          <Button disabled={loading || blocked || deleteTargets.length > 0} onClick={() => { void refresh() }} variant="outline">{loading ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}{t('analysis:voices.refreshLibrary')}</Button>
+          <Button disabled={blocked} onClick={() => changeOpen(false)} variant="outline">{t('common:actions.close')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
-    <AlertDialog onOpenChange={(nextOpen) => { if (!nextOpen && !deleting) setDeleteTarget(undefined) }} open={Boolean(deleteTarget)}>
-      <AlertDialogContent>
+    <AlertDialog onOpenChange={(nextOpen) => { if (!nextOpen && !deleting) setDeleteTargets([]) }} open={deleteTargets.length > 0}>
+      <AlertDialogContent className="max-h-[85vh] overflow-y-auto">
         <AlertDialogHeader>
-          <AlertDialogTitle>{t('analysis:voices.deleteTitle')}</AlertDialogTitle>
+          <AlertDialogTitle>{t('analysis:voices.deleteSelectedTitle', { count: deleteTargets.length })}</AlertDialogTitle>
           <AlertDialogDescription>
-            {deleteTarget && t('analysis:voices.deleteDescription', { voice: deleteTarget.voice.display_name || deleteTarget.voice.speaker_label || deleteTarget.voice.voice_id })}
-            {deleteTarget?.usages.usages.map((usage) => <span className="mt-1 block" key={`${usage.document_id}-${usage.speaker}`}>{usage.title} ; {usage.speaker}</span>)}
+            {t('analysis:voices.deleteSelectedDescription', { count: deleteTargets.length })}
+            {deleteTargets.map(({ voice, usages }) => <span className="mt-2 block" key={voice.voice_id}>
+              <span className="block font-medium">{voice.display_name || voice.speaker_label || voice.voice_id}</span>
+              {usages.usages.length === 0
+                ? <span className="block">{t('analysis:voices.noUsages')}</span>
+                : usages.usages.map((usage) => <span className="block" key={`${usage.document_id}-${usage.speaker}`}>{usage.title} ; {usage.speaker}</span>)}
+            </span>)}
             <span className="mt-2 block">{t('analysis:voices.deleteImpact')}</span>
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={deleting}>{t('common:actions.cancel')}</AlertDialogCancel>
-          <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={deleting || !deleteTarget?.usages.complete} onClick={(event) => { event.preventDefault(); void confirmDelete() }}>
+          <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={deleting || !deleteTargets.length || deleteTargets.some(({ usages }) => !usages.complete)} onClick={(event) => { event.preventDefault(); void confirmDelete() }}>
             {deleting ? <LoaderCircle className="animate-spin" /> : <Trash2 />}{deleting ? t('analysis:voices.deletingVoice') : t('common:actions.delete')}
           </AlertDialogAction>
         </AlertDialogFooter>

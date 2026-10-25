@@ -23,11 +23,13 @@ from narravant.api.errors import ApiError, ApiErrorCode, ApiErrorEnvelope
 from narravant.api.voice_schemas import VoiceListResponse, VoiceSummary, VoiceUsageResponse
 from narravant.db.database import DocumentRepository
 from narravant.db.voice_registry import VoiceRegistryRepository
+from narravant.services.speech_segments import SegmentVoice, SpeechSegment
 from narravant.services.tts import TtsClient, TtsError
 from narravant.services.voice_design import VoiceDesignClient, VoiceDesignError
 from narravant.services.voice_design_errors import safe_provider_code, safe_provider_status
 from narravant.services.voice_management import VoiceManagementError, VoiceManagementService
 from narravant.services.voice_models import StoredVoiceRecord, canonical_voice_id, utc_iso
+from narravant.services.voice_prompt_guidance import split_voice_traits
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/documents", tags=["voices"])
@@ -73,11 +75,15 @@ async def _create_voice(
     owner_lock: asyncio.Lock | None = None,
 ) -> CreateVoiceResponse:
     """Create a voice without persisting an assignment."""
+    design_traits, delivery = split_voice_traits(request.voice_traits)
+    language_code = request.language_code
+    if "language_code" not in request.model_fields_set and delivery and request.voice_traits.startswith("Voice:"):
+        language_code = "en-US"
     try:
         created_voice = await voice_client.create_voice(
             speaker=request.speaker,
-            voice_traits=request.voice_traits,
-            language_code=request.language_code,
+            voice_traits=design_traits,
+            language_code=language_code,
             display_name=request.display_name,
         )
         try:
@@ -139,7 +145,7 @@ async def _create_voice(
         voice_id=voice_id,
         speaker_label=request.speaker,
         voice_traits=request.voice_traits,
-        language_code=request.language_code,
+        language_code=language_code,
         created_at=created_at,
         created_at_source="local_response",
         registered_at=created_at,
@@ -187,13 +193,20 @@ async def _preview_voice(
         )
     except VoiceManagementError as exc:
         _raise_voice_management_http_error(exc)
+    # 明示したstyle（空文字を含む）を優先し、省略時だけ保存した読み方を使う。
+    preview_style = request.style
+    record = voice_service.registry.get(owner_user_id, canonical_voice_id(request.voice_id))
+    if "style" not in request.model_fields_set and record and record.voice_traits:
+        preview_style = split_voice_traits(record.voice_traits)[1]
+    language_code = request.language_code
+    if "language_code" not in request.model_fields_set and record and record.language_code:
+        language_code = record.language_code
     try:
         chunks: list[bytes] = []
-        async for chunk in tts_client.synthesize_stream(
-            text=request.text,
-            voice_id=request.voice_id,
-            style=request.style,
-        ):
+        segment = SpeechSegment(
+            request.text, SegmentVoice("speaker", request.voice_id), None, preview_style, language_code
+        )
+        async for chunk in tts_client.synthesize_segment_stream(segment):
             chunks.append(chunk)
     except TtsError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc

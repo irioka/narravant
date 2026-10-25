@@ -283,7 +283,8 @@ def test_analysis_prompt_separates_stable_voice_traits_from_scene_direction() ->
     """Voice Design traits stay source-grounded; line acting belongs to Fountain."""
     parsed = FountainParser.parse("Title: Sample\\n\\nINT. ROOM - DAY #1#\\n\\nA line.\\n")
     prompt = VertexDocumentAnalyzer._analysis_prompt(parsed, max_main_characters=6)
-    assert "Output exactly one or two short sentences" in prompt
+    assert "TWO non-empty single-line sections" in prompt
+    assert "one or two concise sentences per section" in prompt
     assert "scene-specific emotions" in prompt
     assert "Fountain parentheticals and TTS speech style" in prompt
     assert "natural human voice only" in prompt

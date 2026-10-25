@@ -90,7 +90,8 @@ async def test_fake_tts_failure_injection(fake_tts: FakeTtsClient):
 
 
 @pytest.mark.asyncio
-async def test_gemini_tts_retries_transient_503_before_audio(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("threshold", ["BLOCK_NONE", "BLOCK_ONLY_HIGH"])
+async def test_gemini_tts_retries_transient_503_before_audio(monkeypatch: pytest.MonkeyPatch, threshold):
     audio = base64.b64encode(b"\x00\x01").decode("ascii")
     payload = json.dumps({"candidates": [{"content": {"parts": [{"inlineData": {"data": audio}}]}}]})
     _StubAsyncClient.responses = [
@@ -99,11 +100,21 @@ async def test_gemini_tts_retries_transient_503_before_audio(monkeypatch: pytest
     ]
     monkeypatch.setattr("narravant.services.tts.httpx.AsyncClient", _StubAsyncClient)
 
-    client = GeminiTtsClient(api_key="test", max_attempts=2, retry_backoff_seconds=0)
+    _StubAsyncClient.requests = []
+    client = GeminiTtsClient(api_key="test", max_attempts=2, retry_backoff_seconds=0, safety_threshold=threshold)
     chunks = [chunk async for chunk in client.synthesize_stream(text="テスト", voice_id="voice-1")]
 
     assert chunks == [b"\x00\x01"]
     assert _StubAsyncClient.responses == []
+    assert len(_StubAsyncClient.requests) == 2
+    for _, kwargs in _StubAsyncClient.requests:
+        assert {item["category"]: item["threshold"] for item in kwargs["json"]["safetySettings"]} == {
+            "HARM_CATEGORY_HARASSMENT": threshold,
+            "HARM_CATEGORY_HATE_SPEECH": threshold,
+            "HARM_CATEGORY_SEXUALLY_EXPLICIT": threshold,
+            "HARM_CATEGORY_DANGEROUS_CONTENT": threshold,
+        }
+        assert "safetySettings" not in kwargs["json"]["generationConfig"]
 
 
 @pytest.mark.asyncio

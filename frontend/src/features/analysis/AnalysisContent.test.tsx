@@ -28,7 +28,7 @@ vi.mock('./audio-decoder', async () => {
   return { ...actual, playPcm16: vi.fn().mockResolvedValue(undefined) }
 })
 
-import { createVoice, getVoice, listVoices, previewVoice } from '@/api/voices'
+import { createVoice, deleteVoice, getVoice, listVoices, previewVoice } from '@/api/voices'
 import { playPcm16 } from './audio-decoder'
 
 const FOUNTAIN = [
@@ -126,6 +126,7 @@ afterEach(() => cleanup())
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(createVoice).mockReset()
+  vi.mocked(deleteVoice).mockReset().mockResolvedValue(undefined)
   vi.mocked(getVoice).mockImplementation(async (voiceId) => availableVoice(voiceId))
 })
 
@@ -530,7 +531,7 @@ describe('AnalysisContent 編集ダイアログの声コントロール', () => 
     await waitFor(() => expect(previewVoice).toHaveBeenCalledWith('doc-test-1', { voice_id: 'voice_abc', text: 'Custom line.' }))
   })
 
-  it('生成ボタンで createVoice を呼び、割当を下書きへ反映する', async () => {
+  it('生成した声はOKで初めて下書きへ反映する', async () => {
     vi.mocked(createVoice).mockResolvedValue({ speaker: 'Alice', voice_id: 'voice-new', voice_traits: '勇敢な少女声' })
     const onDraftChange = vi.fn()
     const user = userEvent.setup()
@@ -542,7 +543,9 @@ describe('AnalysisContent 編集ダイアログの声コントロール', () => 
     await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
 
     await waitFor(() => expect(createVoice).toHaveBeenCalledWith('doc-test-1', { speaker: 'Alice', voice_traits: '勇敢な少女声', display_name: 'Test Script ; Alice' }))
-    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith({ voice_assignments: [{ speaker: 'Alice', voice_id: 'voice-new', voice_traits: '勇敢な少女声' }] }))
+    expect(onDraftChange).not.toHaveBeenCalled()
+    await user.click(within(dialog).getByRole('button', { name: 'OK' }))
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith(expect.objectContaining({ voice_assignments: [{ speaker: 'Alice', voice_id: 'voice-new', voice_traits: '勇敢な少女声' }] })))
   })
 
   it('個別の声生成中は対象話者を表示する', async () => {
@@ -620,9 +623,12 @@ describe('AnalysisContent 声の上限エラー', () => {
     const library = await screen.findByRole('dialog', { name: '作成済みの声' })
     await user.click(within(library).getByRole('button', { name: '割り当てる' }))
 
-    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith({
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '作成済みの声' })).not.toBeInTheDocument())
+    expect(onDraftChange).not.toHaveBeenCalled()
+    await user.click(within(editor).getByRole('button', { name: 'OK' }))
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith(expect.objectContaining({
       voice_assignments: [{ speaker: 'Alice', voice_id: 'voice-shared', voice_traits: '暖かく落ち着いた声' }],
-    }))
+    })))
     expect(getVoice).toHaveBeenCalledWith('voice-shared')
     expect(createVoice).not.toHaveBeenCalled()
   })
@@ -638,6 +644,167 @@ describe('AnalysisContent 声の上限エラー', () => {
   })
 })
 
+
+describe('Character編集の声の仮割当と削除', () => {
+  async function openSession() {
+    const user = userEvent.setup()
+    const onDraftChange = vi.fn()
+    renderContent(documentWithVoice(), onDraftChange)
+    await user.click(screen.getByLabelText('Aliceを開く'))
+    await user.click(screen.getByLabelText('Aliceを編集'))
+    return { user, onDraftChange, dialog: screen.getByRole('dialog') }
+  }
+
+  async function assignExisting(user: ReturnType<typeof userEvent.setup>, editor: HTMLElement) {
+    const existing = availableVoice('voice_existing')
+    vi.mocked(listVoices).mockResolvedValue({ voices: [existing], checked_at: null, complete: true })
+    await user.click(within(editor).getByRole('button', { name: '割り当てる' }))
+    const library = await screen.findByRole('dialog', { name: '作成済みの声' })
+    await user.click(await within(library).findByRole('button', { name: '割り当てる' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '作成済みの声' })).not.toBeInTheDocument())
+  }
+
+  it.each(['キャンセル', 'Close'])('Generate後の%sは新規声だけ削除し、開く前へ戻す', async (closeButton) => {
+    vi.mocked(createVoice).mockResolvedValue({ speaker: 'Alice', voice_id: 'voice_temp', voice_traits: 'synthetic' })
+    const { user, dialog, onDraftChange } = await openSession()
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    await user.click(within(dialog).getByRole('button', { name: closeButton }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(vi.mocked(deleteVoice).mock.calls).toEqual([['voice_temp']])
+    expect(onDraftChange).not.toHaveBeenCalled()
+    await user.click(screen.getByLabelText('Aliceを編集'))
+    vi.mocked(previewVoice).mockResolvedValue(new Uint8Array([1, 2]))
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Alice 再生' }))
+    expect(previewVoice).toHaveBeenLastCalledWith('doc-test-1', expect.objectContaining({ voice_id: 'voice_abc' }))
+  })
+
+  it('再Generateでは前の仮生成声の削除完了を待って作成する', async () => {
+    vi.mocked(createVoice)
+      .mockResolvedValueOnce({ speaker: 'Alice', voice_id: 'voice_temp1', voice_traits: 'synthetic' })
+      .mockResolvedValueOnce({ speaker: 'Alice', voice_id: 'voice_temp2', voice_traits: 'synthetic' })
+    let finishDelete: (() => void) | undefined
+    vi.mocked(deleteVoice).mockImplementationOnce(() => new Promise((resolve) => { finishDelete = () => resolve() }))
+    const { user, dialog, onDraftChange } = await openSession()
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    expect(deleteVoice).not.toHaveBeenCalled()
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    expect(deleteVoice).toHaveBeenCalledExactlyOnceWith('voice_temp1')
+    expect(createVoice).toHaveBeenCalledTimes(1)
+    await act(async () => finishDelete?.())
+    await waitFor(() => expect(createVoice).toHaveBeenCalledTimes(2))
+    await user.click(within(dialog).getByRole('button', { name: 'OK' }))
+    expect(onDraftChange).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      voice_assignments: [{ speaker: 'Alice', voice_id: 'voice_temp2', voice_traits: 'synthetic' }],
+    }))
+    expect(deleteVoice).toHaveBeenCalledTimes(1)
+  })
+
+  it('仮生成声を削除できなければ再作成もCancelによるCloseも進めない', async () => {
+    vi.mocked(createVoice).mockResolvedValue({ speaker: 'Alice', voice_id: 'voice_temp', voice_traits: 'synthetic' })
+    vi.mocked(deleteVoice).mockRejectedValue(new Error('synthetic failure'))
+    const { user, dialog, onDraftChange } = await openSession()
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('仮生成した声を削除できません')
+    expect(createVoice).toHaveBeenCalledTimes(1)
+    await user.click(within(dialog).getByRole('button', { name: 'キャンセル' }))
+    await waitFor(() => expect(deleteVoice).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(onDraftChange).not.toHaveBeenCalled()
+  })
+
+  it('Generate→既存Assignで仮生成声を削除し、Cancelで既存声を削除しない', async () => {
+    vi.mocked(createVoice).mockResolvedValue({ speaker: 'Alice', voice_id: 'voice_temp', voice_traits: 'synthetic' })
+    const { user, dialog, onDraftChange } = await openSession()
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    await assignExisting(user, dialog)
+    expect(deleteVoice).toHaveBeenCalledExactlyOnceWith('voice_temp')
+    await user.click(within(dialog).getByRole('button', { name: 'キャンセル' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(deleteVoice).toHaveBeenCalledTimes(1)
+    expect(onDraftChange).not.toHaveBeenCalled()
+  })
+
+  it('既存Assign→Generate→CloseでもAssignした既存声は削除しない', async () => {
+    vi.mocked(createVoice).mockResolvedValue({ speaker: 'Alice', voice_id: 'voice_temp', voice_traits: 'synthetic' })
+    const { user, dialog, onDraftChange } = await openSession()
+    await assignExisting(user, dialog)
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    expect(deleteVoice).not.toHaveBeenCalled()
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(deleteVoice).toHaveBeenCalledExactlyOnceWith('voice_temp')
+    expect(onDraftChange).not.toHaveBeenCalled()
+  })
+
+  it('AssignだけならCancelで割当を破棄してどの声も削除しない', async () => {
+    const { user, dialog, onDraftChange } = await openSession()
+    await assignExisting(user, dialog)
+    await user.click(within(dialog).getByRole('button', { name: 'キャンセル' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(deleteVoice).not.toHaveBeenCalled()
+    expect(onDraftChange).not.toHaveBeenCalled()
+  })
+
+  it('作成中にCloseすると返った声を削除してから閉じる', async () => {
+    let complete: ((value: Awaited<ReturnType<typeof createVoice>>) => void) | undefined
+    vi.mocked(createVoice).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
+    const { user, dialog, onDraftChange } = await openSession()
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }))
+    expect(dialog).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'OK' })).toBeDisabled()
+    await act(async () => complete?.({ speaker: 'Alice', voice_id: 'voice_late', voice_traits: 'synthetic' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(deleteVoice).toHaveBeenCalledExactlyOnceWith('voice_late')
+    expect(onDraftChange).not.toHaveBeenCalled()
+  })
+
+  it('再Generateの作成が失敗しても削除済みの仮声を割当に残さない', async () => {
+    vi.mocked(createVoice)
+      .mockResolvedValueOnce({ speaker: 'Alice', voice_id: 'voice_temp', voice_traits: 'synthetic' })
+      .mockRejectedValueOnce(new ApiClientError(503, 'VOICE_PROVIDER_UNAVAILABLE', 'synthetic'))
+    vi.mocked(previewVoice).mockResolvedValue(new Uint8Array([1, 2]))
+    const { user, dialog, onDraftChange } = await openSession()
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    const failure = await screen.findByRole('alertdialog')
+    await user.click(within(failure).getByRole('button', { name: '閉じる' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 再生' }))
+    expect(previewVoice).toHaveBeenLastCalledWith('doc-test-1', expect.objectContaining({ voice_id: 'voice_abc' }))
+    await user.click(within(dialog).getByRole('button', { name: 'キャンセル' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(deleteVoice).toHaveBeenCalledExactlyOnceWith('voice_temp')
+    expect(onDraftChange).not.toHaveBeenCalled()
+  })
+
+  it('仮生成声の削除に失敗したAssignはライブラリを閉じず既存声を割り当てない', async () => {
+    vi.mocked(createVoice).mockResolvedValue({ speaker: 'Alice', voice_id: 'voice_temp', voice_traits: 'synthetic' })
+    vi.mocked(deleteVoice).mockRejectedValueOnce(new Error('synthetic'))
+    const { user, dialog, onDraftChange } = await openSession()
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    vi.mocked(listVoices).mockResolvedValue({ voices: [availableVoice('voice_existing')], checked_at: null, complete: true })
+    await user.click(within(dialog).getByRole('button', { name: '割り当てる' }))
+    const library = await screen.findByRole('dialog', { name: '作成済みの声' })
+    await user.click(await within(library).findByRole('button', { name: '割り当てる' }))
+    expect(await within(library).findByRole('alert')).toHaveTextContent('仮生成した声を削除できません')
+    expect(library).toBeInTheDocument()
+    expect(deleteVoice).toHaveBeenCalledExactlyOnceWith('voice_temp')
+    expect(onDraftChange).not.toHaveBeenCalled()
+  })
+
+  it('名前の検証でOKが拒否された場合もCancel時の削除対象を保持する', async () => {
+    vi.mocked(createVoice).mockResolvedValue({ speaker: 'Alice', voice_id: 'voice_temp', voice_traits: 'synthetic' })
+    const { user, dialog, onDraftChange } = await openSession()
+    await user.click(within(dialog).getByRole('button', { name: 'Alice 生成' }))
+    await user.clear(within(dialog).getByLabelText('キャラクター名'))
+    await user.click(within(dialog).getByRole('button', { name: 'OK' }))
+    expect(onDraftChange).not.toHaveBeenCalled()
+    await user.click(within(dialog).getByRole('button', { name: 'キャンセル' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(deleteVoice).toHaveBeenCalledExactlyOnceWith('voice_temp')
+  })
+})
 
 describe('Voice Designの失敗理由と入力保持', () => {
   it.each([false, true])('個別の拒否後に入力を編集して明示的に再実行できる draft=%s', async (isDraft) => {
@@ -669,9 +836,11 @@ describe('Voice Designの失敗理由と入力保持', () => {
     expect(vi.mocked(createVoice).mock.calls.map((call) => call[1].voice_traits)).toEqual(['勇敢な少女声', '編集した合成説明'])
     expect(vi.mocked(createVoice).mock.calls.every((call) => Boolean(call[3]) === isDraft)).toBe(true)
     const payloads = fetcher.mock.calls.map((call) => JSON.parse(call[1].body as string))
-    expect(payloads[0]).toEqual({ speaker: 'Alice', voice_traits: '勇敢な少女声', language_code: 'ja-JP', display_name: 'Test Script ; Alice' })
+    expect(payloads[0]).toEqual({ speaker: 'Alice', voice_traits: '勇敢な少女声', display_name: 'Test Script ; Alice' })
     expect(payloads[1]).toEqual({ ...payloads[0], voice_traits: '編集した合成説明' })
-    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith({ voice_assignments: [{ speaker: 'Alice', voice_id: 'voice_edited', voice_traits: '編集した合成説明' }] }))
+    expect(onDraftChange).not.toHaveBeenCalled()
+    await user.click(within(editor).getByRole('button', { name: 'OK' }))
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith(expect.objectContaining({ voice_assignments: [{ speaker: 'Alice', voice_id: 'voice_edited', voice_traits: '編集した合成説明' }] })))
   })
 
   it.each([false, true])('一括の2人目拒否で停止し成功済みと既存割当を保持する draft=%s', async (isDraft) => {

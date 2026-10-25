@@ -165,6 +165,7 @@ async def client(fake_voice_client: FakeVoiceDesignClient) -> httpx.AsyncClient:
     mock_settings = SimpleNamespace(
         gemini_api_key="fake",
         gemini_tts_model="gemini-3.8-flash-tts",
+        gemini_safety_threshold="BLOCK_NONE",
         emotion_arc_max_points=36,
         valence_max_arc_distance=1.0,
     )
@@ -681,6 +682,7 @@ def test_create_voice_design_client_threads_retry_configuration() -> None:
     settings = SimpleNamespace(
         gemini_api_key="key",
         gemini_tts_model="gemini-3.8-flash-tts",
+        gemini_safety_threshold="BLOCK_NONE",
         gemini_connection_timeout_seconds=300,
         gemini_voice_design_max_attempts=5,
         gemini_generation_max_attempts=6,
@@ -850,3 +852,86 @@ def test_voice_diagnostics_allowlist():
     for code in [None, [], "private-sentinel", "invalid_argument"]:
         assert safe_provider_code(code) == "UNKNOWN"
     assert safe_provider_code("INVALID_ARGUMENT") == "INVALID_ARGUMENT"
+
+
+@pytest.mark.parametrize("path", ["/api/v1/documents/doc-test-123/voices", "/api/v1/voices"])
+async def test_sectioned_traits_use_only_voice_section_and_preserve_full_profile(client, fake_voice_client, path):
+    traits = "Voice: A synthetic clear voice.\nDelivery: Portray a fictional child naturally."
+    response = await client.post(path, json={"speaker": "アリス", "voice_traits": traits})
+    assert response.status_code == 200
+    assert fake_voice_client.last_traits == "A synthetic clear voice."
+    assert response.json()["voice_traits"] == traits
+
+
+@pytest.mark.parametrize("explicit_style", [None, "", "Urgently."])
+async def test_preview_uses_registered_delivery_unless_explicitly_overridden(client, explicit_style):
+    from narravant.api.dependencies import get_tts_client
+    from narravant.services.tts import FakeTtsClient
+
+    tts = FakeTtsClient()
+
+    async def tts_provider():
+        return tts
+
+    app.dependency_overrides[get_tts_client] = tts_provider
+    traits = "Voice: A synthetic adult actor voice.\nDelivery: Portray a fictional child naturally."
+    created = await client.post("/api/v1/voices", json={"speaker": "アリス", "voice_traits": traits})
+    assert created.status_code == 200
+    body = {"voice_id": created.json()["voice_id"], "text": "Hello."}
+    if explicit_style is not None:
+        body["style"] = explicit_style
+    response = await client.post("/api/v1/voices/preview", json=body)
+    assert response.status_code == 200
+    assert tts.last_style == ("Portray a fictional child naturally." if explicit_style is None else explicit_style)
+    registered = await client.get("/api/v1/voices/" + created.json()["voice_id"])
+    assert registered.json()["voice_traits"] == traits
+
+
+async def test_sectioned_import_profile_reaches_mock_http_without_delivery(client, monkeypatch):
+    from narravant.services.ingestion import draft_response, validate_import
+    from narravant.services.voice_design import GeminiVoiceDesignClient
+    from test_import_api import FakeDocumentAnalyzer, _service_with_adapter
+
+    traits = (
+        "Voice: An adult actor with a clear light register.\n"
+        "Delivery: Portray the source-established fictional child naturally."
+    )
+    analyzer = FakeDocumentAnalyzer()
+    original = analyzer.analyze
+
+    def analyze(*args, **kwargs):
+        result = original(*args, **kwargs)
+        result.characters[0]["voice_traits"] = traits
+        return result
+
+    analyzer.analyze = analyze
+    service, _, _, _ = _service_with_adapter(analyzer=analyzer)
+    content = b"Title: Synthetic\n\nINT. ROOM - DAY #1#\n\nAction.\n"
+    imported = validate_import(
+        "synthetic.fountain", content, 1024 * 1024, pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.7
+    )
+    task_id = service.start("owner-1", imported)
+    service.run(task_id, content)
+    draft = draft_response(service.drafts.get(task_id))
+    assert draft.analysis.characters[0].voice_traits == traits
+    captured = []
+
+    async def post(_self, url, **kwargs):
+        captured.append(kwargs["json"])
+        return httpx.Response(200, json={"id": "voice_synthetic_sections"}, request=httpx.Request("POST", url))
+
+    async def provider_override():
+        return GeminiVoiceDesignClient(api_key="synthetic")
+
+    app.dependency_overrides[get_voice_design_client] = provider_override
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    response = await client.request(
+        "POST",
+        "/api/v1/voices",
+        json={"speaker": "Synthetic", "voice_traits": draft.analysis.characters[0].voice_traits},
+    )
+    assert response.status_code == 200
+    assert response.json()["voice_traits"] == traits
+    assert len(captured) == 1
+    assert captured[0]["voice"]["prompted"]["input"] == "An adult actor with a clear light register."
+    assert captured[0]["voice"]["language_code"] == "en-US"

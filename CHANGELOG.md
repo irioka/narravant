@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-25
+
+### Added
+
+- Ground voice descriptions in character details from original novels and scripts during import, including details omitted by script normalization.
+- Generate English and Japanese voice profiles with separate voice qualities and default delivery. Add source-appropriate candidates for school-age and younger characters, early-speaking infants, and elderly characters.
+
+### Changed
+
+- Apply assigned voices' default delivery to previews and playback, with directions for the current line taking precedence over default pace, pauses, and emotion.
+- Select multiple created voices with checkboxes, review their usages together, and delete them after confirmation. Stop on failure and retain the undeleted selections.
+- Keep Character and Narrator voice assignments provisional until OK. Cancel or Close discards the changes and deletes voices generated in that dialog; generating again or assigning an existing voice first removes the unused temporary voice. Preserve pre-existing voices.
+- Share the configurable `gemini.safety_threshold` in `backend/config.yaml` across script generation, analysis, and TTS GenerateContent requests. The current value is `BLOCK_NONE`; the Voice Design endpoint has no corresponding setting.
+
+### Fixed
+
+- Preserve offered source anchors with the same start and different ends across overlapping Import windows.
+- Log individual voice lookups that return 404 at DEBUG level, while retaining warnings for list failures and permission errors.
+
 ## [0.3.3] - 2026-10-23
 
 ### Fixed

@@ -199,6 +199,7 @@ def test_setup(fake_tts: FakeTtsClient, monkeypatch: pytest.MonkeyPatch):
     mock_settings = SimpleNamespace(
         gemini_api_key="fake",
         gemini_tts_model="gemini-3.8-flash-tts",
+        gemini_safety_threshold="BLOCK_NONE",
         playback_scene_pause_duration_ms=1750,
         playback_speaker_change_pause_duration_ms=625,
         emotion_arc_max_points=36,
@@ -463,6 +464,7 @@ async def test_playback_ws_resolves_deps_without_request_override(
     app.state.settings = SimpleNamespace(
         gemini_api_key="fake",
         gemini_tts_model="gemini-3.8-flash-tts",
+        gemini_safety_threshold="BLOCK_NONE",
         playback_speaker_change_pause_duration_ms=1000,
         emotion_arc_max_points=36,
         valence_max_arc_distance=1.0,

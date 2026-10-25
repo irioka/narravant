@@ -1,0 +1,68 @@
+name: Bug report
+description: Report something that isn't working.
+title: '[Bug] '
+body:
+- type: markdown
+  attributes:
+    value: Issue reports are public. Do not post vulnerability details; follow the [security policy](https://github.com/irioka/narravant/security/policy).
+      Use a short synthetic example instead of a real manuscript.
+- type: input
+  id: version
+  attributes:
+    label: NARRAVANT version
+    description: The version shown in the app. "Unknown" is fine.
+    placeholder: 'Example: 0.4.0'
+  validations:
+    required: true
+- type: textarea
+  id: environment
+  attributes:
+    label: Environment
+    description: Your OS, browser, Python, and Node.js versions, if known.
+  validations:
+    required: false
+- type: textarea
+  id: steps
+  attributes:
+    label: Steps to reproduce
+    description: What did you do just before the problem happened?
+    placeholder: '1. Open …
+
+      2. Perform …
+
+      3. Observe …'
+  validations:
+    required: true
+- type: textarea
+  id: expected
+  attributes:
+    label: Expected behavior
+  validations:
+    required: true
+- type: textarea
+  id: actual
+  attributes:
+    label: Actual behavior or error
+  validations:
+    required: true
+- type: input
+  id: model
+  attributes:
+    label: Related model
+    description: For analysis, adaptation, or TTS issues, add the model name if known. Do not include an API key.
+  validations:
+    required: false
+- type: textarea
+  id: details
+  attributes:
+    label: Additional information
+    description: A short synthetic example, redacted logs, or screenshots. No extra paid API calls are needed.
+  validations:
+    required: false
+- type: checkboxes
+  id: privacy
+  attributes:
+    label: Before posting
+    options:
+    - label: I have removed API keys, private manuscripts, actual voice IDs, and personal information.
+      required: true

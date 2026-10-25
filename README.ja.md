@@ -2,6 +2,8 @@
 
 [English](README.md)
 
+バージョン: **0.4.0** — 変更内容は[CHANGELOG.md](CHANGELOG.md)を参照してください。
+
 NARRAVANT は、小説や脚本から、AIで**ナレーション・登場人物の台詞・演技指導を含むオーディオブック用スクリプト**を [Fountain](https://fountain.io/) 形式で生成し、Gemini TTSで朗読する、軽量なローカルアプリケーションです。
 
 小説の**出来事・人物状態・伏線**と原文を参照して場面を計画・執筆します。**Gemini 3.8 Flash TTSのスタイルフィールドとインラインタグに対応する演技指示もAIが自動生成**します。既存の脚本は物語と場面順を保持し、地の文・台詞・演出記法を朗読向けに整えます。
@@ -30,7 +32,7 @@ https://github.com/user-attachments/assets/7b5f117f-1a1b-4eb0-84fe-9057de714e9d
 - **演技指示の自動生成** — 必要な箇所へ演技指導とインラインタグをAIが付けます。持続する演技はGemini 3.8 Flash TTSの `speechMetadata.style` へ、`<short pause>`／`<breath>` などの局所タグはTTSへ渡す本文へ反映します。
 - **軽量なローカル構成** — Gemini Developer APIキー1つで生成・声のデザイン・朗読を利用できます。ローカルのPythonサービスとブラウザUIで動き、作品はSQLiteへ保存します。
 - **物語の分析** — アップロードした作品から、あらすじ・5 つの転換点・感情アークを生成して保持します。
-- **声のデザイン** — ナレーターと各登場人物の声の特徴を生成し、Gemini で声を作成して話者ごとに割り当てます。Geminiに保存したカスタム音声（stateful voice）は最終利用から1年間保持され、TTSで使うたびに保持期間が更新されます（[Google公式ガイド](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation)）。
+- **声のデザイン** — 原文の小説・脚本に基づき、生成稿から人物紹介が除かれても年齢感・声質・訛りを声の特徴へ反映します。日本語／英語で声質と普段の読み方を分けて編集し、Geminiで作成した声を話者ごとに割り当てます。Geminiに保存したカスタム音声（stateful voice）は最終利用から1年間保持され、TTSで使うたびに保持期間が更新されます（[Google公式ガイド](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation)）。
 - **リアルタイム再生** — 各発話を脚本順に Gemini TTS で音声化し、WebSocket でストリーミング再生します。生成音声は保存せず、再生のたびに生成します。
 - **ローカル保存** — スクリプト・声の特徴・声の割り当て・分析をローカルのデータベースに保存します。Native JSON で Export・Import できます。
 - **日英切替 UI** — 画面表示を英語・日本語で切り替えられます。
@@ -62,6 +64,8 @@ cp .env.example .env
 - `LOCAL_STORAGE_PATH`: スクリプト保存ディレクトリ（既定: `./runtime/storage`）。相対パスは `.env` があるリポジトリルートから解決されます。
 
 付属のローカル構成では、他の既定値を保ったまま `GEMINI_API_KEY` のプレースホルダーを自分のキーへ置き換えて起動できます。生成・分析の設定は `backend/config.yaml` にあり、`gemini.thinking_level` で LOW・MEDIUM・HIGH の思考量を選択します。設定変更後はbackendを再起動してください。この値はTTSの再生設定ではありません。
+
+`backend/config.yaml`の`gemini.safety_threshold`で、脚本生成・分析・TTSの調整可能な4カテゴリの安全設定を共通で変更できます。現在値は`BLOCK_NONE`です。変更後はbackendを再起動し、OFFを選ぶ場合は`"OFF"`と引用してください。Voice Designには対応する設定項目がなく、組込みの保護は引き続き適用されます。
 
 Gemini 4 Argon を使う場合は `.env` に `GEMINI_MODEL=gemini-4-argon` を設定します。Flash を使う場合は `gemini-3.8-flash` に戻します。どちらも同じ Gemini Developer API キーを使い、音声合成には引き続き `GEMINI_TTS_MODEL=gemini-3.8-flash-tts` を指定します。
 
@@ -116,6 +120,10 @@ VERSION     リリース番号の正本
 ## 参考文献
 
 NARRAVANT が参照する研究・技術仕様と、その利用箇所・適用の限界は [REFERENCES.md](REFERENCES.md) を参照してください。
+
+## 参加・報告
+
+不具合や改善案は[参加方法](CONTRIBUTING.ja.md)を参照してください。[セキュリティ方針](SECURITY.ja.md)、[アクセシビリティ](ACCESSIBILITY.ja.md)も参照できます。
 
 ## ライセンス
 

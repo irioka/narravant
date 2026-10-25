@@ -138,3 +138,17 @@ it('contextのない503 prefixを既存wrapperで分類する', async () => {
   await expect(createVoice('doc-1', { speaker: 'Alice', voice_traits: '合成説明' }, fetcher)).rejects.toMatchObject({ status: 503, code: 'VOICE_PROVIDER_UNAVAILABLE' })
   expect(fetcher).toHaveBeenCalledTimes(1)
 })
+
+it('省略したstyleと言語は送らず、保存した読み方と言語を利用できる', async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response(new Uint8Array([0, 1]), { status: 200 }))
+  await previewVoice(undefined, { voice_id: 'voice-a', text: 'Hello.' }, fetcher, true)
+  const body = JSON.parse(fetcher.mock.calls[0][1].body)
+  expect(body).not.toHaveProperty('style')
+  expect(body).not.toHaveProperty('language_code')
+})
+
+it('明示した空styleと言語はそのまま送る', async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response(new Uint8Array([0, 1]), { status: 200 }))
+  await previewVoice(undefined, { voice_id: 'voice-a', text: 'Hello.', style: '', language_code: 'en-US' }, fetcher, true)
+  expect(JSON.parse(fetcher.mock.calls[0][1].body)).toMatchObject({ style: '', language_code: 'en-US' })
+})

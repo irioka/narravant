@@ -1,4 +1,10 @@
 gemini:
+  # 脚本生成・分析・TTSの4カテゴリ共通。変更後はbackendを再起動する。
+  # "OFF" / BLOCK_NONE / BLOCK_ONLY_HIGH / BLOCK_MEDIUM_AND_ABOVE / BLOCK_LOW_AND_ABOVE
+  # Voice Design（POST /voices）には設定項目がないため適用しない。
+  safety_threshold: BLOCK_NONE
+  source_voice_traits_max_attempts: 2
+  source_voice_traits_max_output_tokens: 4096
   analysis_max_attempts: 3 # Max attempts to regenerate an incomplete structured analysis without patching it
   generation_max_attempts: 6 # Max attempts to retry the same request on transient analysis 5xx/408/429 (1 initial + 5 retries)
   voice_design_max_attempts: 3 # Max attempts to retry the same Voice Design request on transient 503/502/504 (1 initial + 2 retries)
