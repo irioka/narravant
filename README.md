@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-Version: **0.4.0** — see [CHANGELOG.md](CHANGELOG.md).
+Version: **0.5.0** — see [CHANGELOG.md](CHANGELOG.md).
 
 NARRAVANT is a lightweight, local-first application that uses AI to turn novels and screenplays into [Fountain](https://fountain.io/) audiobook scripts with **narration, character dialogue, and acting directions**, then reads them aloud with Gemini TTS.
 
@@ -29,7 +29,8 @@ https://github.com/user-attachments/assets/857be910-ec02-4969-8bbf-928e0b68de57
 ## Features
 
 - **Audiobook scripts** — Import a novel or screenplay (`.txt`, `.pdf`, `.fountain`, or `.fdx`) to prepare narration, dialogue, and acting directions in Fountain format. Re-import Native JSON to restore a work. Novel adaptation uses source events, character states, foreshadowing, and related scenes.
-- **Automatic delivery instructions** — AI adds acting directions and inline tags where useful. Playback sends sustained directions through `speechMetadata.style` and keeps local tags such as `<short pause>` and `<breath>` in the spoken text supplied to Gemini 3.8 Flash TTS.
+- **Context-aware performance review** — After import and analysis, review the completed script against the full story context and add short acting directions or inline tags where useful. Preserve spoken text, speakers, and scene order. Playback sends sustained directions through `speechMetadata.style`, supports delivery changes within a turn, and retains all 40 recommended inline tag spellings.
+- **Narrator delivery** — Enter a temporary narrator delivery beside Scene number, then start playback. Local scene directions take precedence. The setting is not saved, and its input and Clear button are disabled during playback. Character dialogue keeps its own delivery.
 - **Lightweight local setup** — One Gemini Developer API key, a local Python service, and a browser UI. SQLite stores your work locally.
 - **Story analysis** — Generate and keep a synopsis, five turning points, and an emotional arc from the uploaded work.
 - **Voice design** — Ground character voice traits in the original novel or screenplay, retaining age impressions, timbre and accent even when introductions are omitted from the generated script. Edit voice qualities and default delivery separately in English or Japanese, create a voice with Gemini, and assign it per speaker. Gemini retains stateful custom voices for one year after their last use; using a voice for TTS resets this period ([Google's guide](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation)).

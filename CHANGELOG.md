@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-27
+
+### Added
+
+- Review completed imported scripts in the context of the whole story, adding source-grounded acting directions and inline cues while preserving spoken text, speakers, and scene order.
+- Set a temporary narrator delivery beside Scene number for saved documents and unsaved imports. Local directions take precedence; the setting is not saved or applied to character dialogue.
+- Configure additional silence between narration sentences with `playback.narrator_sentence_pause_duration_ms` (1000 ms by default; 0 disables it).
+
+### Changed
+
+- Prefer short acting intentions and let TTS choose their acoustic realization, while respecting explicit source directions. Support all 40 recommended inline tag spellings with shared validation and usage guidance.
+- Support delivery changes within the same speaker's turn without adding a speaker-change pause.
+- Apply the scene pause after a spoken Scene Heading without adding a speaker-change pause. Starting at a heading speaks it immediately, then pauses before the following speech.
+- Keep the current speaker and position visible during pauses. Disable narrator delivery input and Clear while audio is being prepared or played.
+
+### Fixed
+
+- Preserve speech notes and source positions when inserting performance directions or splitting turns, and avoid duplicate pauses and speaker cues.
+- Stop performance review when cancelled or its deadline is reached, and reject invalid targets, offsets, tags, or text-changing edits.
+
 ## [0.4.0] - 2026-10-25
 
 ### Added

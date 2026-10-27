@@ -19,6 +19,7 @@ def dummy_settings():
     return SimpleNamespace(
         gemini_api_key="synthetic-test-api-key-12345",
         gemini_model="gemini-3.8-flash",
+        gemini_performance_review_max_output_tokens=4096,
         gemini_source_voice_traits_max_attempts=2,
         gemini_source_voice_traits_max_output_tokens=4096,
         gemini_analysis_max_attempts=3,

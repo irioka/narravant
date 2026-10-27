@@ -1,6 +1,6 @@
 # References
 
-Last reviewed: 2026-10-19.
+Last reviewed: 2026-10-26.
 
 These are the research and technical sources used as background or references for NARRAVANT. Each entry explains its use and limits. A citation does not imply a complete reproduction of a paper's method or guarantee the quality of an individual audiobook.
 
@@ -87,7 +87,7 @@ Google. **Gemini 4 Argon**, **What's new in Gemini 4 Argon**, and **Google Gen A
 Google. **Text-to-speech generation (TTS)** and **Generating content: SpeechMetadata.**
 
 - Sources: [GenerateContent TTS guide](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation), [SpeechMetadata API reference](https://ai.google.dev/api/generate-content#SpeechMetadata).
-- Use: separate spoken text from sustained acting directions through `parts[].speechMetadata.style` and stream playback from the first PCM samples. Local pause and vocal delivery tags remain in the text. Requests are split by sentence and reuse the assigned voice ID. The application inserts configured silence at speaker changes and after spoken Scene Headings, without adding silence between other sentences by the same speaker.
+- Use: separate spoken text from sustained acting directions through `parts[].speechMetadata.style` and stream playback from the first PCM samples. Local pause and vocal delivery tags remain in the text. The application supports all 40 spellings in the official recommended vocal-tag list checked on 2026-10-26, including aliases. Requests are split by sentence and reuse the assigned voice ID. The application inserts configurable silence between narration sentences (1000 ms by default), before scene changes, and after spoken Scene Headings. Other speaker changes use their own configured pause, which is not added after headings; character sentence boundaries add no fixed silence.
 - Limits: acceptance of an API field does not demonstrate acting quality, timing, or clarity. Tags do not guarantee millisecond durations or eliminate API waiting time. Overlapping custom-voice playback is rejected before a request is sent. New adaptations use narrator explanations or natural sequential turns; this is not a playback fallback for existing pipe notation. SDK, model, and API support must be rechecked when updating the integration. The application does not retain generated audio.
 
 ### REF-GEMINI-VOICE-DESIGN
@@ -105,6 +105,32 @@ Google. **GenerateContent safety settings** and **Gemini Voices API**. Checked 2
 - Sources: [GenerateContent safety settings](https://ai.google.dev/gemini-api/docs/generate-content/safety-settings), [GenerateContent API reference](https://ai.google.dev/api/generate-content), [Voices API reference](https://ai.google.dev/api/voices).
 - Use: share the configured `gemini.safety_threshold` across text generation, analysis, and TTS GenerateContent requests, using the SDK's `safety_settings` or REST's `safetySettings` as appropriate.
 - Limits: the setting controls four adjustable categories; it does not disable built-in protections. The Voice Design CreateVoice request has no corresponding field. Configuring a threshold does not establish that an earlier rejection was caused by that threshold or that a future request will be accepted.
+
+## Audiobook performance
+
+### REF-ACX-PERFORMANCE
+
+ACX. **How to Act Like an Audiobook Narrator** and **5 Tips for Choosing a Narrator**. Checked 2026-10-26.
+
+- Sources: [Performance preparation](https://www.acx.com/mp/blog/how-to-act-like-an-audiobook-narrator), [Pacing and restrained characterization](https://www.acx.com/mp/blog/5-tips-for-choosing-a-narrator).
+- Use: review the whole work and scene subtext before selecting concise, occasional delivery directions; favor clear pacing and natural characterization.
+- Limits: these are human narration practices. Their use as prompting guidance does not establish an improvement in Gemini-generated audio.
+
+### REF-TACA
+
+Dake Guo et al. **Text-aware and Context-aware Expressive Audiobook Speech Synthesis.** INTERSPEECH 2024. Checked 2026-10-26.
+
+- Source: [arXiv:2406.05672v3](https://arxiv.org/html/2406.05672v3).
+- Use: background for considering neighboring sentences and discourse context when selecting performance directions.
+- Limits: NARRAVANT does not implement the paper's training method, encoders, or speech models. Its Mandarin experiments do not establish the effectiveness of natural-language directions in Gemini or of Japanese/English audiobook playback.
+
+### REF-INSTRUCTTTS
+
+Dongchao Yang et al. **InstructTTS: Modelling Expressive TTS in Discrete Latent Space with Natural Language Style Prompt.** 2023. Checked 2026-10-26.
+
+- Source: [arXiv:2301.13662v2](https://arxiv.org/abs/2301.13662v2).
+- Use: background for directing expressive speech with concise natural-language descriptions of emotion and delivery. NARRAVANT favors a short acting intention, adding concrete acoustic directions when required by the source or an explicit user correction.
+- Limits: the paper studies its own speech model and training procedure. It does not establish that abstract directions outperform concrete directions in Gemini, or validate the application's Japanese/English output. The preference for abstract intentions is a product choice within Google's documented style capabilities.
 
 ## Numerical methods
 

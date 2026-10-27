@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
 
 
 @dataclass(frozen=True)
@@ -38,21 +38,54 @@ class SpeechNotationError(ValueError):
         self.scene_number = scene_number
 
 
+# Google公式TTSガイドの推奨表記（2026-10-26確認）。同義表記もそのまま受け渡す。
+AllowedPerformanceTag = Literal[
+    "argh",
+    "breath",
+    "heavy breath",
+    "exhales",
+    "cackle",
+    "cheer",
+    "chuckle",
+    "chuckles",
+    "cough",
+    "cry",
+    "gasp",
+    "giggle",
+    "groan",
+    "growl",
+    "grunt",
+    "grr",
+    "hiss",
+    "laugh",
+    "laughter",
+    "moan",
+    "pant",
+    "pff",
+    "phew",
+    "scream",
+    "shout",
+    "shriek",
+    "sigh",
+    "sighs",
+    "sneeze",
+    "snicker",
+    "snort",
+    "sob",
+    "throat-clearing",
+    "tsk",
+    "whimper",
+    "whispers",
+    "whispering",
+    "yawn",
+    "short pause",
+    "long pause",
+]
+PERFORMANCE_TAGS: tuple[str, ...] = get_args(AllowedPerformanceTag)
 _LISTENER_PREFIX = "[[listener:"
 _PAUSE_TAGS = frozenset({"short pause", "long pause"})
-_VOCAL_TAGS = frozenset(
-    {
-        "breath",
-        "sigh",
-        "laugh",
-        "chuckle",
-        "gasp",
-        "sob",
-        "cough",
-        "throat-clearing",
-    }
-)
-_ALLOWED_TAGS = _PAUSE_TAGS | _VOCAL_TAGS
+_ALLOWED_TAGS = frozenset(PERFORMANCE_TAGS)
+_VOCAL_TAGS = _ALLOWED_TAGS - _PAUSE_TAGS
 
 
 def is_listener_note_candidate(line: str) -> bool:

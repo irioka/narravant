@@ -590,7 +590,12 @@ class FountainParser:
                                 line_number=i + 1,
                                 scene_number=current_scene.scene_number,
                             )
-                        if not current_parenthetical:
+                        if current_dialogue_lines:
+                            next_speaker = current_character
+                            flush_dialogue()
+                            current_character = next_speaker
+                            current_parenthetical = stripped[1:-1].strip()
+                        elif not current_parenthetical:
                             current_parenthetical = stripped[1:-1].strip()
                     else:
                         if current_dialogue_start_line is None:

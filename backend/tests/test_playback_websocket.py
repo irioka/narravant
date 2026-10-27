@@ -48,9 +48,7 @@ class WebSocketTestSession:
         self.outgoing = outgoing
 
     async def send_json(self, data: dict) -> None:
-        await self.incoming.put(
-            {"type": "websocket.receive", "text": json.dumps(data, ensure_ascii=False)}
-        )
+        await self.incoming.put({"type": "websocket.receive", "text": json.dumps(data, ensure_ascii=False)})
 
     async def receive_json(self) -> dict:
         message = await asyncio.wait_for(self.outgoing.get(), timeout=2)
@@ -254,6 +252,25 @@ async def test_playback_ws_full_flow(test_setup):
         assert len(decoded_bytes) > 0
 
 
+@pytest.mark.parametrize("style", ["落ち着いて、ややゆっくり", "Calm and unhurried"])
+async def test_saved_playback_narrator_style_reaches_fake_tts_only_for_narrator(test_setup, style):
+    storage, doc_id, tts = test_setup
+    before, _ = storage.read_structured_script(doc_id, 1)
+    async with connect_websocket(f"/api/v1/documents/{doc_id}/playback") as ws:
+        await ws.send_json({"action": "start", "narrator_style": style})
+        while True:
+            event = await ws.receive_json()
+            if event["event"] in {"playback_complete", "error"}:
+                assert event["event"] == "playback_complete"
+                break
+    assert any(s == style for s in tts.synthesized_styles)
+    for (text, _), delivery in zip(tts.synthesized_utterances, tts.synthesized_styles, strict=True):
+        if text in {"Hello?", "Good morning."}:
+            assert style not in delivery
+    after, _ = storage.read_structured_script(doc_id, 1)
+    assert after == before
+
+
 async def test_playback_ws_validates_listener_voice_with_primary_voices_before_synthesis(
     test_setup,
     monkeypatch: pytest.MonkeyPatch,
@@ -280,12 +297,7 @@ async def test_playback_ws_validates_listener_voice_with_primary_voices_before_s
             {
                 "action": "start",
                 "draft": {
-                    "source_fountain": (
-                        "INT. ROOM - DAY #1#\n\n"
-                        "@ALICE\n"
-                        "[[listener:BOB]]\n"
-                        "わかる？ |うん|"
-                    ),
+                    "source_fountain": ("INT. ROOM - DAY #1#\n\n@ALICE\n[[listener:BOB]]\nわかる？ |うん|"),
                     "voice_assignments": [
                         {"speaker": "Narrator", "voice_id": "voice_fake_narrator"},
                         {"speaker": "ALICE", "voice_id": "voice_fake_alice"},
@@ -304,7 +316,74 @@ async def test_playback_ws_validates_listener_voice_with_primary_voices_before_s
     assert validated == [(LOCAL_USER_ID, ["voice_fake_narrator", "voice_fake_alice", "voice_fake_bob"], False)]
     reaction_segment = next(segment for segment in fake_tts.synthesized_segments if segment.listener is not None)
     assert reaction_segment.listener == SegmentVoice("BOB", "voice_fake_bob")
-    assert any(message["event"] == "utterance_pause" and message["duration_ms"] == 625 for message in events)
+    assert any(message["event"] == "scene_pause" and message["duration_ms"] == 1750 for message in events)
+    assert not any(message["event"] == "utterance_pause" for message in events)
+
+
+@pytest.mark.parametrize("start_index", [0, 1])
+async def test_playback_ws_uses_configured_narrator_sentence_pause(test_setup, start_index):
+    app.state.settings.playback_narrator_sentence_pause_duration_ms = 500
+    async with connect_websocket("/api/v1/documents/playback") as ws:
+        await ws.send_json({
+            "action": "start", "start_utterance_index": start_index,
+            "draft": {
+                "source_fountain": "INT. ROOM - DAY #1#\n\n@Narrator\nFirst, then second. Another sentence.\n",
+                "voice_assignments": [{"speaker": "Narrator", "voice_id": "voice_fake_narrator"}],
+            },
+        })
+        events = []
+        while True:
+            event = await ws.receive_json()
+            events.append(event)
+            if event["event"] in {"playback_complete", "error"}:
+                break
+    assert events[-1]["event"] == "playback_complete"
+    assert events[0]["event"] == "utterance_start"
+    assert [e["duration_ms"] for e in events if e["event"] == "utterance_pause"] == [500]
+    assert [e["duration_ms"] for e in events if e["event"] == "scene_pause"] == (
+        [1750] if start_index == 0 else []
+    )
+
+
+@pytest.mark.parametrize("pause_ms", [0, 500, 1000, 60000])
+@pytest.mark.parametrize("use_draft", [True, False])
+async def test_playback_ws_accepts_runtime_narrator_sentence_pause(test_setup, pause_ms, use_draft):
+    storage, document_id, _ = test_setup
+    app.state.settings.playback_narrator_sentence_pause_duration_ms = 1500
+    data, _ = storage.read_structured_script(document_id, 1)
+    data["source_fountain"] = "INT. ROOM - DAY #1#\n\n@Narrator\nFirst. Second.\n"
+    if not use_draft:
+        storage.read_structured_script = lambda *_: (data, None)
+    path = "/api/v1/documents/playback" if use_draft else f"/api/v1/documents/{document_id}/playback"
+    request = {"action": "start", "start_utterance_index": 1,
+               "narrator_sentence_pause_duration_ms": pause_ms}
+    if use_draft:
+        request["draft"] = {"source_fountain": data["source_fountain"],
+                            "voice_assignments": data["voice_assignments"]}
+    async with connect_websocket(path) as ws:
+        await ws.send_json(request)
+        events = []
+        while True:
+            event = await ws.receive_json()
+            events.append(event)
+            if event["event"] in {"playback_complete", "error"}:
+                break
+    assert events[-1]["event"] == "playback_complete"
+    assert [e["duration_ms"] for e in events if e["event"] == "utterance_pause"] == (
+        [pause_ms] if pause_ms else []
+    )
+    assert app.state.settings.playback_narrator_sentence_pause_duration_ms == 1500
+
+
+@pytest.mark.parametrize("value", [-1, 60001, True, 1.5, "1000", {}])
+async def test_playback_ws_rejects_invalid_runtime_pause_before_tts(test_setup, value):
+    _, document_id, fake_tts = test_setup
+    async with connect_websocket(f"/api/v1/documents/{document_id}/playback") as ws:
+        await ws.send_json({"action": "start", "narrator_sentence_pause_duration_ms": value})
+        event = await ws.receive_json()
+    assert event["event"] == "error"
+    assert event["code"] == "INVALID_PLAYBACK_REQUEST"
+    assert fake_tts.call_count == 0
 
 
 async def test_playback_ws_start_from_specific_position(test_setup):

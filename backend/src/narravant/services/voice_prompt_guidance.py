@@ -22,8 +22,7 @@ def compose_delivery(default: str, local: str) -> str:
     if not default or not local:
         return local or default
     return (
-        default + "\nCurrent line direction (overrides default pace, pauses and emotion; "
-        "retain the role and vocal identity): " + local
+        default + "\nCurrent line direction (overrides default pace, pauses and emotion): " + local
     )
 
 

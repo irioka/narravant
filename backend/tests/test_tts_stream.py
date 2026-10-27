@@ -61,6 +61,25 @@ def fake_tts() -> FakeTtsClient:
 
 
 @pytest.mark.asyncio
+async def test_mid_turn_style_switch_uses_same_voice_without_speaker_pause(fake_tts):
+    plan = build_playback_plan(
+        {
+            "source_fountain": "INT. ROOM - DAY #1#\n\n@MINA\n(uncertain)\nWait?\n(relieved)\nYou came.\n",
+            "voice_assignments": [
+                {"speaker": "Narrator", "voice_id": "voice_synthetic_narrator"},
+                {"speaker": "MINA", "voice_id": "voice_synthetic_mina"},
+            ],
+        },
+        start_utterance_index=1,
+    )
+    coordinator = TtsPlaybackCoordinator(fake_tts, speaker_change_pause_duration_ms=1000)
+    events = [event async for event in coordinator.run_stream(plan.utterances)]
+    assert fake_tts.synthesized_styles == ["uncertain", "relieved"]
+    assert [voice for _, voice in fake_tts.synthesized_utterances] == ["voice_synthetic_mina"] * 2
+    assert not any(event["type"] == "utterance_pause" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_fake_tts_synthesize_stream_returns_chunks(fake_tts: FakeTtsClient):
     """Fake TTS returns deterministic chunks without calling external APIs."""
     chunks = [
@@ -266,12 +285,95 @@ async def test_scene_heading_to_speech_uses_configured_pause_once(fake_tts, spea
     plan = build_playback_plan(data)
     coordinator = TtsPlaybackCoordinator(fake_tts, speaker_change_pause_duration_ms=duration_ms)
     events = [event async for event in coordinator.run_stream(plan.utterances)]
-    pauses = [event for event in events if event["type"] == "utterance_pause"]
-    assert [event["duration_ms"] for event in pauses] == ([duration_ms] if duration_ms else [])
+    pauses = [event for event in events if event["type"] in {"utterance_pause", "scene_pause"}]
+    assert pauses == [{"type": "scene_pause", "scene_number": 1, "duration_ms": 3000}]
+    assert events[0]["type"] == "utterance_start"
+    assert events[0]["utterance_index"] == 0
     assert events[-1]["type"] == "playback_complete"
     resumed = build_playback_plan(data, start_utterance_index=1)
     resumed_events = [event async for event in coordinator.run_stream(resumed.utterances)]
     assert not any(event["type"] == "utterance_pause" for event in resumed_events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration_ms", [0, 500, 725])
+async def test_narrator_sentence_pause_is_configurable_without_changing_comma_or_character_gaps(fake_tts, duration_ms):
+    utterances = [
+        PlannedUtterance(1, 1, "ナレーター", "narrator", "風が吹き、扉が開いた。『誰だろう。』", "voice-n"),
+        PlannedUtterance(1, 2, "Narrator", "narrator", "次の文です。", "voice-n"),
+        PlannedUtterance(1, 3, "MAYA", "character", "こんにちは。元気？", "voice-m"),
+    ]
+    coordinator = TtsPlaybackCoordinator(
+        fake_tts, narrator_sentence_pause_duration_ms=duration_ms, speaker_change_pause_duration_ms=1000
+    )
+    events = [event async for event in coordinator.run_stream(utterances)]
+    pauses = [e["duration_ms"] for e in events if e["type"] == "utterance_pause"]
+    assert pauses == ([duration_ms, duration_ms] if duration_ms else []) + [1000]
+    assert [text for text, _ in fake_tts.synthesized_utterances] == [
+        "風が吹き、扉が開いた。", "『誰だろう。』", "次の文です。", "こんにちは。", "元気？"
+    ]
+    assert events[0]["type"] == "utterance_start"
+    resumed = [e async for e in coordinator.run_stream(utterances[1:2])]
+    assert not any(e["type"] in {"utterance_pause", "scene_pause"} for e in resumed)
+
+
+@pytest.mark.asyncio
+async def test_multi_sentence_heading_has_only_one_scene_pause_after_its_end(fake_tts):
+    heading = PlannedUtterance(
+        1, 0, "Narrator", "narrator", "第一部。夜の観測所。", "voice-n", is_scene_heading=True
+    )
+    body = PlannedUtterance(1, 1, "Narrator", "narrator", "星が光った。", "voice-n")
+    coordinator = TtsPlaybackCoordinator(
+        fake_tts, scene_pause_duration_ms=1750, speaker_change_pause_duration_ms=625,
+        narrator_sentence_pause_duration_ms=500,
+    )
+    events = [e async for e in coordinator.run_stream([heading, body])]
+    assert [e for e in events if e["type"] in {"scene_pause", "utterance_pause"}] == [
+        {"type": "scene_pause", "scene_number": 1, "duration_ms": 1750}
+    ]
+    pause_index = next(i for i, e in enumerate(events) if e["type"] == "scene_pause")
+    assert events[pause_index - 1]["type"] == "utterance_end"
+    assert events[pause_index - 1]["utterance_index"] == 0
+    assert events[pause_index + 1]["type"] == "utterance_start"
+    assert events[pause_index + 1]["utterance_index"] == 1
+
+
+@pytest.mark.asyncio
+async def test_narrator_long_sentence_splits_do_not_add_sentence_pause(fake_tts):
+    utterance = PlannedUtterance(1, 1, "Narrator", "narrator", "あ" * 450 + "。次。", "voice-n")
+    coordinator = TtsPlaybackCoordinator(fake_tts, narrator_sentence_pause_duration_ms=500)
+    events = [e async for e in coordinator.run_stream([utterance])]
+    assert fake_tts.call_count >= 3
+    assert [e["duration_ms"] for e in events if e["type"] == "utterance_pause"] == [500]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("speaker", ["Narrator", "MAYA"])
+async def test_heading_has_scene_pause_before_and_after_but_no_speaker_pause(fake_tts, speaker):
+    plan = build_playback_plan({
+        "source_fountain": f"INT. ROOM - DAY #1#\n\n@MAYA\nFirst.\n\nEXT. GARDEN - NIGHT #2#\n\n@{speaker}\nNext.\n",
+        "voice_assignments": [
+            {"speaker": "Narrator", "voice_id": "voice-n"},
+            {"speaker": "MAYA", "voice_id": "voice-m"},
+        ],
+    })
+    coordinator = TtsPlaybackCoordinator(
+        fake_tts, scene_pause_duration_ms=1750, speaker_change_pause_duration_ms=625,
+        narrator_sentence_pause_duration_ms=500,
+    )
+    events = [e async for e in coordinator.run_stream(plan.utterances)]
+    pauses = [e for e in events if e["type"] in {"scene_pause", "utterance_pause"}]
+    assert pauses == [
+        {"type": "scene_pause", "scene_number": 1, "duration_ms": 1750},
+        {"type": "scene_pause", "scene_number": 2, "duration_ms": 1750},
+        {"type": "scene_pause", "scene_number": 2, "duration_ms": 1750},
+    ]
+    resumed = [e async for e in coordinator.run_stream(plan.utterances[2:])]
+    assert resumed[0]["type"] == "utterance_start"
+    assert resumed[0]["utterance_index"] == 0
+    assert [e for e in resumed if e["type"] in {"scene_pause", "utterance_pause"}] == [
+        {"type": "scene_pause", "scene_number": 2, "duration_ms": 1750}
+    ]
 
 
 @pytest.mark.asyncio

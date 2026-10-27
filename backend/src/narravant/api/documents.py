@@ -86,6 +86,8 @@ def _import_service(
     adapter: NarrativeAdapter,
     settings: Settings,
 ) -> ImportService:
+    from narravant.services.performance_review import PerformanceReviewConfig, PerformanceReviewService
+
     return ImportService(
         repo,
         storage,
@@ -103,6 +105,13 @@ def _import_service(
         fdx_max_depth=settings.file_import_fdx_max_depth,
         txt_minimum_confidence=settings.file_import_txt_minimum_confidence,
         emotion_arc_max_points=settings.emotion_arc_max_points,
+        performance_reviewer=PerformanceReviewService(
+            analyzer,
+            PerformanceReviewConfig(
+                max_attempts=settings.gemini_performance_review_max_attempts,
+                window_max_characters=settings.gemini_performance_context_window_max_characters,
+            ),
+        ),
     )
 
 

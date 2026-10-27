@@ -957,7 +957,8 @@ INT. 古時計店 - NIGHT #1#
     assert events[-1]["event"] == "playback_complete", events[-1]
     assert validated_voice_ids == ["voice_fake_narrator", "voice_fake_alice", "voice_fake_bob"]
     pauses = [event for event in events if event["event"] == "utterance_pause"]
-    assert [event["duration_ms"] for event in pauses] == [1000]
+    assert pauses == []
+    assert [event["duration_ms"] for event in events if event["event"] == "scene_pause"] == [3000]
     assert any(event["event"] == "audio_chunk" for event in events)
 
     segments = fake_tts.synthesized_segments

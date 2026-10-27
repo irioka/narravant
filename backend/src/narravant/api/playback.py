@@ -9,7 +9,7 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from narravant.api.dependencies import (
     LOCAL_USER_DISPLAY_NAME,
@@ -51,6 +51,13 @@ class PlaybackStartRequest(BaseModel):
     scene_number: int = Field(default=1, ge=1, strict=True)
     start_utterance_index: int = Field(default=0, ge=0, strict=True)
     draft: DraftPlaybackRequest | None = None
+    narrator_style: str | None = Field(default=None, max_length=500, strict=True)
+    narrator_sentence_pause_duration_ms: int | None = Field(default=None, ge=0, le=60000, strict=True)
+
+    @field_validator("narrator_style")
+    @classmethod
+    def normalize_narrator_style(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
 
 def _build_tts_client(settings):
@@ -143,6 +150,8 @@ async def document_playback_websocket(
         start_scene: int,
         start_utterance_index: int,
         draft: DraftPlaybackRequest | None,
+        narrator_style: str | None,
+        narrator_sentence_pause_duration_ms: int | None,
     ) -> None:
         nonlocal coordinator
         try:
@@ -157,6 +166,7 @@ async def document_playback_websocket(
                 data,
                 start_scene=start_scene,
                 start_utterance_index=start_utterance_index,
+                **({"narrator_style": narrator_style} if narrator_style else {}),
             )
             planned_voice_ids = list(
                 dict.fromkeys(
@@ -181,6 +191,11 @@ async def document_playback_websocket(
                 tts_client=tts_client,
                 scene_pause_duration_ms=getattr(settings, "playback_scene_pause_duration_ms", 3000),
                 speaker_change_pause_duration_ms=settings.playback_speaker_change_pause_duration_ms,
+                narrator_sentence_pause_duration_ms=(
+                    narrator_sentence_pause_duration_ms
+                    if narrator_sentence_pause_duration_ms is not None
+                    else getattr(settings, "playback_narrator_sentence_pause_duration_ms", 0)
+                ),
             )
             async for ev in coordinator.run_stream(plan.utterances):
                 ev_type = ev["type"]
@@ -318,6 +333,8 @@ async def document_playback_websocket(
                         request.scene_number,
                         request.start_utterance_index,
                         request.draft,
+                        request.narrator_style,
+                        request.narrator_sentence_pause_duration_ms,
                     )
                 )
 

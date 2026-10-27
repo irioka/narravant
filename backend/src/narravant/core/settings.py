@@ -60,6 +60,9 @@ class Settings:
     gemini_model: str
     gemini_tts_model: str
     gemini_safety_threshold: str
+    gemini_performance_review_max_attempts: int
+    gemini_performance_review_max_output_tokens: int
+    gemini_performance_context_window_max_characters: int
     gemini_source_voice_traits_max_attempts: int
     gemini_source_voice_traits_max_output_tokens: int
     gemini_analysis_max_attempts: int
@@ -92,6 +95,7 @@ class Settings:
     playback_tts_max_attempts: int
     playback_scene_pause_duration_ms: int
     playback_speaker_change_pause_duration_ms: int
+    playback_narrator_sentence_pause_duration_ms: int
     emotion_arc_max_points: int
     sse_heartbeat_interval_seconds: int
     sse_poll_interval_milliseconds: int
@@ -193,6 +197,9 @@ class Settings:
             raise SettingsError("LOG_LEVEL must be a standard Python log level")
         positive_gemini_integers: dict[str, int] = {}
         for key in (
+            "performance_review_max_attempts",
+            "performance_review_max_output_tokens",
+            "performance_context_window_max_characters",
             "source_voice_traits_max_attempts",
             "source_voice_traits_max_output_tokens",
             "analysis_max_attempts",
@@ -235,6 +242,9 @@ class Settings:
         playback_speaker_change_pause_duration_ms = cls._required_nonnegative_integer(
             raw_config, "playback", "speaker_change_pause_duration_ms"
         )
+        playback_narrator_sentence_pause_duration_ms = cls._required_nonnegative_integer(
+            raw_config, "playback", "narrator_sentence_pause_duration_ms"
+        )
         try:
             emotion_arc_max_points = int(_required_yaml_value(raw_config, "emotion_arc", "max_points"))
         except (TypeError, ValueError) as exc:
@@ -267,6 +277,13 @@ class Settings:
             gemini_model=gemini_model,
             gemini_tts_model=gemini_tts_model,
             gemini_safety_threshold=safety_threshold,
+            gemini_performance_review_max_attempts=positive_gemini_integers["performance_review_max_attempts"],
+            gemini_performance_review_max_output_tokens=positive_gemini_integers[
+                "performance_review_max_output_tokens"
+            ],
+            gemini_performance_context_window_max_characters=positive_gemini_integers[
+                "performance_context_window_max_characters"
+            ],
             gemini_source_voice_traits_max_attempts=positive_gemini_integers["source_voice_traits_max_attempts"],
             gemini_source_voice_traits_max_output_tokens=positive_gemini_integers[
                 "source_voice_traits_max_output_tokens"
@@ -305,6 +322,7 @@ class Settings:
             playback_tts_max_attempts=playback_tts_max_attempts,
             playback_scene_pause_duration_ms=playback_scene_pause_duration_ms,
             playback_speaker_change_pause_duration_ms=playback_speaker_change_pause_duration_ms,
+            playback_narrator_sentence_pause_duration_ms=playback_narrator_sentence_pause_duration_ms,
             emotion_arc_max_points=emotion_arc_max_points,
             sse_heartbeat_interval_seconds=int(_required_yaml_value(raw_config, "sse", "heartbeat_interval_seconds")),
             sse_poll_interval_milliseconds=int(_required_yaml_value(raw_config, "sse", "poll_interval_milliseconds")),

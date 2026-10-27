@@ -3,6 +3,9 @@ gemini:
   # "OFF" / BLOCK_NONE / BLOCK_ONLY_HIGH / BLOCK_MEDIUM_AND_ABOVE / BLOCK_LOW_AND_ABOVE
   # Voice Design（POST /voices）には設定項目がないため適用しない。
   safety_threshold: BLOCK_NONE
+  performance_review_max_attempts: 2
+  performance_review_max_output_tokens: 4096
+  performance_context_window_max_characters: 24000
   source_voice_traits_max_attempts: 2
   source_voice_traits_max_output_tokens: 4096
   analysis_max_attempts: 3 # Max attempts to regenerate an incomplete structured analysis without patching it
@@ -41,8 +44,9 @@ gemini:
 
 playback:
   tts_max_attempts: 6 # Max attempts covering transient TTS errors during playback (1 initial + 5 retries)
-  scene_pause_duration_ms: 3000 # Silence inserted at a Scene Heading transition (milliseconds)
-  speaker_change_pause_duration_ms: 1000 # Silence at speaker changes and after spoken Scene Headings; 0 disables it
+  scene_pause_duration_ms: 3000 # 場面切替の前とScene Headingを読み終えた後の無音。再生開始前には入れない
+  speaker_change_pause_duration_ms: 1000 # 話者交代時の無音。Scene Heading後には加算しない。0で無効
+  narrator_sentence_pause_duration_ms: 1000 # ナレーターの文末後、次のナレーションまでの追加無音。読点・長文途中分割は対象外。0で無効
 
 emotion_arc:
   max_points: 36

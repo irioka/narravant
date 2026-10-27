@@ -50,6 +50,18 @@ describe('Fountain scene headings', () => {
 })
 
 describe('firstUtteranceLine', () => {
+  it.each([
+    'argh', 'breath', 'heavy breath', 'exhales', 'cackle', 'cheer', 'chuckle', 'chuckles', 'cough',
+    'cry', 'gasp', 'giggle', 'groan', 'growl', 'grunt', 'grr', 'hiss', 'laugh', 'laughter', 'moan',
+    'pant', 'pff', 'phew', 'scream', 'shout', 'shriek', 'sigh', 'sighs', 'sneeze', 'snicker', 'snort',
+    'sob', 'throat-clearing', 'tsk', 'whimper', 'whispers', 'whispering', 'yawn', 'short pause', 'long pause',
+  ])('公式の局所タグ <%s> を試聴本文へ出さず、原稿内の位置は保持する', (tag) => {
+    const source = ['INT. ROOM - DAY #1#', '', '@ミナ', `<${tag}>こんにちは。`].join('\n')
+    expect(firstUtteranceLine(source, 'ミナ', NARRATOR)).toBe('こんにちは。')
+    const range = utteranceRange(source, 1, 1)!
+    expect(source.slice(range.start, range.end)).toBe(`<${tag}>こんにちは。`)
+  })
+
   it('話者の最初の台詞の一文を返す', () => {
     expect(firstUtteranceLine(FOUNTAIN, 'メロス', NARRATOR)).toBe('何かがおかしい。')
     expect(firstUtteranceLine(FOUNTAIN, 'ディオニス', NARRATOR)).toBe('この短刀で何をする気だったのか。')
@@ -106,6 +118,15 @@ describe('playback source ranges', () => {
     '@通行人',
     '逃げて！',
   ].join('\n')
+
+  it.each(['\n', '\r\n'])('途中の括弧から後続セリフの位置・再開を分ける %j', (newline) => {
+    const source = ['INT. ROOM - DAY #1#', '', '@ミナ', '(不安を抑えて)', '待って😀。', '（ほっとして）', '来るのね。', ''].join(newline)
+    const first = utteranceRange(source, 1, 1)!
+    const second = utteranceRange(source, 1, 2)!
+    expect(source.slice(first.start, first.end)).toBe('待って😀。')
+    expect(source.slice(second.start, second.end)).toBe('来るのね。')
+    expect(playbackStartAtOffset(source, source.indexOf('来る'))).toEqual({ sceneNumber: 1, utteranceIndex: 2 })
+  })
 
   it('returns the spoken scene heading and ordered utterance ranges', () => {
     expect(source.slice(...Object.values(sceneHeadingRange(source, 1)!))).toBe('INT. ROOM - DAY #1#')

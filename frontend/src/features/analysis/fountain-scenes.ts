@@ -51,7 +51,8 @@ function normalizeSpeakerAlias(speaker: string): string {
 
 const LISTENER_NOTE_PREFIX = '[[listener:'
 const LISTENER_NOTE = /^\[\[listener:([^\[\]\r\n]+)\]\]$/
-const SPEECH_TAGS = /<(?:short pause|long pause|breath|sigh|laugh|chuckle|gasp|sob|cough|throat-clearing)>/g
+// backendのPERFORMANCE_TAGSと同じ公式表記。backendの契約テストで集合の一致を検査する。
+const SPEECH_TAGS = /<(?:argh|breath|heavy breath|exhales|cackle|cheer|chuckle|chuckles|cough|cry|gasp|giggle|groan|growl|grunt|grr|hiss|laugh|laughter|moan|pant|pff|phew|scream|shout|shriek|sigh|sighs|sneeze|snicker|snort|sob|throat-clearing|tsk|whimper|whispers|whispering|yawn|short pause|long pause)>/g
 const SENTENCE_ENDINGS = new Set('。．.!！？?？…')
 const CLOSING_PUNCTUATION = new Set('」』）)]}’"〉》')
 
@@ -275,7 +276,14 @@ function playbackUtteranceRanges(source: string): Array<{ scene: number; range: 
       currentCue = cueSpeakerName(cue[1])
       continue
     }
-    if (isPerformanceDirection(text)) continue
+    if (isPerformanceDirection(text)) {
+      if (pendingIsDialogue && pending) {
+        const speaker = currentCue
+        flush()
+        currentCue = speaker
+      }
+      continue
+    }
     if (currentCue) {
       pendingIsDialogue = true
       pending = pending ? { start: pending.start, end: line.end } : { start: line.start, end: line.end }

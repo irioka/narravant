@@ -68,6 +68,8 @@ def build_playback_plan(
     document_data: dict[str, Any],
     start_scene: int = 1,
     start_utterance_index: int = 0,
+    *,
+    narrator_style: str | None = None,
 ) -> PlaybackPlan:
     """Build a validated playback plan from document structured data.
 
@@ -79,6 +81,10 @@ def build_playback_plan(
     Filters utterances to begin from (start_scene, start_utterance_index)
     to support resume / retry from point of failure (R6.1, R7.1).
     """
+    if narrator_style is not None:
+        if not isinstance(narrator_style, str) or len(narrator_style) > 500:
+            raise ValueError("invalid_narrator_style")
+        narrator_style = narrator_style.strip() or None
     document_id = document_data.get("document_id", "")
     version_id = document_data.get("version_id", 1)
     source_fountain = document_data.get("source_fountain", "")
@@ -150,6 +156,8 @@ def build_playback_plan(
                 utterance_index=u.utterance_index,
             )
 
+        if u.target_type == "narrator" and narrator_style:
+            default_delivery = narrator_style
         notation = u.speech_notation or parse_speech_notation(u.text, u.listener)
         listener_voice = None
         if notation.listener and any(token.kind == "reaction" for token in notation.tokens):

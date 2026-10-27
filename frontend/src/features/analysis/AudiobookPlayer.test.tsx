@@ -290,6 +290,61 @@ describe('AudiobookPlayer', () => {
     </LocaleProvider>,
   )
 
+  it('語り口は開始時に固定し、変更だけでは送信せず、解除・次回開始へ反映する', async () => {
+    renderPlayer({ documentId: 'delivery-doc', isPlaying: false, onPlayingChange: vi.fn(), scenes })
+    const input = screen.getByLabelText('ナレーターの語り口')
+    fireEvent.change(input, { target: { value: '  Calm and unhurried  ' } })
+    expect(MockWebSocket.instances).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    expect(input).toBeDisabled()
+    await waitFor(() => expect(MockWebSocket.instances[0].sentMessages).toHaveLength(1))
+    expect(JSON.parse(MockWebSocket.instances[0].sentMessages[0]).narrator_style).toBe('Calm and unhurried')
+    act(() => MockWebSocket.instances[0].emitMessage({ event: 'error', code: 'TTS_FAILED', scene_number: 1, utterance_index: 1 }))
+    expect(input).toBeEnabled()
+    fireEvent.change(input, { target: { value: '明るく軽快に' } })
+    fireEvent.click(screen.getByRole('button', { name: /再試行/ }))
+    await waitFor(() => expect(MockWebSocket.instances[1].sentMessages).toHaveLength(1))
+    expect(JSON.parse(MockWebSocket.instances[1].sentMessages[0]).narrator_style).toBe('明るく軽快に')
+    expect(screen.getByRole('button', { name: 'クリア' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'クリア' }))
+    expect(input).toHaveValue('明るく軽快に')
+    act(() => MockWebSocket.instances[1].emitMessage({
+      event: 'error', code: 'TTS_FAILED', scene_number: 1, utterance_index: 1,
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'クリア' }))
+    expect(input).toHaveValue('')
+    expect(MockWebSocket.instances[1].sentMessages).toHaveLength(1)
+  })
+
+  it('再生開始直後から位置の領域を確保し、Clearを無効にする', () => {
+    renderPlayer({ documentId: 'pause-position', isPlaying: true, onPlayingChange: vi.fn(), scenes })
+    expect(screen.getByTestId('playback-position')).toBeInTheDocument()
+    expect(screen.getByLabelText('ナレーターの語り口')).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'クリア' })).toBeDisabled()
+  })
+
+  it('Unicodeの文字数で500文字超を通信前に止める', () => {
+    renderPlayer({ documentId: 'delivery-limit', isPlaying: false, onPlayingChange: vi.fn(), scenes })
+    fireEvent.change(screen.getByLabelText('ナレーターの語り口'), { target: { value: '😀'.repeat(501) } })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    expect(MockWebSocket.instances).toHaveLength(0)
+    expect(screen.getByText('語り口は500文字以内で入力してください。')).toBeInTheDocument()
+  })
+
+  it('作品を切り替えたら語り口を消去する', () => {
+    const props = { documentId: 'first', isPlaying: false, onPlayingChange: vi.fn(), scenes }
+    const { rerender } = renderPlayer(props)
+    fireEvent.change(screen.getByLabelText('ナレーターの語り口'), { target: { value: 'calm' } })
+    rerender(<LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+      <AudiobookPlayer {...props} documentId="second" />
+    </LocaleProvider>)
+    expect(screen.getByLabelText('ナレーターの語り口')).toHaveValue('')
+    rerender(<LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+      <AudiobookPlayer {...props} />
+    </LocaleProvider>)
+    expect(screen.getByLabelText('ナレーターの語り口')).toHaveValue('')
+  })
+
   it('renders a scene number input and play button', () => {
     const onPlayingChange = vi.fn()
     renderPlayer({ disabled: false, documentId: 'doc-123', isPlaying: false, onPlayingChange, scenes })
@@ -376,7 +431,7 @@ describe('AudiobookPlayer', () => {
     ws.emitMessage({ event: 'utterance_end', scene_number: 1, utterance_index: 0 })
 
     await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
-    expect(screen.getByText('話者: Narrator')).toBeInTheDocument()
+    expect(screen.getByText('Narrator')).toBeInTheDocument()
   })
 
   it('plays sentence and utterance pauses before the next scene heading', async () => {
@@ -404,6 +459,13 @@ describe('AudiobookPlayer', () => {
     const sample = 1 / 24000
     expect(MockAudioContext.startTimes[1]).toBeCloseTo(1 + sample, 8)
     expect(MockAudioContext.startTimes[2]).toBeCloseTo(2 + sample, 8)
+    const positionArea = screen.getByTestId('playback-position')
+    expect(positionArea).toHaveTextContent('Narrator')
+    MockAudioContext.instances[0].currentTime = 1.002
+    act(() => vi.advanceTimersByTime(10))
+    expect(screen.getByTestId('playback-position')).toBe(positionArea)
+    expect(positionArea).toHaveTextContent('Narrator')
+    expect(onPlaybackPositionChange).toHaveBeenLastCalledWith(undefined)
 
     ws.emitMessage({ event: 'utterance_end', scene_number: 1, utterance_index: 0 })
     ws.emitMessage({ event: 'scene_pause', scene_number: 2, duration_ms: 100 })
@@ -598,7 +660,7 @@ describe('AudiobookPlayer', () => {
     ws.emitMessage({ event: 'utterance_end', scene_number: 1, utterance_index: 0 })
 
     await waitFor(() => expect(screen.getByRole('button', { name: '再生停止' })).toBeInTheDocument())
-    expect(screen.getByText('話者: ナレーター')).toBeInTheDocument()
+    expect(screen.getByText('ナレーター')).toBeInTheDocument()
     expect(screen.getByText('(シーン 1 発話 #1)')).toBeInTheDocument()
 
     // Stop button works

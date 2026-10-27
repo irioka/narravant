@@ -148,6 +148,7 @@ def test_settings_loads_supported_gemini_generation_parameters(
     assert settings.playback_tts_max_attempts == 6
     assert settings.playback_scene_pause_duration_ms == 3000
     assert settings.playback_speaker_change_pause_duration_ms == 1000
+    assert settings.playback_narrator_sentence_pause_duration_ms == 1000
     assert settings.emotion_arc_max_points == 36
     config = yaml.safe_load((BACKEND_ROOT / "config.yaml").read_text(encoding="utf-8"))
     assert settings.gemini_thinking_level == config["gemini"]["thinking_level"]
@@ -244,7 +245,25 @@ def test_settings_rejects_missing_required_yaml_key(monkeypatch: pytest.MonkeyPa
         Settings.load(tmp_path)
 
 
-@pytest.mark.parametrize("key", ["tts_max_attempts", "scene_pause_duration_ms", "speaker_change_pause_duration_ms"])
+@pytest.mark.parametrize("value", [0, 725, -1, "invalid"])
+def test_settings_validates_narrator_sentence_pause(monkeypatch, tmp_path, value):
+    from narravant.core.settings import Settings, SettingsError
+
+    _set_required_environment(monkeypatch)
+    config = yaml.safe_load((BACKEND_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    config["playback"]["narrator_sentence_pause_duration_ms"] = value
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    if isinstance(value, int) and value >= 0:
+        assert Settings.load(tmp_path).playback_narrator_sentence_pause_duration_ms == value
+    else:
+        with pytest.raises(SettingsError, match="playback.narrator_sentence_pause_duration_ms"):
+            Settings.load(tmp_path)
+
+
+@pytest.mark.parametrize("key", [
+    "tts_max_attempts", "scene_pause_duration_ms", "speaker_change_pause_duration_ms",
+    "narrator_sentence_pause_duration_ms",
+])
 def test_settings_requires_playback_configuration(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, key: str) -> None:
     from narravant.core.settings import Settings, SettingsError
 

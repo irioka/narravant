@@ -20,6 +20,7 @@ from narravant.services.speech_segments import (
     SegmentVoice,
     SpeechSegment,
     build_speech_segments,
+    ends_with_sentence_ending,
 )
 from narravant.services.voice_models import canonical_voice_id
 
@@ -297,10 +298,12 @@ class TtsPlaybackCoordinator:
         scene_pause_duration_ms: int = DEFAULT_SCENE_PAUSE_DURATION_MS,
         *,
         speaker_change_pause_duration_ms: int = 0,
+        narrator_sentence_pause_duration_ms: int = 0,
     ) -> None:
         self.tts_client = tts_client
         self.scene_pause_duration_ms = max(0, scene_pause_duration_ms)
         self.speaker_change_pause_duration_ms = max(0, speaker_change_pause_duration_ms)
+        self.narrator_sentence_pause_duration_ms = max(0, narrator_sentence_pause_duration_ms)
         self._stopped = False
         self._current_task: asyncio.Task | None = None
 
@@ -321,6 +324,8 @@ class TtsPlaybackCoordinator:
         previous_scene: int | None = None
         previous_speaker: str | None = None
         previous_was_heading = False
+        previous_sentence_end = False
+        previous_was_narrator = False
         for utterance in utterances:
             if self._stopped:
                 break
@@ -347,15 +352,23 @@ class TtsPlaybackCoordinator:
                     speaker = normalize_speaker_name(segment.primary.speaker)
                     if speaker in NARRATOR_SPEAKERS:
                         speaker = NARRATOR_SPEAKERS[0]
-                    if (
-                        previous_speaker is not None
-                        and (speaker != previous_speaker or previous_was_heading)
-                        and self.speaker_change_pause_duration_ms > 0
-                    ):
+                    # 見出し後は既に場面用pauseを送っているため、他の固定pauseを足さない。
+                    pause_ms = 0
+                    if previous_speaker is not None and not previous_was_heading:
+                        if speaker != previous_speaker:
+                            pause_ms = self.speaker_change_pause_duration_ms
+                        elif (
+                            previous_was_narrator
+                            and utterance.target_type == "narrator"
+                            and not utterance.is_scene_heading
+                            and previous_sentence_end
+                        ):
+                            pause_ms = self.narrator_sentence_pause_duration_ms
+                    if pause_ms > 0:
                         yield {
                             "type": "utterance_pause",
                             "scene_number": utterance.scene_number,
-                            "duration_ms": self.speaker_change_pause_duration_ms,
+                            "duration_ms": pause_ms,
                         }
                     if self._stopped:
                         break
@@ -377,6 +390,8 @@ class TtsPlaybackCoordinator:
                         "utterance_index": utterance.utterance_index,
                     }
                     previous_speaker = speaker
+                    previous_sentence_end = ends_with_sentence_ending(segment.text)
+                    previous_was_narrator = utterance.target_type == "narrator"
                     previous_was_heading = False
             except asyncio.CancelledError:
                 self._stopped = True
@@ -400,6 +415,12 @@ class TtsPlaybackCoordinator:
             }
             previous_scene = utterance.scene_number
             previous_was_heading = utterance.is_scene_heading
+            if utterance.is_scene_heading and not self._stopped:
+                yield {
+                    "type": "scene_pause",
+                    "scene_number": utterance.scene_number,
+                    "duration_ms": self.scene_pause_duration_ms,
+                }
 
         if not self._stopped:
             yield {"type": "playback_complete"}

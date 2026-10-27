@@ -106,7 +106,7 @@ def draft_connection(monkeypatch):
     return connect
 
 
-async def send_start(incoming, draft, start_utterance_index=1):
+async def send_start(incoming, draft, start_utterance_index=1, **options):
     await incoming.put(
         {
             "type": "websocket.receive",
@@ -116,6 +116,7 @@ async def send_start(incoming, draft, start_utterance_index=1):
                     "scene_number": 1,
                     "start_utterance_index": start_utterance_index,
                     "draft": draft,
+                    **options,
                 }
             ),
         }
@@ -126,6 +127,30 @@ async def receive_event(outgoing):
     response = await asyncio.wait_for(outgoing.get(), timeout=2)
     assert response["type"] == "websocket.send"
     return json.loads(response["text"])
+
+
+@pytest.mark.parametrize("style", ["穏やかに", "Calm and unhurried", "😀" * 500])
+async def test_draft_narrator_style_reaches_tts_and_not_character(draft_connection, style):
+    async with draft_connection() as (incoming, outgoing, tts):
+        await send_start(incoming, DRAFT, 0, narrator_style=style)
+        while True:
+            event = await receive_event(outgoing)
+            if event["event"] in {"playback_complete", "error"}:
+                assert event["event"] == "playback_complete"
+                break
+        assert tts.synthesized_styles[:2] == [style, style]
+        assert tts.synthesized_styles[-1] == ""
+        assert "narrator_style" not in DRAFT
+
+
+@pytest.mark.parametrize("style", [123, {}, "😀" * 501])
+async def test_draft_invalid_narrator_style_is_rejected_before_tts(draft_connection, style):
+    async with draft_connection() as (incoming, outgoing, tts):
+        await send_start(incoming, DRAFT, 0, narrator_style=style)
+        event = await receive_event(outgoing)
+        assert event["code"] == "INVALID_PLAYBACK_REQUEST"
+        assert tts.call_count == 0
+        assert "😀" not in json.dumps(event)
 
 
 async def test_unsaved_draft_plays_scene_heading_without_persisting(draft_connection):
@@ -144,7 +169,8 @@ async def test_unsaved_draft_plays_scene_heading_without_persisting(draft_connec
             ("Narrator", 1),
             ("ALICE", 2),
         ]
-        assert [event["duration_ms"] for event in events if event["event"] == "utterance_pause"] == [1000, 1000]
+        assert [event["duration_ms"] for event in events if event["event"] == "utterance_pause"] == [1000]
+        assert [event["duration_ms"] for event in events if event["event"] == "scene_pause"] == [0]
         assert tts.calls == [
             {"text": "ROOM - DAY", "voice_id": "voice_synthetic_narrator"},
             {"text": "First.", "voice_id": "voice_synthetic_narrator"},
@@ -179,12 +205,7 @@ async def test_draft_missing_voice_fails_before_synthesis(draft_connection):
 
 async def test_draft_reaction_uses_listener_voice_once_without_speaking_note(draft_connection):
     draft = {
-        "source_fountain": (
-            "INT. ROOM - DAY #1#\n\n"
-            "@Narrator\n"
-            "[[listener:Guide]]\n"
-            "この先で待って。 |わかった|\n"
-        ),
+        "source_fountain": ("INT. ROOM - DAY #1#\n\n@Narrator\n[[listener:Guide]]\nこの先で待って。 |わかった|\n"),
         "voice_assignments": [
             {"speaker": "Narrator", "voice_id": "voice_synthetic_narrator"},
             {"speaker": "Guide", "voice_id": "voice_synthetic_guide"},
@@ -200,9 +221,7 @@ async def test_draft_reaction_uses_listener_voice_once_without_speaking_note(dra
                 break
 
         assert events[-1]["event"] == "playback_complete"
-        assert tts.calls == [
-            {"text": "この先で待って。 |わかった|", "voice_id": "voice_synthetic_narrator"}
-        ]
+        assert tts.calls == [{"text": "この先で待って。 |わかった|", "voice_id": "voice_synthetic_narrator"}]
         assert len(tts.synthesized_segments) == 1
         assert tts.synthesized_segments[0].listener == SegmentVoice("Guide", "voice_synthetic_guide")
         assert "[[listener:Guide]]" not in tts.synthesized_segments[0].text

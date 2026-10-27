@@ -54,6 +54,7 @@ from narravant.services.narrative_adaptation import (
     SourceCharacterCard,
     SourceKind,
 )
+from narravant.services.performance_review import PerformanceReviewService
 from narravant.services.tasks import TaskManager
 from narravant.services.vertex_analysis import (
     TURNING_POINT_LABELS,
@@ -372,6 +373,7 @@ class ImportService:
         fdx_max_depth: int,
         txt_minimum_confidence: float,
         emotion_arc_max_points: int,
+        performance_reviewer: PerformanceReviewService | None = None,
     ) -> None:
         self.repository = repository
         self.storage = storage
@@ -379,6 +381,7 @@ class ImportService:
         self.drafts = drafts
         self.analyzer = analyzer
         self.adapter = adapter
+        self.performance_reviewer = performance_reviewer
         self.processing_timeout_seconds = processing_timeout_seconds
         self.max_size_bytes = max_size_bytes
         self.pdf_max_pages = pdf_max_pages
@@ -588,6 +591,13 @@ class ImportService:
                         if final_verification.fountain != source_fountain:
                             raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
                         adaptation_result = final_verification
+                if self.performance_reviewer is not None:
+                    source_fountain = self.performance_reviewer.review_performance(
+                        source_fountain, analysis, source_cards=source_cards,
+                        deadline=deadline, ensure_not_cancelled=lambda: self._ensure_not_cancelled(task_id),
+                        on_progress=self._stream_reporter(task_id, "analyzing", 90),
+                        preserve_existing_directions=adaptation_result is None,
+                    )
                 structured = canonical_analysis_to_v1(
                     source_fountain,
                     analysis,

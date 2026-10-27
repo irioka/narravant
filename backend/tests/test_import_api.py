@@ -400,6 +400,8 @@ async def test_import_save_api_accepts_and_publishes_the_current_client_draft() 
         emotion_arc=deepcopy(draft.structured["emotion_arc"]),
     )
     settings = SimpleNamespace(
+        gemini_performance_review_max_attempts=2,
+        gemini_performance_context_window_max_characters=24000,
         gemini_processing_timeout_seconds=60,
         vertex_ai_processing_timeout_seconds=60,
         file_import_max_size_mb=1,
@@ -875,6 +877,132 @@ def _service_with_adapter(
         emotion_arc_max_points=36,
     )
     return service, repository, storage, tasks
+
+
+@pytest.mark.parametrize("revised", [False, True])
+def test_performance_review_runs_after_final_verification_once(revised):
+    adapter = FakeNarrativeAdapter()
+    if revised:
+        adapter.revised_fountain = adapter.fountain.replace("Adapted scene.", "Revised scene.")
+    analyzer = FakeDocumentAnalyzer()
+    service, repository, storage, tasks = _service_with_adapter(adapter=adapter, analyzer=analyzer)
+    reviewed = []
+
+    class Reviewer:
+        def review_performance(self, fountain, analysis, **kwargs):
+            assert analyzer.analyzed_fountains[-1] == fountain
+            assert adapter.calls[-1] == "verify_after_analysis"
+            assert kwargs["preserve_existing_directions"] is False
+            kwargs["ensure_not_cancelled"]()
+            reviewed.append(fountain)
+            return fountain
+
+    service.performance_reviewer = Reviewer()
+    content = b"The traveler left home and found a path."
+    imported = validate_import(
+        "story.txt", content, 1024 * 1024, pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.7
+    )
+    task_id = service.start("owner-1", imported)
+    service.run(task_id, content)
+    assert reviewed == [adapter.revised_fountain or adapter.fountain]
+    assert service.drafts.get(task_id) is not None
+
+
+def test_native_import_never_reviews_performance():
+    service, *_ = _service()
+
+    class ForbiddenReviewer:
+        def review_performance(self, *args, **kwargs):
+            raise AssertionError("Native JSON must not be reviewed")
+
+    service.performance_reviewer = ForbiddenReviewer()
+    content = _native_bytes()
+    imported = validate_import(
+        "native.json", content, 1024 * 1024, pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.7
+    )
+    task_id = service.start("owner-1", imported)
+    service.run(task_id, content)
+    assert service.drafts.get(task_id) is not None
+
+
+def test_native_save_roundtrip_keeps_performance_order_and_voice_assignments():
+    from narravant.services.playback import build_playback_plan
+
+    service, _, storage, _ = _service()
+    envelope = json.loads(_native_bytes())
+    source = "Title: Native\n\nINT. ROOM - DAY #1#\n\n@A\n(calm)\nHello.<short pause>\n(urgent)\nWait.\n"
+    envelope["document"]["source_fountain"] = source
+    envelope["document"]["voice_assignments"] = [
+        {"speaker": "A", "voice_id": "voice_synthetic_a"},
+        {"speaker": "Narrator", "voice_id": "voice_synthetic_narrator"},
+    ]
+
+    def imported(payload):
+        content = json.dumps(payload).encode()
+        task_id = service.start(
+            "owner-1",
+            validate_import(
+                "roundtrip.json", content, 1024 * 1024, pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.7
+            ),
+        )
+        service.run(task_id, content)
+        draft = service.drafts.get(task_id)
+        assert draft is not None
+        return task_id, draft
+
+    task_id, first = imported(envelope)
+    document_id, *_ = service.save(task_id, "owner-1")
+    saved, _ = storage.read_structured_script(document_id, 1)
+    assert saved["source_fountain"] == source.strip()
+    assert "narrator_style" not in json.dumps(saved)
+    envelope["document"]["source_fountain"] = saved["source_fountain"]
+    envelope["document"]["voice_assignments"] = saved["voice_assignments"]
+    _, second = imported(envelope)
+    plan = build_playback_plan(second.structured, start_utterance_index=1)
+    assert [(u.text, u.performance_direction, u.voice_id) for u in plan.utterances] == [
+        ("Hello.<short pause>", "calm", "voice_synthetic_a"),
+        ("Wait.", "urgent", "voice_synthetic_a"),
+    ]
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_screenplay_review_preserves_existing_directions_or_fails_without_draft(fail):
+    from narravant.services.performance_review import (
+        PerformanceReviewConfig,
+        PerformanceReviewResult,
+        PerformanceReviewService,
+        TurnPerformance,
+    )
+
+    service, *_ = _service_with_adapter()
+
+    class Client:
+        def summarize_performance_window(self, text, numbers, analysis, **kwargs):
+            return {n: "PRIVATE_PERFORMANCE_CONTEXT_SENTINEL" for n in numbers}
+
+        def review_scene_performance(self, number, utterances, context, **kwargs):
+            assert kwargs["preserve_existing_directions"] is True
+            return PerformanceReviewResult(
+                edits=[
+                    TurnPerformance(
+                        scene_number=number, utterance_index=999, split_offsets=[], styles=["calm"], insertions=[]
+                    )
+                ]
+                if fail
+                else []
+            )
+
+    service.performance_reviewer = PerformanceReviewService(Client(), PerformanceReviewConfig())
+    content = b"INT. ROOM - DAY #1#\n\n@MINA\nHello.\n"
+    imported = validate_import(
+        "test.fountain", content, 1024 * 1024, pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.7
+    )
+    task_id = service.start("owner-1", imported)
+    service.run(task_id, content)
+    draft = service.drafts.get(task_id)
+    assert (draft is None) == fail
+    if draft:
+        assert "PRIVATE_PERFORMANCE_CONTEXT_SENTINEL" not in json.dumps(draft.structured)
 
 
 @pytest.mark.parametrize("extension", [".fountain", ".fdx", ".txt", ".pdf"])
@@ -1447,6 +1575,8 @@ async def test_import_and_save_pipeline_with_local_storage_client(tmp_path: Path
         voice_assignments=deepcopy(draft.structured.get("voice_assignments", [])),
     )
     settings = SimpleNamespace(
+        gemini_performance_review_max_attempts=2,
+        gemini_performance_context_window_max_characters=24000,
         gemini_processing_timeout_seconds=60,
         vertex_ai_processing_timeout_seconds=60,
         file_import_max_size_mb=1,

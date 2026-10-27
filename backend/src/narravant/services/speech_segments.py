@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from narravant.core.speech_notation import SpeechToken, parse_speech_notation
+from narravant.core.speech_notation import PERFORMANCE_TAGS, SpeechToken, parse_speech_notation
 
 if TYPE_CHECKING:
     from narravant.services.playback import PlannedUtterance
@@ -16,18 +16,7 @@ _SENTENCE_ENDINGS = frozenset("。！？!?…")
 _CLAUSE_ENDINGS = frozenset("、，,;；:")
 _CLOSING_PUNCTUATION = frozenset('」』）)]}’”\"〉》')
 _NON_TERMINAL_ABBREVIATIONS = frozenset({"dr.", "mr.", "mrs.", "ms.", "prof.", "sr.", "e.g.", "i.e."})
-_TAG_SPELLINGS = (
-    "<short pause>",
-    "<long pause>",
-    "<breath>",
-    "<sigh>",
-    "<laugh>",
-    "<chuckle>",
-    "<gasp>",
-    "<sob>",
-    "<cough>",
-    "<throat-clearing>",
-)
+_TAG_SPELLINGS = tuple(f"<{tag}>" for tag in PERFORMANCE_TAGS)
 
 
 @dataclass(frozen=True)
@@ -94,6 +83,18 @@ def _sentence_end(text: str, index: int) -> int | None:
     while end < len(text) and (text[end] in _SENTENCE_ENDINGS or text[end] in _CLOSING_PUNCTUATION):
         end += 1
     return end
+
+
+def ends_with_sentence_ending(text: str) -> bool:
+    """制御タグと閉じ括弧を除き、文末で終わるsegmentを判定する。長文の途中分割は除外する。"""
+    spoken = "".join(
+        token.value for token in parse_speech_notation(text).tokens if token.kind == "text"
+    ).rstrip()
+    return any(
+        _sentence_end(spoken, index) == len(spoken)
+        for index, character in enumerate(spoken)
+        if character in "。.!?！？"
+    )
 
 
 def _split_long_text(text: str, offset: int, final_boundary: bool) -> list[_Atom]:

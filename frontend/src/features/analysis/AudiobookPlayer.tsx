@@ -57,6 +57,11 @@ export function AudiobookPlayer({
   const { t } = useTranslation(['analysis'])
   const { t: tErrors } = useTranslation('errors')
   const [status, setStatus] = useState<PlaybackStatus>('idle')
+  const [deliverySetting, setDeliverySetting] = useState({ documentId, value: '' })
+  // 作品の切替直後にも前作品の指定を送信しない。
+  const narratorStyle = deliverySetting.documentId === documentId ? deliverySetting.value : ''
+  const deliveryTooLong = Array.from(narratorStyle).length > 500
+  const playbackActive = isPlaying || status === 'generating' || status === 'playing'
   const [errorMessage, setErrorMessage] = useState<string>()
   const [failedPosition, setFailedPosition] = useState<{ scene: number; utterance: number }>()
   const [currentSpeaker, setCurrentSpeaker] = useState<string>()
@@ -216,9 +221,7 @@ export function AudiobookPlayer({
               ...(item.sourceOffset === undefined ? {} : { sourceOffset: item.sourceOffset }),
             })
           } else {
-            setCurrentSpeaker(undefined)
-            setCurrentSceneNumber(undefined)
-            setCurrentUtteranceIndex(undefined)
+            // 間の最中も直前のキャラ名・位置を保ち、原稿のハイライトだけ解除する。
             onPlaybackPositionChange?.(undefined)
           }
         }
@@ -251,6 +254,8 @@ export function AudiobookPlayer({
   }, [playNextInQueue])
 
   const startPlayback = useCallback((sceneNumber: number, utteranceIndex = 0, sourceOffset?: number) => {
+    if (deliveryTooLong) return
+    const requestedNarratorStyle = narratorStyle.trim()
     stopAudio()
     // ボタン操作中に出力を起動する。音声の到着まで待つと再生制限に掛かる場合がある。
     getAudioContext()
@@ -304,6 +309,7 @@ export function AudiobookPlayer({
       if (wsRef.current !== ws) return
       ws.send(JSON.stringify({
         action: 'start',
+        ...(requestedNarratorStyle ? { narrator_style: requestedNarratorStyle } : {}),
         scene_number: sceneNumber,
         start_utterance_index: utteranceIndex,
         ...(playbackDraft ? { draft: playbackDraft } : {}),
@@ -391,7 +397,7 @@ export function AudiobookPlayer({
     ws.onclose = () => {
       if (wsRef.current === ws) wsRef.current = null
     }
-  }, [documentId, draft, getAudioContext, onPlaybackPositionChange, onPlayingChange, playNextInQueue, stopAudio, t, tErrors])
+  }, [deliveryTooLong, narratorStyle, documentId, draft, getAudioContext, onPlaybackPositionChange, onPlayingChange, playNextInQueue, stopAudio, t, tErrors])
 
   const stopPlayback = useCallback(() => {
     const ws = wsRef.current
@@ -413,6 +419,7 @@ export function AudiobookPlayer({
   useEffect(() => {
     if (previousDocumentIdRef.current === documentId) return
     previousDocumentIdRef.current = documentId
+    setDeliverySetting({ documentId, value: '' })
     stopPlayback()
   }, [documentId, stopPlayback])
 
@@ -453,8 +460,8 @@ export function AudiobookPlayer({
 
   return (
     <div className="flex flex-col gap-2 rounded-md border bg-card p-3 shadow-xs" data-testid="audiobook-player">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-48 items-center gap-2 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
           <label className="whitespace-nowrap" htmlFor="playback-scene-number">{t('analysis:player.sceneNumber')}</label>
           <Input
             aria-label={t('analysis:player.sceneNumberAria')}
@@ -498,7 +505,22 @@ export function AudiobookPlayer({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2 text-xs">
+          <label className="shrink-0 whitespace-nowrap" htmlFor="narrator-delivery">
+            {t('analysis:player.narratorDelivery')}
+          </label>
+          <Input id="narrator-delivery" className="min-w-0 flex-1" value={narratorStyle}
+            disabled={playbackActive}
+            aria-invalid={deliveryTooLong}
+            aria-describedby={deliveryTooLong ? 'narrator-delivery-error' : undefined}
+            onChange={(event) => setDeliverySetting({ documentId, value: event.target.value })} />
+          <Button className="shrink-0" variant="ghost" size="sm" disabled={playbackActive}
+            onClick={() => setDeliverySetting({ documentId, value: '' })}>
+            {t('analysis:player.clearNarratorDelivery')}
+          </Button>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
           {isPlaying && status === 'generating' && (
             <div aria-live="polite" className="flex items-center gap-1.5 text-xs text-muted-foreground" role="status">
               <LoaderCircle aria-hidden="true" className="size-4 animate-spin" />
@@ -543,10 +565,20 @@ export function AudiobookPlayer({
         </div>
       </div>
 
-      {isPlaying && currentSpeaker && currentSceneNumber !== undefined && currentUtteranceIndex !== undefined && (
-        <div className="border-t pt-2 text-xs text-muted-foreground">
-          <span>{t('analysis:player.speaker', { speaker: currentSpeaker })}</span>{' '}
-          <span>{t('analysis:player.utterancePosition', { scene: currentSceneNumber, utterance: currentUtteranceIndex + 1 })}</span>
+      {deliveryTooLong && (
+        <p id="narrator-delivery-error" className="text-xs text-destructive" role="alert">
+          {t('analysis:player.narratorDeliveryTooLong')}
+        </p>
+      )}
+
+      {playbackActive && (
+        <div className="min-h-6 border-t pt-2 text-xs text-muted-foreground" data-testid="playback-position">
+          {currentSpeaker && currentSceneNumber !== undefined && currentUtteranceIndex !== undefined && (
+            <>
+              <span>{currentSpeaker}</span>{' '}
+              <span>{t('analysis:player.utterancePosition', { scene: currentSceneNumber, utterance: currentUtteranceIndex + 1 })}</span>
+            </>
+          )}
         </div>
       )}
 
