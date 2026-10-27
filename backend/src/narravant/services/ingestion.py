@@ -20,7 +20,7 @@ from charset_normalizer import from_bytes
 from defusedxml import ElementTree
 from defusedxml.common import DefusedXmlException
 from pypdf import PdfReader
-from pypdf.errors import PdfReadError
+from pypdf.errors import LimitReachedError, PdfReadError
 
 from narravant.api.schemas import (
     AnalysisSchema,
@@ -175,7 +175,7 @@ def _preflight_pdf(content: bytes, max_pages: int) -> None:
             raise ImportValidationError("MALFORMED_PDF", "PDFのページ数が上限を超えています。")
     except ImportValidationError:
         raise
-    except (PdfReadError, OSError, ValueError, KeyError) as exc:
+    except (LimitReachedError, PdfReadError, OSError, ValueError, KeyError) as exc:
         raise ImportValidationError("MALFORMED_PDF", "PDFファイルとして読み取れませんでした。") from exc
 
 

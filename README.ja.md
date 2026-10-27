@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-バージョン: **0.5.0** — 変更内容は[CHANGELOG.md](CHANGELOG.md)を参照してください。
+バージョン: **0.5.1** — 変更内容は[CHANGELOG.md](CHANGELOG.md)を参照してください。
 
 NARRAVANT は、小説や脚本から、AIで**ナレーション・登場人物の台詞・演技指導を含むオーディオブック用スクリプト**を [Fountain](https://fountain.io/) 形式で生成し、Gemini TTSで朗読する、軽量なローカルアプリケーションです。
 

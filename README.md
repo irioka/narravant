@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-Version: **0.5.0** — see [CHANGELOG.md](CHANGELOG.md).
+Version: **0.5.1** — see [CHANGELOG.md](CHANGELOG.md).
 
 NARRAVANT is a lightweight, local-first application that uses AI to turn novels and screenplays into [Fountain](https://fountain.io/) audiobook scripts with **narration, character dialogue, and acting directions**, then reads them aloud with Gemini TTS.
 

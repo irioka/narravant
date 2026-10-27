@@ -455,6 +455,29 @@ def test_import_validation_rejects_docx_and_non_utf8_fountain() -> None:
     assert invalid_encoding.value.status_code == 422
 
 
+def test_import_validation_rejects_pdf_with_excessive_xref_size() -> None:
+    pdf_stream = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.write(pdf_stream)
+    original = pdf_stream.getvalue()
+    header_start = original.index(b"xref\n") + len(b"xref\n")
+    header_end = original.index(b"\n", header_start)
+    content = original[:header_start] + b"0 1000000000" + original[header_end:]
+
+    with pytest.raises(ImportValidationError) as caught:
+        validate_import(
+            "oversized-xref.pdf",
+            content,
+            1024 * 1024,
+            pdf_max_pages=1,
+            fdx_max_depth=8,
+            txt_minimum_confidence=0.70,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.code == "MALFORMED_PDF"
+
+
 def test_import_validation_accepts_txt_fdx_and_preflighted_pdf() -> None:
     txt = validate_import(
         "script.txt",
