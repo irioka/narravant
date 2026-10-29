@@ -148,8 +148,28 @@ export const ja = {
     titles: { input: '入力内容を確認してください', signIn: 'ログインが必要です', auth: '認証エラー', document: '文書を処理できません', connection: '接続が中断されました', operation: '処理に失敗しました' },
     unknown: { title: '処理に失敗しました', message: '予期しないエラーが発生しました。（コード: {{code}}）' },
     reference: '参照番号: {{correlationId}}',
+    adaptation: {
+      scene: '対象: 場面{{sceneNumber}}。',
+      retries: 'リトライ: {{retryCount}}/{{maxRetries}}回。',
+      issueList: '問題: {{issues}}。',
+      reasons: {
+        revisionBudgetExhausted: '場面の修正が必要ですが、リトライ回数の上限に達したため停止しました。',
+        majorIssuesAfterRevision: 'リトライ後も原作との重大な問題が残っています。',
+        majorIssuesInFinalVerification: '完成稿の最終照合で原作との重大な問題が見つかったため停止しました。',
+        sceneStructureInvalid: '生成された脚本の場面・話者・発話の構造が不正なため停止しました。',
+        invalidVerificationResponse: 'AIの検証応答の形式または根拠の参照先が不正で、検証を完了できませんでした。',
+        invalidVerificationReference: '品質指摘の対象場面または原作の根拠参照が不正なため停止しました。',
+        outputLanguageMismatch: '生成された脚本の言語が原稿の言語と一致しないため停止しました。',
+      },
+      issues: {
+        eventOmission: '重要な出来事の欠落', motivationChange: '人物の動機の変更',
+        knowledgeBoundary: '人物の知識の矛盾', speakerAttribution: '話者の誤り',
+        endingChange: '結末の変更', foreshadowingMismatch: '伏線と回収の不整合',
+        sourceContradiction: '原作の出来事との矛盾', fountainInvalid: '脚本構造の不正',
+      },
+    },
     codes: {
-      VALIDATION_ERROR: '入力内容を確認してください。', EMPTY_FILE: '選択したファイルは空です。', FILE_TOO_LARGE: '選択したファイルはサイズ上限を超えています。', UNSUPPORTED_MEDIA_TYPE: '.fountain、.txt、.pdf、.fdx、Native JSON（.json）のいずれかを選択してください。', INVALID_ENCODING: 'ファイルの文字コードを安全に読み取れませんでした。', MALFORMED_FDX: 'FDXファイルの形式が不正です。', MALFORMED_PDF: 'PDFファイルが不正か、読み取れません。', INVALID_NATIVE_DOCUMENT: 'このファイルは有効なNARRAVANT Native JSON文書ではありません。', PROCESS_RESTARTED: 'サーバー再起動のため処理を中断しました。もう一度実行してください。', UNAUTHENTICATED: '続行するには、もう一度ログインしてください。', AUTHENTICATION_UNAVAILABLE: '認証サービスを一時的に利用できません。時間を置いて再試行してください。', ACCOUNT_BINDING_CONFLICT: 'このアカウントは自動で関連付けできません。管理者へ問い合わせてください。', DOCUMENT_NOT_FOUND: 'この文書は利用できなくなりました。', TASK_NOT_FOUND: 'このタスクは利用できなくなりました。', NOT_FOUND: '対象が見つかりませんでした。', FORBIDDEN: 'この操作を実行する権限がありません。', CONFLICT: '別の操作でデータが変更されました。最新の内容を読み込んで再試行してください。', DOCUMENT_CONTENT_MISSING: '文書本文の正本を利用できません。管理者へ問い合わせてください。', CONTRACT_MISMATCH: 'サーバー応答が想定した契約と一致しませんでした。', VOICE_NOT_FOUND: '作成済みの声が見つかりません。', VOICE_PROVIDER_UNAVAILABLE: 'Gemini の声を確認できません。時間をおいて再試行してください。', VOICE_PROVIDER_PERMISSION_DENIED: 'Gemini Voices API の操作が許可されませんでした。', VOICE_REGISTRY_SYNC_FAILED: 'Gemini 上の声は削除されましたが、ローカル一覧を同期できませんでした。', VOICE_USAGE_UNAVAILABLE: '利用先を完全に確認できないため、声を削除できません。', VOICE_EXPIRED: 'この声の有効期限が切れています。別の声を割り当ててください。', VOICE_UNAVAILABLE: 'この声を確認できません。もう一度読み込んでください。', INTERNAL_ERROR: '内部エラーが発生しました。時間を置いて再試行してください。', IMPORT_FAILED: '取込みまたは分析に失敗しました。ファイルを確認して再試行してください。', IMPORT_FAILED_retryable: '取込みまたは分析で一時的なエラーが発生しました。時間を置いて同じファイルを再度取り込んでください。', REANALYSIS_FAILED: '感情アークの再分析に失敗しました。再試行してください。', SOURCE_CLASSIFICATION_INCONCLUSIVE: '入力原稿が脚本か散文かを判定できませんでした。', ADAPTATION_VERIFICATION_FAILED: '脚色結果が整合性検証を通過しませんでした。', SSE_CONNECTION_FAILED: '進捗接続を開始できませんでした。', SSE_DISCONNECTED: '処理完了前に接続が切断されました。', HTTP_ERROR: 'リクエストを完了できませんでした。', DOCUMENTS_LOAD_FAILED: '文書一覧を読み込めませんでした。APIが起動しているか確認してください。', DOCUMENT_OVERVIEW_LOAD_FAILED: '概要を読み込めませんでした。', SAVE_FAILED: '変更を保存できませんでした。', DELETE_FAILED: '文書を削除できませんでした。', DISCARD_FAILED: '下書きを破棄できませんでした。', IMPORT_BLOCKED: '現在の状態では取込みを開始できません。', REANALYSIS_RESULT_INVALID: '再分析の結果が不正です。', SHARING_SAVE_FAILED: '共有設定を保存できませんでした。再読み込みして再試行してください。', STORAGE_READ_FAILED: '保存された設定を読み込めませんでした。', STORAGE_WRITE_FAILED: '設定を保存できませんでした。',
+      VALIDATION_ERROR: '入力内容を確認してください。', EMPTY_FILE: '選択したファイルは空です。', FILE_TOO_LARGE: '選択したファイルはサイズ上限を超えています。', UNSUPPORTED_MEDIA_TYPE: '.fountain、.txt、.pdf、.fdx、Native JSON（.json）のいずれかを選択してください。', INVALID_ENCODING: 'ファイルの文字コードを安全に読み取れませんでした。', MALFORMED_FDX: 'FDXファイルの形式が不正です。', MALFORMED_PDF: 'PDFファイルが不正か、読み取れません。', INVALID_NATIVE_DOCUMENT: 'このファイルは有効なNARRAVANT Native JSON文書ではありません。', PROCESS_RESTARTED: 'サーバー再起動のため処理を中断しました。もう一度実行してください。', UNAUTHENTICATED: '続行するには、もう一度ログインしてください。', AUTHENTICATION_UNAVAILABLE: '認証サービスを一時的に利用できません。時間を置いて再試行してください。', ACCOUNT_BINDING_CONFLICT: 'このアカウントは自動で関連付けできません。管理者へ問い合わせてください。', DOCUMENT_NOT_FOUND: 'この文書は利用できなくなりました。', TASK_NOT_FOUND: 'このタスクは利用できなくなりました。', NOT_FOUND: '対象が見つかりませんでした。', FORBIDDEN: 'この操作を実行する権限がありません。', CONFLICT: '別の操作でデータが変更されました。最新の内容を読み込んで再試行してください。', DOCUMENT_CONTENT_MISSING: '文書本文の正本を利用できません。管理者へ問い合わせてください。', CONTRACT_MISMATCH: 'サーバー応答が想定した契約と一致しませんでした。', VOICE_NOT_FOUND: '作成済みの声が見つかりません。', VOICE_PROVIDER_UNAVAILABLE: 'Gemini の声を確認できません。時間をおいて再試行してください。', VOICE_PROVIDER_PERMISSION_DENIED: 'Gemini Voices API の操作が許可されませんでした。', VOICE_REGISTRY_SYNC_FAILED: 'Gemini 上の声は削除されましたが、ローカル一覧を同期できませんでした。', VOICE_USAGE_UNAVAILABLE: '利用先を完全に確認できないため、声を削除できません。', VOICE_EXPIRED: 'この声の有効期限が切れています。別の声を割り当ててください。', VOICE_UNAVAILABLE: 'この声を確認できません。もう一度読み込んでください。', INTERNAL_ERROR: '内部エラーが発生しました。時間を置いて再試行してください。', IMPORT_FAILED: '取込みまたは分析に失敗しました。ファイルを確認して再試行してください。', IMPORT_FAILED_retryable: '取込みまたは分析で一時的なエラーが発生しました。時間を置いて同じファイルを再度取り込んでください。', REANALYSIS_FAILED: '感情アークの再分析に失敗しました。再試行してください。', SOURCE_CLASSIFICATION_INCONCLUSIVE: '入力原稿が脚本か散文かを判定できませんでした。', ADAPTATION_VERIFICATION_FAILED: '脚色結果が整合性検証を通過しませんでした。', INVALID_SCRIPT_STRUCTURE: '生成された脚本の構造が不正です。', SSE_CONNECTION_FAILED: '進捗接続を開始できませんでした。', SSE_DISCONNECTED: '処理完了前に接続が切断されました。', HTTP_ERROR: 'リクエストを完了できませんでした。', DOCUMENTS_LOAD_FAILED: '文書一覧を読み込めませんでした。APIが起動しているか確認してください。', DOCUMENT_OVERVIEW_LOAD_FAILED: '概要を読み込めませんでした。', SAVE_FAILED: '変更を保存できませんでした。', DELETE_FAILED: '文書を削除できませんでした。', DISCARD_FAILED: '下書きを破棄できませんでした。', IMPORT_BLOCKED: '現在の状態では取込みを開始できません。', REANALYSIS_RESULT_INVALID: '再分析の結果が不正です。', SHARING_SAVE_FAILED: '共有設定を保存できませんでした。再読み込みして再試行してください。', STORAGE_READ_FAILED: '保存された設定を読み込めませんでした。', STORAGE_WRITE_FAILED: '設定を保存できませんでした。',
     },
   },
 } as const

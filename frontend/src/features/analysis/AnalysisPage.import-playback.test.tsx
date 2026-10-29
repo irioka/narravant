@@ -48,6 +48,40 @@ class DraftWebSocket {
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.clearAllMocks(); vi.unstubAllGlobals() })
 
+it('Import失敗のdialogに対象場面・停止理由・リトライ回数を表示する', async () => {
+  vi.mocked(importDocument).mockResolvedValue({ task_id: 'synthetic-failure', status: 'queued', task_type: 'import_document' })
+  vi.mocked(streamTaskProgress).mockImplementation(async (_id, callbacks) => {
+    callbacks.onError?.({
+      code: 'ADAPTATION_VERIFICATION_FAILED', message: 'PRIVATE_PROVIDER_TEXT', retryable: false,
+      context: {
+        reason: 'major_issues_after_revision', scene_number: 2,
+        revision_count: 2, max_retries: 2, issue_types: ['source_contradiction'],
+      },
+    })
+  })
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const { container } = render(
+    <QueryClientProvider client={client}>
+      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+        <MemoryRouter initialEntries={['/analysis/new']}>
+          <Routes><Route path="/analysis/new" element={<AnalysisPage />} /></Routes>
+        </MemoryRouter>
+      </LocaleProvider>
+    </QueryClientProvider>,
+  )
+  fireEvent.change(container.querySelector('input[type="file"]')!, {
+    target: { files: [new File(['合成小説'], 'synthetic.txt')] },
+  })
+  const dialog = await screen.findByRole('alertdialog')
+  expect(dialog).toHaveTextContent('場面2')
+  expect(dialog).toHaveTextContent('2/2回')
+  expect(dialog).toHaveTextContent('重大な問題が残っています')
+  expect(dialog).toHaveTextContent('原作の出来事との矛盾')
+  expect(dialog).not.toHaveTextContent('PRIVATE_')
+  expect(saveImportDraft).not.toHaveBeenCalled()
+  client.clear()
+})
+
 it('途中再生の選択とスクロールは元原稿の再開位置に一致し、同一発話の受信で戻らない', async () => {
   DraftWebSocket.instances = []
   vi.stubGlobal('WebSocket', DraftWebSocket)

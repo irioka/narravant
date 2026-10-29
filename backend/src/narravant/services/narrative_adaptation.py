@@ -33,10 +33,30 @@ logger = logging.getLogger(__name__)
 class NarrativeAdaptationError(RuntimeError):
     """Raised when narrative adaptation fails or classification is inconclusive."""
 
-    def __init__(self, code: str, message: str | None = None) -> None:
+    def __init__(
+        self, code: str, message: str | None = None, *, context: dict[str, object] | None = None,
+    ) -> None:
         super().__init__(message or code)
         self.code = code
         self.message = message or code
+        self.context = context
+
+    @classmethod
+    def scene_failure(
+        cls, reason: str, scene_number: int, revision_count: int, max_retries: int,
+        issues: Sequence[QualityIssue] = (),
+    ) -> NarrativeAdaptationError:
+        """Return a displayable stop reason without source text or free-form descriptions."""
+        return cls(
+            "ADAPTATION_VERIFICATION_FAILED",
+            context={
+                "reason": reason,
+                "scene_number": scene_number,
+                "revision_count": revision_count,
+                "max_retries": max_retries,
+                "issue_types": sorted({issue.issue_type for issue in issues}),
+            },
+        )
 
 
 class SourceKind(StrEnum):
@@ -701,13 +721,18 @@ class NarrativeAdaptationConfig(BaseModel):
     pdf_classifier_page_window: int = Field(ge=1)
     pdf_reader_page_window: int = Field(ge=1)
     pdf_reader_page_overlap: int = Field(ge=0)
-    reader_refinement_max_attempts: int = Field(ge=0)
-    scene_regeneration_max_attempts: int = Field(ge=0)
+    reader_refinement_max_attempts: int = Field(ge=1)
+    scene_regeneration_max_attempts: int = Field(ge=1)
     classification_max_output_tokens: int = Field(ge=1)
     reader_max_output_tokens: int = Field(ge=1)
     planning_max_output_tokens: int = Field(ge=1)
     scene_writing_max_output_tokens: int = Field(ge=1)
     verification_max_output_tokens: int = Field(ge=1)
+
+    @property
+    def scene_regeneration_max_retries(self) -> int:
+        """Convert the total attempt limit into the number of additional revisions."""
+        return self.scene_regeneration_max_attempts - 1
 
 
 def split_pdf_windows(source_pdf: bytes, page_window: int, overlap: int) -> list[PdfPageWindow]:
@@ -1353,7 +1378,10 @@ class NarrativeAdaptationService:
                         anchor.model_dump_json() for anchor in issue.source_anchors
                     } <= available_anchors
                 ):
-                    raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+                    raise NarrativeAdaptationError(
+                        "ADAPTATION_VERIFICATION_FAILED",
+                        context={"reason": "invalid_verification_reference", "scene_number": plan.scene_number},
+                    )
             return issues
 
         def verify_scene(plan: PlannedScene, text: str) -> list[QualityIssue]:
@@ -1370,6 +1398,24 @@ class NarrativeAdaptationService:
             )
             return validate_issues(plan, context, issues)
 
+        def log_verification_decision(
+            level: int, reason: str, scene_number: int, issues: Sequence[QualityIssue],
+        ) -> None:
+            # Log the stop reason and remaining budget without source text, free-form issues, or reference IDs.
+            logger.log(
+                level,
+                "Adaptation verification decision reason=%s scene_number=%d issue_types=%s "
+                "major_issue_count=%d minor_issue_count=%d attempt_count=%d max_attempts=%d revision_count=%d",
+                reason,
+                scene_number,
+                ",".join(sorted({issue.issue_type for issue in issues})),
+                sum(issue.severity == "major" for issue in issues),
+                sum(issue.severity == "minor" for issue in issues),
+                revision_count[scene_number] + 1,
+                self.config.scene_regeneration_max_attempts,
+                revision_count[scene_number],
+            )
+
         initial_issues: dict[int, list[QualityIssue]] = {}
         for index, plan in enumerate(planned_scenes, start=1):
             issues = verify_scene(plan, scene_fountains[plan.scene_number])
@@ -1379,14 +1425,28 @@ class NarrativeAdaptationService:
                 on_progress("verifying", int(index * 100 / len(planned_scenes)))
 
         if not allow_revision:
-            if any(issue.severity == "major" for items in initial_issues.values() for issue in items):
-                raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+            for scene_number, issues in initial_issues.items():
+                if any(issue.severity == "major" for issue in issues):
+                    log_verification_decision(
+                        logging.WARNING, "major_issues_in_final_verification", scene_number, issues,
+                    )
+                    raise NarrativeAdaptationError.scene_failure(
+                        "major_issues_in_final_verification", scene_number, revision_count[scene_number],
+                        self.config.scene_regeneration_max_retries, issues,
+                    )
             return adaptation
 
-        def reserve_revision(scene_number: int) -> None:
-            if revision_count[scene_number] >= self.config.scene_regeneration_max_attempts:
-                raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+        def reserve_revision(scene_number: int, issues: Sequence[QualityIssue]) -> None:
+            if revision_count[scene_number] >= self.config.scene_regeneration_max_retries:
+                log_verification_decision(
+                    logging.WARNING, "revision_budget_exhausted", scene_number, issues,
+                )
+                raise NarrativeAdaptationError.scene_failure(
+                    "revision_budget_exhausted", scene_number, revision_count[scene_number],
+                    self.config.scene_regeneration_max_retries, issues,
+                )
             revision_count[scene_number] += 1
+            log_verification_decision(logging.INFO, "revising_scene", scene_number, issues)
 
         def revise_scene_with_budget(
             plan: PlannedScene,
@@ -1398,7 +1458,7 @@ class NarrativeAdaptationService:
             while pending_issues:
                 if ensure_not_cancelled:
                     ensure_not_cancelled()
-                reserve_revision(plan.scene_number)
+                reserve_revision(plan.scene_number, pending_issues)
                 context = scene_context_for(plan)
                 revised_text = self.client.revise_scene(
                     plan,
@@ -1412,8 +1472,13 @@ class NarrativeAdaptationService:
                 )
                 try:
                     validate_scene_piece(revised_text, plan)
-                except GeneratedFountainCueError as exc:
-                    if revision_count[plan.scene_number] >= self.config.scene_regeneration_max_attempts:
+                except (GeneratedFountainCueError, NarrativeAdaptationError, ContentLanguageMismatch) as exc:
+                    if revision_count[plan.scene_number] >= self.config.scene_regeneration_max_retries:
+                        if isinstance(exc, NarrativeAdaptationError):
+                            raise NarrativeAdaptationError.scene_failure(
+                                "scene_structure_invalid", plan.scene_number, revision_count[plan.scene_number],
+                                self.config.scene_regeneration_max_retries,
+                            ) from exc
                         raise
                     event_ids = plan.retained_event_ids[:1]
                     source_anchors = [item.source_anchor for item in context.source_material[:1]]
@@ -1427,20 +1492,32 @@ class NarrativeAdaptationService:
                             severity="major",
                             event_ids=event_ids,
                             source_anchors=source_anchors,
-                            preservation_condition="Maintain valid Fountain speaker cues and non-empty dialogue.",
-                            description="Fountain structure is invalid.",
-                            revision_direction="Repair the invalid cue or non-empty dialogue.",
+                            preservation_condition=(
+                                "Maintain the planned scene heading and number, original language, "
+                                "speaker identity, and non-empty dialogue."
+                            ),
+                            description="Scene structure or output language is invalid.",
+                            revision_direction=(
+                                "Repair the invalid scene heading, speaker cue, dialogue, or output language. "
+                                "Preserve all valid source-grounded content."
+                            ),
                         )
                     ]
                     continue
 
                 remaining = verify_scene(plan, revised_text)
-                if remaining and revision_count[plan.scene_number] < self.config.scene_regeneration_max_attempts:
+                if remaining and revision_count[plan.scene_number] < self.config.scene_regeneration_max_retries:
                     current_text = revised_text
                     pending_issues = remaining
                     continue
                 if any(issue.severity == "major" for issue in remaining):
-                    raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+                    log_verification_decision(
+                        logging.WARNING, "major_issues_after_revision", plan.scene_number, remaining,
+                    )
+                    raise NarrativeAdaptationError.scene_failure(
+                        "major_issues_after_revision", plan.scene_number, revision_count[plan.scene_number],
+                        self.config.scene_regeneration_max_retries, remaining,
+                    )
                 return revised_text
             return current_text
 
@@ -1474,6 +1551,14 @@ class NarrativeAdaptationService:
                 issues = initial_issues.pop(scene_number, [])
             if not issues:
                 continue
+            if (
+                revision_count[scene_number] >= self.config.scene_regeneration_max_retries
+                and not any(issue.severity == "major" for issue in issues)
+            ):
+                log_verification_decision(
+                    logging.INFO, "minor_issues_without_revision_budget", scene_number, issues,
+                )
+                continue
 
             revised_text = revise_scene_with_budget(plan, current_text, issues)
             scene_fountains[scene_number] = revised_text
@@ -1501,7 +1586,7 @@ class NarrativeAdaptationService:
         deadline: float | None,
         source_language: SourceLanguage = "und",
     ) -> list[ReaderCandidateEvent]:
-        for attempt in range(self.config.reader_refinement_max_attempts + 1):
+        for attempt in range(1, self.config.reader_refinement_max_attempts + 1):
             if ensure_not_cancelled:
                 ensure_not_cancelled()
             events = self.client.read_text_window(
@@ -1539,8 +1624,8 @@ class NarrativeAdaptationService:
                 "Text reader validation failed start=%s end=%s attempt=%d max_attempts=%d reason=%s event_count=%d",
                 source_anchor.start_offset,
                 source_anchor.end_offset,
-                attempt + 1,
-                self.config.reader_refinement_max_attempts + 1,
+                attempt,
+                self.config.reader_refinement_max_attempts,
                 "empty_events_without_non_story_confirmation" if not events else "invalid_event_anchor_or_summary",
                 len(events),
             )
@@ -1671,8 +1756,11 @@ class NarrativeAdaptationService:
         scene_fountains: dict[int, str] = {}
 
         def _reserve_regeneration(scene_number: int) -> None:
-            if regeneration_attempts[scene_number] >= self.config.scene_regeneration_max_attempts:
-                raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+            if regeneration_attempts[scene_number] >= self.config.scene_regeneration_max_retries:
+                raise NarrativeAdaptationError.scene_failure(
+                    "revision_budget_exhausted", scene_number, regeneration_attempts[scene_number],
+                    self.config.scene_regeneration_max_retries,
+                )
             regeneration_attempts[scene_number] += 1
 
         def _related_scene_numbers(plan: PlannedScene) -> list[int]:
@@ -1735,20 +1823,23 @@ class NarrativeAdaptationService:
                         plan, context, piece, deadline=deadline, source_language=source_language,
                     )
                     if combined_speaker_passages(piece, plan.characters):
-                        raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+                        raise NarrativeAdaptationError.scene_failure(
+                            "scene_structure_invalid", plan.scene_number, regeneration_attempts[plan.scene_number],
+                            self.config.scene_regeneration_max_retries,
+                        )
                 try:
                     _validate_scene_piece(piece, plan)
                     return piece
                 except GeneratedFountainCueError as exc:
-                    exhausted = regeneration_attempts[plan.scene_number] >= self.config.scene_regeneration_max_attempts
+                    exhausted = regeneration_attempts[plan.scene_number] >= self.config.scene_regeneration_max_retries
                     logger.warning(
                         "Generated scene cue invalid; %s scene_number=%d line_number=%s reason=%s "
-                        "regeneration_attempts=%d regeneration_max_attempts=%d",
+                        "attempt_count=%d max_attempts=%d",
                         "attempts exhausted" if exhausted else "regenerating",
                         plan.scene_number,
                         exc.line_number,
                         exc.reason,
-                        regeneration_attempts[plan.scene_number],
+                        regeneration_attempts[plan.scene_number] + 1,
                         self.config.scene_regeneration_max_attempts,
                     )
                     if exhausted:
@@ -1778,17 +1869,22 @@ class NarrativeAdaptationService:
                             )
                         ]
                 except (NarrativeAdaptationError, ContentLanguageMismatch) as exc:
-                    exhausted = regeneration_attempts[plan.scene_number] >= self.config.scene_regeneration_max_attempts
+                    exhausted = regeneration_attempts[plan.scene_number] >= self.config.scene_regeneration_max_retries
                     logger.warning(
                         "Generated scene validation failed; %s scene_number=%d validation_error=%s "
-                        "regeneration_attempts=%d regeneration_max_attempts=%d",
+                        "attempt_count=%d max_attempts=%d",
                         "attempts exhausted" if exhausted else "regenerating",
                         plan.scene_number,
                         type(exc).__name__,
-                        regeneration_attempts[plan.scene_number],
+                        regeneration_attempts[plan.scene_number] + 1,
                         self.config.scene_regeneration_max_attempts,
                     )
                     if exhausted:
+                        if isinstance(exc, NarrativeAdaptationError):
+                            raise NarrativeAdaptationError.scene_failure(
+                                "scene_structure_invalid", plan.scene_number,
+                                regeneration_attempts[plan.scene_number], self.config.scene_regeneration_max_retries,
+                            ) from exc
                         raise
                     _reserve_regeneration(plan.scene_number)
 

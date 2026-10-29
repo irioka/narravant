@@ -19,7 +19,7 @@ export interface LocalizedUiError {
 }
 
 const titleByCode: Partial<Record<KnownErrorCode, 'input' | 'signIn' | 'auth' | 'document' | 'connection' | 'operation'>> = {
-  VALIDATION_ERROR: 'input', EMPTY_FILE: 'input', FILE_TOO_LARGE: 'input', UNSUPPORTED_MEDIA_TYPE: 'input', INVALID_ENCODING: 'input', MALFORMED_FDX: 'input', MALFORMED_PDF: 'input', INVALID_NATIVE_DOCUMENT: 'input', SOURCE_CLASSIFICATION_INCONCLUSIVE: 'input', ADAPTATION_VERIFICATION_FAILED: 'input',
+  VALIDATION_ERROR: 'input', EMPTY_FILE: 'input', FILE_TOO_LARGE: 'input', UNSUPPORTED_MEDIA_TYPE: 'input', INVALID_ENCODING: 'input', MALFORMED_FDX: 'input', MALFORMED_PDF: 'input', INVALID_NATIVE_DOCUMENT: 'input', SOURCE_CLASSIFICATION_INCONCLUSIVE: 'input', ADAPTATION_VERIFICATION_FAILED: 'input', INVALID_SCRIPT_STRUCTURE: 'input',
   UNAUTHENTICATED: 'signIn', AUTHENTICATION_UNAVAILABLE: 'auth', ACCOUNT_BINDING_CONFLICT: 'auth',
   DOCUMENT_NOT_FOUND: 'document', DOCUMENT_CONTENT_MISSING: 'document', NOT_FOUND: 'document',
   SSE_CONNECTION_FAILED: 'connection', SSE_DISCONNECTED: 'connection',

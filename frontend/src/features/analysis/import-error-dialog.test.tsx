@@ -13,6 +13,38 @@ function errorsT(locale: 'en' | 'ja') {
 }
 
 describe('Importの再試行案内', () => {
+  it.each(['ja', 'en'] as const)('整合性検証の停止理由・場面・改稿回数を%sで表示する', (locale) => {
+    const error = importTaskRuntimeError(errorsT(locale), {
+      code: 'ADAPTATION_VERIFICATION_FAILED',
+      message: 'PRIVATE_PROVIDER_DESCRIPTION',
+      retryable: false,
+      context: {
+        reason: 'major_issues_after_revision', scene_number: 2,
+        revision_count: 2, max_retries: 2, issue_types: ['event_omission'],
+      },
+    })
+    expect(error.message).toContain(locale === 'ja' ? '場面2' : 'Scene 2')
+    expect(error.message).toContain(locale === 'ja' ? '2/2回' : '2/2 retries')
+    expect(error.message).toContain(locale === 'ja' ? '重要な出来事の欠落' : 'missing important events')
+    expect(error.message).toContain(locale === 'ja' ? '重大な問題が残っています' : 'major issues remain')
+    expect(error.message).not.toContain('PRIVATE_')
+  })
+
+  it('旧サーバーのcontextなしエラーでもコードに対応する理由を表示する', () => {
+    expect(importTaskRuntimeError(errorsT('ja'), {
+      code: 'ADAPTATION_VERIFICATION_FAILED', message: 'PRIVATE_MESSAGE', retryable: false,
+    }).message).toBe(ja.errors.codes.ADAPTATION_VERIFICATION_FAILED)
+  })
+
+  it('未知の停止理由を本文として表示しない', () => {
+    const error = importTaskRuntimeError(errorsT('ja'), {
+      code: 'ADAPTATION_VERIFICATION_FAILED', message: 'PRIVATE_MESSAGE', retryable: false,
+      context: { reason: 'PRIVATE_REASON', scene_number: 'PRIVATE_SCENE' },
+    })
+    expect(error.message).toBe(ja.errors.codes.ADAPTATION_VERIFICATION_FAILED)
+    expect(error.message).not.toContain('PRIVATE_')
+  })
+
   it('Geminiの再試行可能な失敗では進捗dialogを閉じ、現在のlocaleで再Importを案内する', () => {
     const error = importTaskRuntimeError(errorsT('ja'), {
       code: 'IMPORT_FAILED',

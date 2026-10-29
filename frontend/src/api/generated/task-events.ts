@@ -17,6 +17,7 @@ export const taskCompletedEventSchema = z.object({
 
 export const taskErrorEventSchema = z.object({
   "code": z.string(),
+  "context": z.record(z.string(), z.unknown()).nullable().optional(),
   "message": z.string(),
   "retryable": z.boolean(),
 })

@@ -87,7 +87,7 @@ function AnalysisLayout({ documentId, onBeforeNavigate, actions, tabs, editor, c
 
 export function AnalysisPage() {
   const { t } = useTranslation(['analysis', 'common', 'importExport', 'errors'])
-  const errorT = t as unknown as TFunction<'errors'>
+  const { t: errorT } = useTranslation('errors')
   const defaultImportTitle = t('analysis:import.defaultTitle')
   const { documentId } = useParams()
   const navigate = useNavigate()

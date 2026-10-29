@@ -65,7 +65,7 @@ def test_source_trait_settings_reach_analyzer(monkeypatch):
     _set_required_environment(monkeypatch)
     settings = Settings.load(BACKEND_ROOT)
     analyzer = VertexDocumentAnalyzer(settings)
-    assert analyzer.source_voice_traits_max_attempts == 2
+    assert analyzer.source_voice_traits_max_attempts == 3
     assert analyzer.source_voice_traits_max_output_tokens == 4096
     assert analyzer._request_config({}, max_output_tokens=4096)["max_output_tokens"] >= 4096
 
@@ -142,10 +142,10 @@ def test_settings_loads_supported_gemini_generation_parameters(
     assert settings.gemini_processing_timeout_seconds == 1800
     assert settings.gemini_max_output_tokens == 65536
     assert settings.gemini_max_main_characters == 6
-    assert settings.gemini_generation_max_attempts == 6
-    assert settings.gemini_voice_design_max_attempts == 3
+    assert settings.gemini_generation_max_attempts == 2
+    assert settings.gemini_voice_design_max_attempts == 2
     assert settings.gemini_retry_backoff_seconds == 3
-    assert settings.playback_tts_max_attempts == 6
+    assert settings.playback_tts_max_attempts == 2
     assert settings.playback_scene_pause_duration_ms == 3000
     assert settings.playback_speaker_change_pause_duration_ms == 1000
     assert settings.playback_narrator_sentence_pause_duration_ms == 1000
@@ -506,14 +506,34 @@ def test_settings_loads_narrative_adaptation_parameters(
     assert settings.gemini_pdf_classifier_page_window == 8
     assert settings.gemini_pdf_reader_page_window == 6
     assert settings.gemini_pdf_reader_page_overlap == 1
-    assert settings.gemini_reader_refinement_max_attempts == 1
-    assert settings.gemini_scene_regeneration_max_attempts == 1
+    assert settings.gemini_reader_refinement_max_attempts == 2
+    assert settings.gemini_scene_regeneration_max_attempts == 2
+    assert settings.gemini_import_continuation_max_attempts == 9
     assert settings.gemini_classification_max_output_tokens == 2048
     assert settings.gemini_reader_max_output_tokens == 8192
     assert settings.gemini_planning_max_output_tokens == 16384
     assert settings.gemini_scene_writing_max_output_tokens == 16384
     assert settings.gemini_verification_max_output_tokens == 4096
     assert settings.gemini_verification_max_attempts == 3
+
+
+def test_scene_retry_limit_from_yaml_reaches_adaptation_service(monkeypatch, tmp_path) -> None:
+    from unittest.mock import MagicMock
+
+    from narravant.api.dependencies import get_narrative_adaptation_service
+    from narravant.core.settings import Settings
+    from narravant.services.vertex_analysis import VertexDocumentAnalyzer
+
+    _set_required_environment(monkeypatch)
+    config = yaml.safe_load((BACKEND_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    config["gemini"]["scene_regeneration_max_attempts"] = 4
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    service = get_narrative_adaptation_service(
+        Settings.load(tmp_path), MagicMock(spec=VertexDocumentAnalyzer),
+    )
+
+    assert service.config.scene_regeneration_max_attempts == 4
 
 
 @pytest.mark.parametrize(

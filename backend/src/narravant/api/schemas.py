@@ -450,6 +450,7 @@ class TaskErrorEvent(BaseModel):
     code: str
     message: str
     retryable: bool
+    context: dict[str, Any] | None = None
 
 
 class TaskCancelledEvent(BaseModel):

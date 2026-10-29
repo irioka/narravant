@@ -13,7 +13,7 @@ describe('NarravantHeader', () => {
     )
 
     expect(screen.getByText('NARRAVANT')).toBeInTheDocument()
-    expect(screen.getByText('v0.3.0')).toBeInTheDocument()
+    expect(screen.getByText('v0.5.2')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument()
     expect(screen.getByRole('group', { name: 'Language' })).toBeInTheDocument()
   })

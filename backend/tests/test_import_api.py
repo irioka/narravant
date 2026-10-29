@@ -1454,6 +1454,10 @@ def test_import_inconclusive_pdf_and_failed_adaptation_emit_terminal_error_witho
             raise NarrativeAdaptationError(
                 "ADAPTATION_VERIFICATION_FAILED",
                 "シーン再生成の上限に達しました。",
+                context={
+                    "reason": "revision_budget_exhausted", "scene_number": 2,
+                    "revision_count": 2, "max_retries": 2, "issue_types": ["event_omission"],
+                },
             )
 
     service, repo, storage, tasks = _service_with_adapter(FailedAdaptationAdapter())
@@ -1473,6 +1477,10 @@ def test_import_inconclusive_pdf_and_failed_adaptation_emit_terminal_error_witho
     assert event.event_type == "error"
     assert event.payload["code"] == "ADAPTATION_VERIFICATION_FAILED"
     assert event.payload["retryable"] is False
+    assert event.payload["context"] == {
+        "reason": "revision_budget_exhausted", "scene_number": 2,
+        "revision_count": 2, "max_retries": 2, "issue_types": ["event_omission"],
+    }
     assert repo.list_documents(limit=10, offset=0)[1] == 0
     assert storage._objects == {}
     persisted = [e.payload for e in tasks.events_after(task_id, 0)]

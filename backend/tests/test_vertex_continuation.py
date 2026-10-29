@@ -9,11 +9,38 @@ from narravant.services.vertex_analysis import CollectedStream, VertexDocumentAn
 
 def _analyzer(results: list[CollectedStream]) -> VertexDocumentAnalyzer:
     analyzer = object.__new__(VertexDocumentAnalyzer)
-    analyzer.import_continuation_max_attempts = 2
+    analyzer.import_continuation_max_attempts = 3
     analyzer.import_max_fountain_characters = 100_000
     analyzer.processing_timeout_seconds = 60
     analyzer._collect_stream_text = lambda **_: results.pop(0)  # type: ignore[method-assign]
     return analyzer
+
+
+@pytest.mark.parametrize("max_attempts", [1, 2, 3])
+def test_continuation_max_attempts_includes_initial_conversion(max_attempts) -> None:
+    analyzer = _analyzer([])
+    analyzer.import_continuation_max_attempts = max_attempts
+    requests = []
+
+    def collect(**kwargs):
+        requests.append(kwargs)
+        return CollectedStream(
+            "# TYPE: SCREENPLAY\nTitle: Story\n\nINT. ROOM - DAY #1#\n\nA synthetic scene.",
+            70,
+            ("MAX_TOKENS",),
+        )
+
+    analyzer._collect_stream_text = collect
+    with pytest.raises(ValueError, match="exhausted continuation attempts"):
+        analyzer._convert_with_continuation(
+            initial_contents="initial",
+            continuation_contents=lambda _: "next",
+            on_progress=lambda _: None,
+            operation="test",
+            processing_deadline=None,
+        )
+
+    assert [request["attempt"] for request in requests] == list(range(1, max_attempts + 1))
 
 
 def test_continuation_accepts_only_one_final_marker_after_max_tokens() -> None:

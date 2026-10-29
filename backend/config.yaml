@@ -1,16 +1,23 @@
+# Shared attempt-count convention:
+# Every *_max_attempts value includes the initial attempt: 1 = no retry, 2 = one retry, 3 = two retries.
+# Limits apply per operation, input window, scene, or audio segment, not to the entire import or playback.
+# Expensive operations default to 2 attempts; short structured-response checks default to 3.
+# Nested limits are independent: a content/validation attempt can use generation_max_attempts requests.
+# Continuation attempts count the initial conversion and its follow-up requests, rather than failure retries.
+# Restart the backend after changing this file.
 gemini:
-  # 脚本生成・分析・TTSの4カテゴリ共通。変更後はbackendを再起動する。
+  # Shared across the four configurable safety categories for script generation, analysis, and TTS.
   # "OFF" / BLOCK_NONE / BLOCK_ONLY_HIGH / BLOCK_MEDIUM_AND_ABOVE / BLOCK_LOW_AND_ABOVE
-  # Voice Design（POST /voices）には設定項目がないため適用しない。
+  # Voice Design (POST /voices) has no corresponding safety setting.
   safety_threshold: BLOCK_NONE
-  performance_review_max_attempts: 2
+  performance_review_max_attempts: 2 # Invalid performance-review or context-summary responses; also capped at 2 in code
   performance_review_max_output_tokens: 4096
   performance_context_window_max_characters: 24000
-  source_voice_traits_max_attempts: 2
+  source_voice_traits_max_attempts: 3 # Invalid source voice-trait response schemas or evidence references
   source_voice_traits_max_output_tokens: 4096
-  analysis_max_attempts: 3 # Max attempts to regenerate an incomplete structured analysis without patching it
-  generation_max_attempts: 6 # Max attempts to retry the same request on transient analysis 5xx/408/429 (1 initial + 5 retries)
-  voice_design_max_attempts: 3 # Max attempts to retry the same Voice Design request on transient 503/502/504 (1 initial + 2 retries)
+  analysis_max_attempts: 2 # Incomplete or invalid whole-work structured analysis
+  generation_max_attempts: 2 # Shared text generation: transient errors, empty responses, or incomplete responses
+  voice_design_max_attempts: 2 # Transient 502/503/504 on create/read; uncertain creation results are not retried
   retry_backoff_seconds: 3 # Base retry wait unit (seconds); grows in proportion to the attempt number
   connection_timeout_seconds: 300 # Upper bound for stream start and first-chunk receipt (seconds)
   chunk_timeout_seconds: 60 # Upper bound for the interval between chunks after the first chunk (seconds)
@@ -20,21 +27,21 @@ gemini:
   max_output_tokens: 65536
   max_main_characters: 6
   thinking_level: LOW # Gemini 3.8 Flash and Gemini 4 Argon support LOW/MEDIUM/HIGH
-  import_continuation_max_attempts: 8
+  import_continuation_max_attempts: 9 # Initial screenplay conversion plus continuation requests for long sources
   import_max_fountain_characters: 1000000
   text_reader_source_unit_max_characters: 24000
   text_reader_source_unit_overlap_characters: 3000
   pdf_classifier_page_window: 8
   pdf_reader_page_window: 6
   pdf_reader_page_overlap: 1
-  reader_refinement_max_attempts: 1
-  scene_regeneration_max_attempts: 1
+  reader_refinement_max_attempts: 2 # Invalid TXT reader results for an input window
+  scene_regeneration_max_attempts: 2 # Scene writing; structure repairs and content revisions share the limit
   classification_max_output_tokens: 2048
   reader_max_output_tokens: 8192
   planning_max_output_tokens: 16384
   scene_writing_max_output_tokens: 16384
   verification_max_output_tokens: 4096
-  verification_max_attempts: 3 # Regenerate malformed or incorrectly grounded scene-verification responses
+  verification_max_attempts: 3 # Invalid scene-verification JSON or evidence references; separate from scene rewriting
   model_overrides: # Selected by GEMINI_MODEL; omitted values inherit the common settings above
     gemini-4-argon:
       minimum_output_tokens: 32768 # Includes thinking; applies to every generation stage
@@ -43,10 +50,10 @@ gemini:
       http_timeout_milliseconds: 1200000
 
 playback:
-  tts_max_attempts: 6 # Max attempts covering transient TTS errors during playback (1 initial + 5 retries)
-  scene_pause_duration_ms: 3000 # 場面切替の前とScene Headingを読み終えた後の無音。再生開始前には入れない
-  speaker_change_pause_duration_ms: 1000 # 話者交代時の無音。Scene Heading後には加算しない。0で無効
-  narrator_sentence_pause_duration_ms: 1000 # ナレーターの文末後、次のナレーションまでの追加無音。読点・長文途中分割は対象外。0で無効
+  tts_max_attempts: 2 # Audio-segment generation; failures after receiving audio are not retried
+  scene_pause_duration_ms: 3000 # Silence before scene transitions and after headings; not before initial playback
+  speaker_change_pause_duration_ms: 1000 # Silence for speaker changes, excluding scene headings; 0 disables it
+  narrator_sentence_pause_duration_ms: 1000 # Narrator sentence-boundary silence, excluding commas and length splits; 0 disables it
 
 emotion_arc:
   max_points: 36

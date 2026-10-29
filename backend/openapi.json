@@ -1335,6 +1335,19 @@
             "title": "Code",
             "type": "string"
           },
+          "context": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context"
+          },
           "message": {
             "title": "Message",
             "type": "string"
@@ -1837,7 +1850,7 @@
   "info": {
     "description": "Intelligent screenplay analysis and narrative arc workbench API",
     "title": "NARRAVANT API",
-    "version": "0.5.1"
+    "version": "0.5.2"
   },
   "openapi": "3.1.0",
   "paths": {

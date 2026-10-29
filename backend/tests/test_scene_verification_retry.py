@@ -87,6 +87,9 @@ def test_invalid_verification_exhausts_budget_and_never_passes(verification, cap
     with pytest.raises(NarrativeAdaptationError) as exc:
         analyzer.verify_scene(plan, "PRIVATE_GENERATED_TEXT", scene_context=context)
     assert exc.value.code == "ADAPTATION_VERIFICATION_FAILED"
+    assert exc.value.context == {
+        "reason": "invalid_verification_response", "scene_number": 3, "verification_attempts": 2,
+    }
     assert len(requests) == 2
     assert "response rejected" in caplog.text
     assert "PRIVATE_" not in caplog.text

@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-10-29
+
+### Fixed
+
+- Deliver successful imports reliably when processing and progress requests use separate task managers, avoiding a false server-restart error.
+- Show specific import failure reasons, affected scenes, retry counts, and issue types in English and Japanese.
+- Preserve adapted scenes with only minor issues when the revision budget is exhausted, while continuing to reject unresolved major issues.
+- Use remaining scene attempts to repair invalid headings, structure, or output language during revision.
+
+### Changed
+
+- Count the initial attempt in every `*_max_attempts` setting. Default to two attempts for longer operations and three for short structured-response checks, with the shared convention documented in English in `backend/config.yaml`.
+- Express the long-script continuation limit as nine total attempts, preserving its previous capacity.
+
 ## [0.5.1] - 2026-10-27
 
 ### Fixed

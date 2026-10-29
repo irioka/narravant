@@ -636,7 +636,7 @@ class ImportService:
                 exc.code,
                 str(exc),
             )
-            self._fail(task_id, exc.code, str(exc), retryable=False)
+            self._fail(task_id, exc.code, str(exc), retryable=False, context=exc.context)
         except (OptimisticLockError, GcsConflictError):
             self._fail(
                 task_id,
@@ -659,6 +659,11 @@ class ImportService:
                 "INVALID_SCRIPT_STRUCTURE",
                 "生成された脚本の構造が不正です。",
                 retryable=False,
+                context={
+                    "reason": "scene_structure_invalid",
+                    "scene_number": exc.scene_number,
+                    "line_number": exc.line_number,
+                },
             )
         except ContentLanguageMismatch:
             logger.error("Import task failed due to output language mismatch task_id=%s", task_id)
@@ -667,6 +672,7 @@ class ImportService:
                 "IMPORT_FAILED",
                 "文書のImportまたは分析に失敗しました。",
                 retryable=False,
+                context={"reason": "output_language_mismatch"},
             )
         except Exception as exc:
             if is_transient_vertex_error(exc):
@@ -853,10 +859,16 @@ class ImportService:
             self.tasks.cancel(task_id, "Importをキャンセルしました。")
             raise RuntimeError("cancelled")
 
-    def _fail(self, task_id: str, code: str, message: str, *, retryable: bool) -> None:
+    def _fail(
+        self, task_id: str, code: str, message: str, *, retryable: bool,
+        context: dict[str, object] | None = None,
+    ) -> None:
         task = self.tasks.repository.get(task_id)
         if task is not None and TaskStatus(task["status"]) not in TERMINAL_TASK_STATUSES:
-            self.tasks.fail(task_id, {"code": code, "message": message, "retryable": retryable})
+            payload = {"code": code, "message": message, "retryable": retryable}
+            if context is not None:
+                payload["context"] = context
+            self.tasks.fail(task_id, payload)
         self.drafts.discard(task_id)
 
     def _stream_reporter(self, task_id: str, phase: str, percentage: int) -> ProgressReporter:

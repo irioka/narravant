@@ -4,6 +4,17 @@ import { taskCompletedEventSchema, taskProgressEventSchema } from './generated/t
 import { cancelTask, streamTaskProgress } from './tasks'
 
 describe('streamTaskProgress', () => {
+  it('停止理由contextをSSEからエラーダイアログ用callbackへ渡す', async () => {
+    const payload = {
+      code: 'ADAPTATION_VERIFICATION_FAILED', message: 'Adaptation failed', retryable: false,
+      context: { reason: 'revision_budget_exhausted', scene_number: 2, revision_count: 2, max_retries: 2 },
+    }
+    const onError = vi.fn()
+    const response = new Response(`event: error\ndata: ${JSON.stringify(payload)}\n\n`)
+    await streamTaskProgress('synthetic-import', { onError }, vi.fn().mockResolvedValue(response))
+    expect(onError).toHaveBeenCalledWith(payload)
+  })
+
   it('OpenAPIから生成したSSE schemaがprogress payloadを検証する', () => {
     expect(taskProgressEventSchema.parse({ phase: 'analyzing', percentage: 42, message: '解析中', received_characters: 128 })).toEqual({
       phase: 'analyzing',

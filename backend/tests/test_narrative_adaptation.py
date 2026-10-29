@@ -465,8 +465,8 @@ def _make_test_config() -> NarrativeAdaptationConfig:
         pdf_classifier_page_window=8,
         pdf_reader_page_window=6,
         pdf_reader_page_overlap=1,
-        reader_refinement_max_attempts=1,
-        scene_regeneration_max_attempts=1,
+        reader_refinement_max_attempts=2,
+        scene_regeneration_max_attempts=2,
         classification_max_output_tokens=2048,
         reader_max_output_tokens=8192,
         planning_max_output_tokens=16384,
@@ -529,6 +529,24 @@ def test_text_reader_rejects_invalid_anchor_after_bounded_retries(caplog) -> Non
     assert calls == [0, 0]
     assert "invalid_event_anchor_or_summary" in caplog.text
     assert "合成原稿" not in caplog.text
+
+
+@pytest.mark.parametrize("max_attempts", [1, 2, 3])
+def test_reader_max_attempts_includes_initial_read(max_attempts) -> None:
+    client = FakeNarrativeClient()
+    calls = []
+
+    def read(text, anchor, **kwargs):
+        calls.append(anchor.start)
+        return [ReaderCandidateEvent(summary="出来事", source_anchor=SourceAnchor.text(0, 999))]
+
+    client.read_text_window = read
+    config = _make_test_config().model_copy(update={"reader_refinement_max_attempts": max_attempts})
+
+    with pytest.raises(NarrativeAdaptationError):
+        NarrativeAdaptationService(client, config).adapt_text("合成原稿")
+
+    assert len(calls) == max_attempts
 
 
 def test_text_reader_unexplained_empty_response_retries_and_keeps_story() -> None:
@@ -801,6 +819,158 @@ def test_multiple_quality_issues_share_one_local_revision() -> None:
     assert story_plan.intended_outcome
     assert client.verified_analysis_contexts[0]["metadata"] == {"title": "Synthetic analysis"}
     assert result.revision_count[1] == 1
+
+
+@pytest.mark.parametrize("downstream_reverification", [False, True])
+def test_minor_issue_after_cue_repair_preserves_scene_without_exceeding_budget(
+    downstream_reverification, caplog,
+) -> None:
+    client = FakeNarrativeClient()
+    write = client.write_scene
+    verify = client.verify_scene
+
+    def generate(plan, context, **kwargs):
+        valid = write(plan, context, **kwargs)
+        if plan.scene_number == 2 and client.write_counts[2] == 1:
+            return f"{plan.heading}\n\n@アリス\n<breath>\n"
+        return valid
+
+    def verify_with_minor_issue(plan, text, **kwargs):
+        issues = verify(plan, text, **kwargs)
+        if plan.scene_number == 2:
+            return [issue.model_copy(update={"severity": "minor"}) for issue in issues]
+        return issues
+
+    client.write_scene = generate
+    client.verify_scene = verify_with_minor_issue
+    if downstream_reverification:
+        client.verify_results[1] = [(False, "PRIVATE_UPSTREAM_ISSUE"), (True, None)]
+        client.verify_results[2] = [(True, None), (False, "PRIVATE_MINOR_ISSUE")]
+    else:
+        client.verify_results[2] = [(False, "PRIVATE_MINOR_ISSUE")]
+    service = NarrativeAdaptationService(client, _make_test_config())
+    adaptation = service.adapt_text("合成小説")
+    caplog.set_level("INFO", logger="narravant.services.narrative_adaptation")
+
+    result = _verify_adaptation(service, adaptation)
+
+    assert result.scene_fountains[2] == adaptation.scene_fountains[2]
+    assert result.revision_count[2] == 1
+    assert client.write_counts[2] == 2
+    assert sum(request[0] == 2 for request in client.revision_requests) == 1
+    assert client.revision_requests[0][2][0].issue_type == "fountain_invalid"
+    assert "reason=missing_speech" in caplog.text
+    assert client.verified_scenes.count(2) == (2 if downstream_reverification else 1)
+    assert "reason=minor_issues_without_revision_budget" in caplog.text
+    assert "scene_number=2" in caplog.text
+    assert "PRIVATE_" not in caplog.text
+
+
+@pytest.mark.parametrize("resolved", [False, True])
+def test_two_retries_share_structure_and_content_repairs_before_success_or_failure(resolved) -> None:
+    client = FakeNarrativeClient()
+    write = client.write_scene
+
+    def generate(plan, context, **kwargs):
+        valid = write(plan, context, **kwargs)
+        if plan.scene_number == 2 and client.write_counts[2] == 1:
+            return f"{plan.heading}\n\n@アリス\n<breath>\n"
+        return valid
+
+    client.write_scene = generate
+    client.verify_results[2] = [
+        (False, "PRIVATE_FIRST_ISSUE"),
+        (resolved, None if resolved else "PRIVATE_REMAINING_ISSUE"),
+    ]
+    config = _make_test_config().model_copy(update={"scene_regeneration_max_attempts": 3})
+    service = NarrativeAdaptationService(client, config)
+    adaptation = service.adapt_text("合成小説")
+
+    if resolved:
+        result = _verify_adaptation(service, adaptation)
+        assert result.revision_count[2] == 2
+        assert result.scene_fountains[2].endswith("(v3).\n")
+    else:
+        with pytest.raises(NarrativeAdaptationError) as exc:
+            _verify_adaptation(service, adaptation)
+        assert exc.value.context == {
+            "reason": "major_issues_after_revision",
+            "scene_number": 2,
+            "revision_count": 2,
+            "max_retries": 2,
+            "issue_types": ["event_omission"],
+        }
+        assert "PRIVATE_" not in str(exc.value.context)
+    assert client.write_counts[2] == 3
+    assert len(client.revision_requests) == 2
+
+
+@pytest.mark.parametrize("max_attempts", [1, 2, 3])
+def test_scene_max_attempts_includes_initial_write_and_reports_retry_budget(max_attempts) -> None:
+    client = FakeNarrativeClient()
+    client.verify_results[2] = [(False, "PRIVATE_QUALITY_ISSUE")] * (max_attempts + 1)
+    config = _make_test_config().model_copy(update={"scene_regeneration_max_attempts": max_attempts})
+    service = NarrativeAdaptationService(client, config)
+    adaptation = service.adapt_text("合成小説")
+
+    with pytest.raises(NarrativeAdaptationError) as exc:
+        _verify_adaptation(service, adaptation)
+
+    assert client.write_counts[2] == max_attempts
+    assert exc.value.context["revision_count"] == max_attempts - 1
+    assert exc.value.context["max_retries"] == max_attempts - 1
+
+
+def test_invalid_heading_in_first_content_revision_uses_second_retry() -> None:
+    client = FakeNarrativeClient()
+    write = client.write_scene
+
+    def generate(plan, context, **kwargs):
+        valid = write(plan, context, **kwargs)
+        if plan.scene_number == 2 and client.write_counts[2] == 2:
+            return "INT. WRONG ROOM - NIGHT #99#\n\nA synthetic scene.\n"
+        return valid
+
+    client.write_scene = generate
+    client.verify_results[2] = [(False, "PRIVATE_SOURCE_ISSUE"), (True, None)]
+    config = _make_test_config().model_copy(update={"scene_regeneration_max_attempts": 3})
+    service = NarrativeAdaptationService(client, config)
+    result = _verify_adaptation(service, service.adapt_text("合成小説"))
+
+    assert result.revision_count[2] == 2
+    assert client.write_counts[2] == 3
+    assert "WRONG ROOM" not in result.fountain
+    assert result.planned_scenes[1].heading in result.fountain
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_reason"),
+    [
+        ("budget", "revision_budget_exhausted"),
+        ("after_revision", "major_issues_after_revision"),
+        ("final", "major_issues_in_final_verification"),
+    ],
+)
+def test_major_issue_rejection_logs_safe_reason_and_scene(failure_stage, expected_reason, caplog) -> None:
+    client = FakeNarrativeClient()
+    client.verify_results[2] = [(False, "PRIVATE_QUALITY_DESCRIPTION"), (False, "PRIVATE_QUALITY_DESCRIPTION")]
+    config = _make_test_config()
+    if failure_stage == "budget":
+        config = config.model_copy(update={"scene_regeneration_max_attempts": 1})
+    service = NarrativeAdaptationService(client, config)
+    adaptation = service.adapt_text("合成小説")
+
+    with pytest.raises(NarrativeAdaptationError, match="ADAPTATION_VERIFICATION_FAILED"):
+        service.verify_after_analysis(
+            adaptation, {"metadata": {"title": "PRIVATE_ANALYSIS"}}, allow_revision=failure_stage != "final",
+        )
+
+    assert f"reason={expected_reason}" in caplog.text
+    assert "scene_number=2" in caplog.text
+    assert "major_issue_count=1" in caplog.text
+    assert "revision_count=" in caplog.text
+    assert f"max_attempts={config.scene_regeneration_max_attempts}" in caplog.text
+    assert "PRIVATE_" not in caplog.text
 
 
 def test_after_analysis_revision_must_preserve_planned_scene_heading_and_number() -> None:
@@ -1081,8 +1251,8 @@ def test_cue_and_semantic_verification_share_regeneration_budget() -> None:
     assert client.write_counts[1] == 2
 
 
-@pytest.mark.parametrize("budget", [1, 2])
-def test_cue_failure_during_verification_regeneration_uses_remaining_budget(budget) -> None:
+@pytest.mark.parametrize("max_attempts", [2, 3])
+def test_cue_failure_during_verification_regeneration_uses_remaining_budget(max_attempts) -> None:
     client = FakeNarrativeClient()
     write = client.write_scene
 
@@ -1094,10 +1264,10 @@ def test_cue_failure_during_verification_regeneration_uses_remaining_budget(budg
 
     client.write_scene = generate
     client.verify_results[2] = [(False, "synthetic verification failure"), (True, None)]
-    config = _make_test_config().model_copy(update={"scene_regeneration_max_attempts": budget})
+    config = _make_test_config().model_copy(update={"scene_regeneration_max_attempts": max_attempts})
     service = NarrativeAdaptationService(client, config)
     adapted = service.adapt_text("合成小説")
-    if budget == 1:
+    if max_attempts == 2:
         with pytest.raises(GeneratedFountainCueError, match="^cue_without_speech$"):
             _verify_adaptation(service, adapted)
         assert client.write_counts[2] == 2

@@ -122,7 +122,10 @@ def test_task_manager_replays_events_and_requires_explicit_cancel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_import_completion_stream_emits_completed_event_when_payload_registration_is_in_progress() -> None:
+@pytest.mark.parametrize("separate_managers", [False, True])
+async def test_import_completion_stream_emits_completed_event_when_payload_registration_is_in_progress(
+    separate_managers,
+) -> None:
     """A successful import must not turn into PROCESS_RESTARTED during completion."""
     from narravant.services.tasks import EphemeralTaskEvents, TaskManager
 
@@ -151,6 +154,10 @@ async def test_import_completion_stream_emits_completed_event_when_payload_regis
         )
     events = DelayedEphemeralEvents()
     manager = TaskManager(repo, poll_interval_seconds=0, ephemeral_events=events)
+    stream_manager = (
+        TaskManager(TaskRepository(db), poll_interval_seconds=0, ephemeral_events=events)
+        if separate_managers else manager
+    )
     task_id = manager.create("u-1", "document_import", None, {})
     manager.start(task_id)
 
@@ -160,15 +167,45 @@ async def test_import_completion_stream_emits_completed_event_when_payload_regis
     )
     worker.start()
     assert events.registration_started.wait(timeout=1)
-    release = Timer(0.01, events.allow_registration.set)
+    release = Timer(0.1, events.allow_registration.set)
     release.start()
-    frames = [frame async for frame in manager.stream(task_id, 1, heartbeat_seconds=15)]
+    frames = [frame async for frame in stream_manager.stream(task_id, 1, heartbeat_seconds=15)]
     release.join()
     worker.join()
 
     assert len(frames) == 1
     assert "event: completed\n" in frames[0]
     assert '"import_draft"' in frames[0]
+
+
+@pytest.mark.asyncio
+async def test_completed_import_without_process_local_payload_still_requires_reimport() -> None:
+    from narravant.db.database import DocumentRepository
+    from narravant.services.tasks import EphemeralTaskEvents, TaskManager
+
+    db = DatabaseManager(":memory:")
+    db.init_schema()
+    DocumentRepository(db).ensure_user("u-1", "u-1@example.test", "Test")
+    repo = TaskRepository(db)
+    manager = TaskManager(repo, ephemeral_events=EphemeralTaskEvents())
+    task_id = manager.create("u-1", "document_import", None, {})
+    manager.start(task_id)
+    manager.complete_import_draft(
+        task_id, {"import_draft": {"source_fountain": "PRIVATE_SYNTHETIC_CONTENT"}}, 60,
+    )
+    restarted_manager = TaskManager(
+        TaskRepository(db), poll_interval_seconds=0, ephemeral_events=EphemeralTaskEvents(),
+    )
+
+    frames = [
+        frame async for frame in restarted_manager.stream(task_id, 1, heartbeat_seconds=15)
+    ]
+
+    assert len(frames) == 1
+    assert "event: error\n" in frames[0]
+    assert "PROCESS_RESTARTED" in frames[0]
+    assert "PRIVATE_SYNTHETIC_CONTENT" not in frames[0]
+    assert all("PRIVATE_SYNTHETIC_CONTENT" not in row["payload_json"] for row in repo.events_after(task_id, 0))
 
 
 def test_published_document_completion_wins_a_cancellation_race_without_losing_sse_terminal_event() -> None:

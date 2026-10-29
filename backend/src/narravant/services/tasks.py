@@ -26,6 +26,8 @@ class EphemeralTaskEvents:
     """Process-local completed import payloads, deliberately excluded from SQLite replay."""
 
     def __init__(self) -> None:
+        # Synchronize completion registration and SSE reads across per-request TaskManager instances.
+        self.completion_lock = RLock()
         self._events: dict[str, tuple[PersistedTaskEvent, float]] = {}
 
     def put(self, task_id: str, event_id: int, payload: dict[str, Any], ttl_seconds: int) -> None:
@@ -62,7 +64,7 @@ class TaskManager:
         self.repository = repository
         self.poll_interval_seconds = poll_interval_seconds
         self.ephemeral_events = ephemeral_events or ephemeral_task_events
-        self._import_completion_lock = RLock()
+        self._import_completion_lock = self.ephemeral_events.completion_lock
 
     def create(self, owner_user_id: str, task_type: str, document_id: str | None, payload: dict[str, Any]) -> str:
         task_id = str(uuid.uuid4())

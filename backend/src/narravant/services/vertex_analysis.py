@@ -811,12 +811,12 @@ class VertexDocumentAnalyzer:
         pieces: list[str] = []
         received_before = 0
         contents = initial_contents
-        for continuation_attempt in range(self.import_continuation_max_attempts + 1):
+        for continuation_attempt in range(1, self.import_continuation_max_attempts + 1):
             result = self._collect_stream_text(
                 contents=contents,
                 on_progress=lambda count, offset=received_before: on_progress(offset + count),
                 operation=operation,
-                attempt=continuation_attempt + 1,
+                attempt=continuation_attempt,
                 processing_deadline=deadline,
                 allow_non_stop=True,
             )
@@ -2315,7 +2315,14 @@ class VertexDocumentAnalyzer:
                     "allowed_event_ids, and allowed_source_anchors. Preserve every objective issue "
                     "supported by valid evidence; do not return an empty list merely to avoid validation."
                 )
-        raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+        raise NarrativeAdaptationError(
+            "ADAPTATION_VERIFICATION_FAILED",
+            context={
+                "reason": "invalid_verification_response",
+                "scene_number": scene_plan.scene_number,
+                "verification_attempts": self.verification_max_attempts,
+            },
+        )
 
     def revise_scene(
         self,
