@@ -525,3 +525,19 @@ async def test_tts_coordinator_cancellation_cancels_active_task(fake_tts: FakeTt
     assert fake_tts.call_count <= 3
     event_types = [e["type"] for e in received_events]
     assert "playback_complete" not in event_types
+
+
+async def test_first_tts_audio_wait_is_logged_without_text_or_voice(fake_tts, caplog, monkeypatch):
+    caplog.set_level("DEBUG", logger="narravant.services.tts")
+    ticks = iter([100.0, 120.0])
+    monkeypatch.setattr("narravant.services.tts.monotonic", lambda: next(ticks), raising=False)
+    utterance = PlannedUtterance(
+        6, 2, "PRIVATE_SPEAKER", "character", "Synthetic private speech.", "voice_fake_private"
+    )
+    events = [event async for event in TtsPlaybackCoordinator(fake_tts).run_stream([utterance])]
+    assert events[-1]["type"] == "playback_complete"
+    assert "first_audio_wait_ms=20000" in caplog.text
+    assert "scene_number=6 utterance_index=2" in caplog.text
+    assert "PRIVATE_SPEAKER" not in caplog.text
+    assert "Synthetic private" not in caplog.text
+    assert "voice_fake_private" not in caplog.text

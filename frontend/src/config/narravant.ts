@@ -1,3 +1,6 @@
+// 一括音声作成の再試行待機。共通Gemini設定の現在値（3秒）と同じ。
+export const VOICE_BATCH_RETRY_BACKOFF_MS = 3000
+
 export const DOCUMENT_PAGE_SIZE = 50
 export const TASK_SSE_INITIAL_RETRY_DELAY_MS = 250
 export const TASK_SSE_MAX_RETRY_DELAY_MS = 4000

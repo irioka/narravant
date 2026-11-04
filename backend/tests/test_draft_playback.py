@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -374,3 +375,228 @@ async def test_draft_playback_uses_assigned_default_delivery(draft_connection):
         assert event["event"] == "playback_complete"
         assert tts.synthesized_styles == ["", "Portray a fictional child naturally."]
         assert [text for text, _ in tts.synthesized_utterances] == ["First.", "Second."]
+
+
+@pytest.mark.parametrize("action", ["stop", "disconnect"])
+async def test_flow_control_stops_generation_while_window_is_full(draft_connection, monkeypatch, action):
+    async with draft_connection() as (incoming, outgoing, tts):
+        produced = []
+        closed = asyncio.Event()
+
+        async def fast_stream(*args, **kwargs):
+            try:
+                for index in range(100):
+                    produced.append(index)
+                    yield b"\x01\x00" * 24000
+            finally:
+                closed.set()
+
+        monkeypatch.setattr(tts, "synthesize_segment_stream", fast_stream)
+        await send_start(incoming, DRAFT)
+        buffers = []
+        while len(buffers) < 32:
+            event = await receive_event(outgoing)
+            assert event["event"] != "error"
+            if event["event"] == "audio_chunk":
+                buffers.append(event)
+        assert len(produced) == 32
+        assert len({event["buffer_id"] for event in buffers}) == 32
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(outgoing.get(), timeout=0.03)
+        if action == "stop":
+            await incoming.put({"type": "websocket.receive", "text": '{"action":"stop"}'})
+        else:
+            await incoming.put({"type": "websocket.disconnect", "code": 1000})
+        await asyncio.wait_for(closed.wait(), timeout=2)
+        assert len(produced) == 32
+
+
+async def test_flow_control_ack_releases_only_the_matching_buffer(draft_connection, monkeypatch):
+    async with draft_connection() as (incoming, outgoing, tts):
+        produced = []
+
+        async def fast_stream(*args, **kwargs):
+            for index in range(100):
+                produced.append(index)
+                yield b"\x01\x00" * 24000
+
+        monkeypatch.setattr(tts, "synthesize_segment_stream", fast_stream)
+        await send_start(incoming, DRAFT)
+        ids = []
+        while len(ids) < 32:
+            event = await receive_event(outgoing)
+            assert event["event"] != "error"
+            if event["event"] == "audio_chunk":
+                ids.append(event["buffer_id"])
+        for buffer_id in [9999, True, str(ids[0]), ids[0], ids[0]]:
+            await incoming.put({
+                "type": "websocket.receive",
+                "text": json.dumps({"action": "audio_consumed", "buffer_id": buffer_id}),
+            })
+        event = await receive_event(outgoing)
+        assert event["event"] == "audio_chunk"
+        assert event["buffer_id"] > max(ids)
+        assert len(produced) == 33
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(outgoing.get(), timeout=0.03)
+
+
+async def test_playback_flow_preserves_pcm_and_pause_duration(draft_connection, monkeypatch):
+    payload = b"\x01\x00" * 53000
+    draft = {**DRAFT, "source_fountain": "INT. ROOM - DAY #1#\n\n@Narrator\nFirst.\n\n@Narrator\nSecond.\n"}
+    async with draft_connection() as (incoming, outgoing, tts):
+        calls = []
+
+        async def large_stream(*args, **kwargs):
+            calls.append(1)
+            yield payload[:1]
+            yield payload[1:]
+
+        monkeypatch.setattr(tts, "synthesize_segment_stream", large_stream)
+        await send_start(
+            incoming, draft, narrator_sentence_pause_duration_ms=4500,
+        )
+        audio = []
+        pauses = []
+        ids = []
+        while True:
+            event = await receive_event(outgoing)
+            assert event["event"] != "error"
+            if event["event"] == "audio_chunk":
+                chunk = base64.b64decode(event["data"])
+                audio.append(chunk)
+                assert len(chunk) <= 48000
+                assert len(chunk) % 2 == 0
+            if event["event"] == "utterance_pause":
+                pauses.append(event["duration_ms"])
+            if "buffer_id" in event:
+                ids.append(event["buffer_id"])
+                await incoming.put({
+                    "type": "websocket.receive",
+                    "text": json.dumps({"action": "audio_consumed", "buffer_id": event["buffer_id"]}),
+                })
+            if event["event"] == "playback_complete":
+                break
+        assert len(calls) == 2
+        assert b"".join(audio) == payload * 2
+        assert sum(pauses) == 4500
+        assert pauses == [1000, 1000, 1000, 1000, 500]
+        assert ids == list(range(1, len(ids) + 1))
+
+
+async def test_stop_awaits_provider_cleanup_and_old_acks_cannot_release_next_run(draft_connection, monkeypatch):
+    async with draft_connection() as (incoming, outgoing, tts):
+        cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        cleanup_finished = asyncio.Event()
+        calls = []
+
+        async def stream(*args, **kwargs):
+            calls.append(1)
+            try:
+                for _ in range(100):
+                    yield b"\x01\x00" * 24000
+            finally:
+                if len(calls) == 1:
+                    cleanup_started.set()
+                    await release_cleanup.wait()
+                    cleanup_finished.set()
+
+        monkeypatch.setattr(tts, "synthesize_segment_stream", stream)
+        await send_start(incoming, DRAFT)
+        old_ids = []
+        while len(old_ids) < 32:
+            event = await receive_event(outgoing)
+            if event["event"] == "audio_chunk":
+                old_ids.append(event["buffer_id"])
+        await incoming.put({"type": "websocket.receive", "text": '{"action":"stop"}'})
+        try:
+            await asyncio.wait_for(cleanup_started.wait(), timeout=2)
+            await send_start(incoming, DRAFT)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(outgoing.get(), timeout=0.03)
+            assert len(calls) == 1
+        finally:
+            release_cleanup.set()
+        new_ids = []
+        while len(new_ids) < 32:
+            event = await receive_event(outgoing)
+            if event["event"] == "audio_chunk":
+                new_ids.append(event["buffer_id"])
+        assert cleanup_finished.is_set()
+        assert len(calls) == 2
+        assert min(new_ids) > max(old_ids)
+        for buffer_id in old_ids:
+            await incoming.put({
+                "type": "websocket.receive",
+                "text": json.dumps({"action": "audio_consumed", "buffer_id": buffer_id}),
+            })
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(outgoing.get(), timeout=0.03)
+        await incoming.put({
+            "type": "websocket.receive",
+            "text": json.dumps({"action": "audio_consumed", "buffer_id": new_ids[0]}),
+        })
+        event = await receive_event(outgoing)
+        assert event["buffer_id"] > max(new_ids)
+
+
+@pytest.mark.parametrize("invalid_flow", [True, 1, "unknown"])
+async def test_invalid_flow_control_is_rejected_before_tts(draft_connection, invalid_flow):
+    async with draft_connection() as (incoming, outgoing, tts):
+        await send_start(incoming, DRAFT, flow_control=invalid_flow)
+        event = await receive_event(outgoing)
+        assert event["code"] == "INVALID_PLAYBACK_REQUEST"
+        assert tts.call_count == 0
+
+
+async def test_duration_flow_starts_slow_next_tts_while_audio_is_still_buffered(draft_connection, monkeypatch):
+    draft = {**DRAFT, "source_fountain": "INT. ROOM - DAY #1#\n\n@Narrator\nFirst.\n\n@Narrator\nSecond.\n"}
+    async with draft_connection() as (incoming, outgoing, tts):
+        next_tts_started = asyncio.Event()
+        release_next_tts = asyncio.Event()
+        calls = []
+
+        async def stream(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                # 20msずつ届く32秒の音声。32packetでは0.64秒にしかならない。
+                for _ in range(1600):
+                    yield b"\x01\x00" * 480
+            else:
+                next_tts_started.set()
+                await release_next_tts.wait()
+                yield b"\x02\x00" * 24000
+
+        monkeypatch.setattr(tts, "synthesize_segment_stream", stream)
+        await send_start(incoming, draft, narrator_sentence_pause_duration_ms=0)
+        ids = []
+        try:
+            while len(ids) < 1600:
+                event = await receive_event(outgoing)
+                assert event["event"] != "error"
+                if event["event"] == "audio_chunk":
+                    ids.append(event["buffer_id"])
+            assert not next_tts_started.is_set()
+            await incoming.put({
+                "type": "websocket.receive",
+                "text": json.dumps({"action": "audio_consumed", "buffer_id": ids[0]}),
+            })
+            await asyncio.wait_for(next_tts_started.wait(), timeout=2)
+            assert len(calls) == 2
+            # 20秒の生成待ちを合成的に進めても、11.98秒の未再生音声が残る。
+            for buffer_id in ids[1:1001]:
+                await incoming.put({
+                    "type": "websocket.receive",
+                    "text": json.dumps({"action": "audio_consumed", "buffer_id": buffer_id}),
+                })
+            release_next_tts.set()
+            while True:
+                event = await receive_event(outgoing)
+                assert event["event"] != "error"
+                if event["event"] == "audio_chunk":
+                    assert base64.b64decode(event["data"]) == b"\x02\x00" * 24000
+                    break
+            assert len(ids) - 1001 == 599
+        finally:
+            release_next_tts.set()

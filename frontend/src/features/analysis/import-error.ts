@@ -8,6 +8,26 @@ export interface ImportRuntimeError {
 }
 
 const stopReasons = {
+  analysis_output_language: 'adaptation.reasons.analysisLanguage',
+  analysis_invalid_title: 'adaptation.reasons.analysisTitle',
+  analysis_valence_length: 'adaptation.reasons.analysisValenceLength',
+  analysis_valence_scale: 'adaptation.reasons.analysisValenceScale',
+  analysis_tension_length: 'adaptation.reasons.analysisTensionLength',
+  analysis_tension_scale: 'adaptation.reasons.analysisTensionScale',
+  analysis_character_arc: 'adaptation.reasons.analysisCharacterArc',
+  analysis_character_profiles: 'adaptation.reasons.analysisCharacterProfiles',
+  analysis_turning_points: 'adaptation.reasons.analysisTurningPoints',
+  analysis_related_turning_points: 'adaptation.reasons.analysisRelatedTurningPoints',
+  analysis_theme_citation: 'adaptation.reasons.analysisThemeCitation',
+  analysis_required_schema_fields: 'adaptation.reasons.analysisSchema',
+  plan_schema: 'adaptation.reasons.planSchema',
+  plan_scene_sequence: 'adaptation.reasons.planSceneSequence',
+  plan_characters: 'adaptation.reasons.planCharacters',
+  plan_event_reference: 'adaptation.reasons.planEventReference',
+  plan_presentation_order: 'adaptation.reasons.planPresentationOrder',
+  plan_event_coverage: 'adaptation.reasons.planEventCoverage',
+  plan_source_coverage: 'adaptation.reasons.planSourceCoverage',
+  plan_dependency: 'adaptation.reasons.planDependency',
   revision_budget_exhausted: 'adaptation.reasons.revisionBudgetExhausted',
   major_issues_after_revision: 'adaptation.reasons.majorIssuesAfterRevision',
   major_issues_in_final_verification: 'adaptation.reasons.majorIssuesInFinalVerification',
@@ -45,6 +65,20 @@ export function importTaskRuntimeError(
   const details = [localized.message, t(stopReasons[reason as keyof typeof stopReasons])]
   if (nonnegativeInteger(context?.scene_number) && context.scene_number > 0) {
     details.push(t('adaptation.scene', { sceneNumber: context.scene_number }))
+  }
+  if (reason.startsWith('plan_') && context?.phase === 'planning'
+    && nonnegativeInteger(context.attempt_count) && context.attempt_count > 0
+    && nonnegativeInteger(context.max_attempts) && context.max_attempts >= context.attempt_count) {
+    details.push(t('adaptation.planningAttempts', { attemptCount: context.attempt_count, maxAttempts: context.max_attempts }))
+  }
+  if (reason.startsWith('analysis_') && context?.phase === 'analyzing') {
+    if (nonnegativeInteger(context.attempt_count) && context.attempt_count > 0
+      && nonnegativeInteger(context.max_attempts) && context.max_attempts >= context.attempt_count) {
+      details.push(t('adaptation.analysisAttempts', { attemptCount: context.attempt_count, maxAttempts: context.max_attempts }))
+    }
+    if (nonnegativeInteger(context.expected_scene_count) && context.expected_scene_count > 0) {
+      details.push(t('adaptation.analysisScenes', { sceneCount: context.expected_scene_count }))
+    }
   }
   if (nonnegativeInteger(context?.revision_count) && nonnegativeInteger(context?.max_retries)) {
     details.push(t('adaptation.retries', { retryCount: context.revision_count, maxRetries: context.max_retries }))

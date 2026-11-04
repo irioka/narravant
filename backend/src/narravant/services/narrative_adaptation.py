@@ -24,10 +24,17 @@ from narravant.core.fountain import FountainParser
 from narravant.core.generated_fountain import (
     GeneratedFountainCueError,
     combined_speaker_passages,
+    strip_unknown_generated_fountain_tags,
     validate_generated_fountain_cues,
 )
 
 logger = logging.getLogger(__name__)
+
+
+PLAN_FAILURE_REASONS = frozenset({
+    "plan_schema", "plan_scene_sequence", "plan_characters", "plan_event_reference",
+    "plan_presentation_order", "plan_event_coverage", "plan_source_coverage", "plan_dependency",
+})
 
 
 class NarrativeAdaptationError(RuntimeError):
@@ -57,6 +64,18 @@ class NarrativeAdaptationError(RuntimeError):
                 "issue_types": sorted({issue.issue_type for issue in issues}),
             },
         )
+
+
+    @classmethod
+    def plan_failure(cls, reason: str, scene_number: int | None = None) -> NarrativeAdaptationError:
+        """原稿・ID・人物名を含まない計画検証の停止理由を返す。"""
+        context: dict[str, object] = {
+            "reason": reason if reason in PLAN_FAILURE_REASONS else "plan_schema",
+            "phase": "planning",
+        }
+        if scene_number is not None:
+            context["scene_number"] = scene_number
+        return cls("ADAPTATION_VERIFICATION_FAILED", context=context)
 
 
 class SourceKind(StrEnum):
@@ -640,48 +659,47 @@ def _validate_narrative_plan(
     source_character_knowledge: Sequence[CharacterKnowledge],
 ) -> None:
     event_map = {event.event_id: event for event in events}
-    unit_ids = {unit.unit_id for unit in source_context.source_units}
+    unit_map = {unit.unit_id: unit for unit in source_context.source_units}
     scene_numbers = [scene.scene_number for scene in plan.planned_scenes]
     if not plan.planned_scenes or scene_numbers != list(range(1, len(scene_numbers) + 1)):
-        raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+        raise NarrativeAdaptationError.plan_failure("plan_scene_sequence")
 
     source_character_names = {item.character_name for item in source_character_knowledge}
     planned_character_names = {item.character_name for item in plan.character_knowledge}
-    if planned_character_names != source_character_names:
-        raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
-
+    if (
+        planned_character_names != source_character_names
+        or len(plan.character_knowledge) != len(source_character_names)
+    ):
+        raise NarrativeAdaptationError.plan_failure("plan_characters")
     for knowledge in plan.character_knowledge:
-        if not set(knowledge.evidence_event_ids) <= event_map.keys():
-            raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
-        if not set(knowledge.state_by_event) <= set(knowledge.evidence_event_ids):
-            raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
-        if not set(knowledge.knowledge_by_event) <= set(knowledge.evidence_event_ids):
-            raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
-        if not set(knowledge.relationship_by_event) <= set(knowledge.evidence_event_ids):
-            raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+        evidence_ids = set(knowledge.evidence_event_ids)
+        if (
+            not evidence_ids <= event_map.keys()
+            or not set(knowledge.state_by_event) <= evidence_ids
+            or not set(knowledge.knowledge_by_event) <= evidence_ids
+            or not set(knowledge.relationship_by_event) <= evidence_ids
+        ):
+            raise NarrativeAdaptationError.plan_failure("plan_event_reference")
 
     story_plan = plan.story_plan
     all_event_ids = set(event_map)
-    if (
-        set(story_plan.important_event_ids) - all_event_ids
-        or set(story_plan.presentation_order_event_ids) != all_event_ids
-        or story_plan.presentation_order_event_ids != [event.event_id for event in events]
-        or set(story_plan.character_motivations) - source_character_names
-    ):
-        raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
-
+    if set(story_plan.important_event_ids) - all_event_ids:
+        raise NarrativeAdaptationError.plan_failure("plan_event_reference")
+    if story_plan.presentation_order_event_ids != [event.event_id for event in events]:
+        raise NarrativeAdaptationError.plan_failure("plan_presentation_order")
+    if set(story_plan.character_motivations) - source_character_names:
+        raise NarrativeAdaptationError.plan_failure("plan_characters")
     for turning_point in story_plan.turning_points:
         if not set(turning_point.event_ids) <= all_event_ids:
-            raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+            raise NarrativeAdaptationError.plan_failure("plan_event_reference")
         expected_evidence = [event_map[event_id].source_anchor for event_id in turning_point.event_ids]
         if turning_point.evidence != expected_evidence:
-            raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
-
+            raise NarrativeAdaptationError.plan_failure("plan_event_reference")
     for foreshadowing in story_plan.foreshadowings:
         if foreshadowing.setup_event_id not in all_event_ids or (
             foreshadowing.payoff_event_id is not None and foreshadowing.payoff_event_id not in all_event_ids
         ):
-            raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+            raise NarrativeAdaptationError.plan_failure("plan_event_reference")
 
     retained_event_ids: set[str] = set()
     omitted_event_ids: set[str] = set()
@@ -689,27 +707,41 @@ def _validate_narrative_plan(
     for scene in plan.planned_scenes:
         if (
             len(set(scene.source_unit_ids)) != len(scene.source_unit_ids)
-            or not set(scene.source_unit_ids) <= unit_ids
-            or len(set(scene.retained_event_ids)) != len(scene.retained_event_ids)
+            or not set(scene.source_unit_ids) <= unit_map.keys()
+        ):
+            raise NarrativeAdaptationError.plan_failure("plan_source_coverage", scene.scene_number)
+        if (
+            len(set(scene.retained_event_ids)) != len(scene.retained_event_ids)
             or len(set(scene.omitted_event_ids)) != len(scene.omitted_event_ids)
             or not set(scene.retained_event_ids + scene.omitted_event_ids) <= all_event_ids
-            or not set(scene.characters) <= source_character_names
-            or any(dependency >= scene.scene_number or dependency < 1 for dependency in scene.dependency_scene_numbers)
+        ):
+            raise NarrativeAdaptationError.plan_failure("plan_event_reference", scene.scene_number)
+        if not set(scene.characters) <= source_character_names:
+            raise NarrativeAdaptationError.plan_failure("plan_characters", scene.scene_number)
+        if (
+            any(dependency >= scene.scene_number or dependency < 1 for dependency in scene.dependency_scene_numbers)
             or len(set(scene.dependency_scene_numbers)) != len(scene.dependency_scene_numbers)
         ):
-            raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+            raise NarrativeAdaptationError.plan_failure("plan_dependency", scene.scene_number)
+        # resolve_sceneで初めて落ちる対応不正も、場面執筆前の計画修正へ返す。
+        selected_units = [unit_map[unit_id] for unit_id in scene.source_unit_ids]
+        if any(
+            not any(source_context._contains(unit.source_anchor, event_map[event_id].source_anchor)
+                    for unit in selected_units)
+            for event_id in scene.retained_event_ids
+        ):
+            raise NarrativeAdaptationError.plan_failure("plan_source_coverage", scene.scene_number)
         retained_event_ids.update(scene.retained_event_ids)
         for event_id in scene.omitted_event_ids:
             omitted_event_ids.add(event_id)
             omitted_event_counts[event_id] += 1
-
     if (
         retained_event_ids & omitted_event_ids
         or any(count != 1 for count in omitted_event_counts.values())
         or not all_event_ids <= retained_event_ids | omitted_event_ids
         or not set(story_plan.important_event_ids) <= retained_event_ids
     ):
-        raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+        raise NarrativeAdaptationError.plan_failure("plan_event_coverage")
 
 
 class NarrativeAdaptationConfig(BaseModel):
@@ -1278,6 +1310,53 @@ class NarrativeAdaptationService:
             deadline,
         )
 
+    def _validate_scene_with_tag_fallback(
+        self,
+        piece: str,
+        plan: PlannedScene,
+        validate: Callable[[str, PlannedScene], None],
+        revision_count: int,
+        ensure_not_cancelled: Callable[[], None] | None,
+    ) -> str:
+        """AIの改稿上限で残った未知タグのみ除去し、元と同じ検証を通す。"""
+        try:
+            validate(piece, plan)
+            if not FountainParser.parse(piece).all_utterances():
+                raise GeneratedFountainCueError("missing_speech", scene_number=plan.scene_number)
+        except GeneratedFountainCueError as exc:
+            if exc.reason != "unknown_tag" or revision_count < self.config.scene_regeneration_max_retries:
+                raise
+            if ensure_not_cancelled:
+                ensure_not_cancelled()
+            try:
+                cleaned, removed_count = strip_unknown_generated_fountain_tags(piece)
+            except GeneratedFountainCueError as cleanup_error:
+                cleanup_error.scene_number = plan.scene_number
+                logger.warning(
+                    "Generated scene tag repair exhausted; cleanup rejected "
+                    "scene_number=%d reason=%s attempt_count=%d max_attempts=%d",
+                    plan.scene_number,
+                    cleanup_error.reason,
+                    revision_count + 1,
+                    self.config.scene_regeneration_max_attempts,
+                )
+                raise
+            logger.warning(
+                "Generated scene tag repair exhausted; stripping unsupported tags "
+                "scene_number=%d reason=unknown_tag removed_tag_count=%d attempt_count=%d max_attempts=%d",
+                plan.scene_number,
+                removed_count,
+                revision_count + 1,
+                self.config.scene_regeneration_max_attempts,
+            )
+            validate(cleaned, plan)
+            if not FountainParser.parse(cleaned).all_utterances():
+                raise GeneratedFountainCueError("missing_speech", scene_number=plan.scene_number) from exc
+            if ensure_not_cancelled:
+                ensure_not_cancelled()
+            return cleaned
+        return piece
+
     def verify_after_analysis(
         self,
         adaptation: AdaptationResult,
@@ -1471,7 +1550,10 @@ class NarrativeAdaptationService:
                     source_language=adaptation.source_language,
                 )
                 try:
-                    validate_scene_piece(revised_text, plan)
+                    revised_text = self._validate_scene_with_tag_fallback(
+                        revised_text, plan, validate_scene_piece, revision_count[plan.scene_number],
+                        ensure_not_cancelled,
+                    )
                 except (GeneratedFountainCueError, NarrativeAdaptationError, ContentLanguageMismatch) as exc:
                     if revision_count[plan.scene_number] >= self.config.scene_regeneration_max_retries:
                         if isinstance(exc, NarrativeAdaptationError):
@@ -1659,10 +1741,17 @@ class NarrativeAdaptationService:
             on_progress("planning", 0)
 
         source_character_knowledge = _build_character_knowledge(story_events)
+        def report_plan_progress(received: int) -> None:
+            if ensure_not_cancelled:
+                ensure_not_cancelled()
+            if on_progress:
+                on_progress("planning", received)
+
         narrative_plan = self.client.plan_scenes(
             dag,
             source_context,
             source_character_knowledge,
+            on_progress=report_plan_progress,
             deadline=deadline,
             source_language=source_language,
         )
@@ -1828,11 +1917,14 @@ class NarrativeAdaptationService:
                             self.config.scene_regeneration_max_retries,
                         )
                 try:
-                    _validate_scene_piece(piece, plan)
-                    return piece
+                    return self._validate_scene_with_tag_fallback(
+                        piece, plan, _validate_scene_piece, regeneration_attempts[plan.scene_number],
+                        ensure_not_cancelled,
+                    )
                 except GeneratedFountainCueError as exc:
                     exhausted = regeneration_attempts[plan.scene_number] >= self.config.scene_regeneration_max_retries
-                    logger.warning(
+                    logger.log(
+                        logging.WARNING if exhausted else logging.INFO,
                         "Generated scene cue invalid; %s scene_number=%d line_number=%s reason=%s "
                         "attempt_count=%d max_attempts=%d",
                         "attempts exhausted" if exhausted else "regenerating",
@@ -1845,11 +1937,47 @@ class NarrativeAdaptationService:
                     if exhausted:
                         raise
                     _reserve_regeneration(plan.scene_number)
-                    if exc.reason == "missing_speech":
+                    if exc.reason in ("missing_speech", "unknown_tag", "cue_without_speech"):
                         event_ids = plan.retained_event_ids[:1]
                         source_anchors = [material.source_anchor for material in context.source_material[:1]]
                         if not event_ids and not source_anchors:
                             raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED") from exc
+                        # 不明タグ・空の話者cueも失敗位置と元の場面を渡して局所修復する。
+                        if exc.reason == "unknown_tag":
+                            description = (
+                                "Generated Fountain contains unknown_tag at "
+                                f"line_number={exc.line_number}, utterance_offset={exc.offset}."
+                            )
+                            revision_direction = (
+                                "Repair only unsupported inline notation in the supplied scene. "
+                                "Use only the documented inline tag catalogue with exact spelling and no closing tags. "
+                                "Preserve the source meaning of unsupported directions or sounds with a brief "
+                                "parenthetical or narration when appropriate. Do not invent dialogue or delete "
+                                "spoken content. Keep valid inline tags and all other dialogue unchanged."
+                            )
+                        elif exc.reason == "cue_without_speech":
+                            description = (
+                                "Generated Fountain contains cue_without_speech at "
+                                f"line_number={exc.line_number}: a speaker cue without spoken text."
+                            )
+                            revision_direction = (
+                                "Repair only the empty speaker cue at the reported line. "
+                                "Every retained cue must have source-grounded spoken text after any parentheticals. "
+                                "Do not invent dialogue to fill an empty cue. Remove a stray or duplicate empty "
+                                "cue when it has no speech; narrate source-grounded nonverbal behavior when needed. "
+                                "Preserve all existing valid dialogue, speaker identities, approved inline tags, "
+                                "listener reactions, and their order. The repaired scene must retain at least one "
+                                "source-grounded spoken or narrated utterance; never return a heading-only scene."
+                            )
+                        else:
+                            description = (
+                                "Generated Fountain contains missing_speech: missing text or a tag-only utterance."
+                            )
+                            revision_direction = (
+                                "Repair only the invalid utterance. Keep all valid dialogue. "
+                                "Narrate nonverbal behavior or attach a vocal tag to an existing spoken turn; "
+                                "every retained cue must have source-grounded spoken text."
+                            )
                         repair_issues = [
                             QualityIssue(
                                 scene_number=plan.scene_number,
@@ -1860,17 +1988,14 @@ class NarrativeAdaptationService:
                                 preservation_condition=(
                                     "Preserve source events, dialogue meaning, and character identity."
                                 ),
-                                description="Generated Fountain contains missing_speech: a tag-only utterance.",
-                                revision_direction=(
-                                    "Repair only the invalid utterance. Keep all valid dialogue. "
-                                    "Narrate nonverbal behavior or attach a vocal tag to an existing spoken turn; "
-                                    "every retained cue must have source-grounded spoken text."
-                                ),
+                                description=description,
+                                revision_direction=revision_direction,
                             )
                         ]
                 except (NarrativeAdaptationError, ContentLanguageMismatch) as exc:
                     exhausted = regeneration_attempts[plan.scene_number] >= self.config.scene_regeneration_max_retries
-                    logger.warning(
+                    logger.log(
+                        logging.WARNING if exhausted else logging.INFO,
                         "Generated scene validation failed; %s scene_number=%d validation_error=%s "
                         "attempt_count=%d max_attempts=%d",
                         "attempts exhausted" if exhausted else "regenerating",

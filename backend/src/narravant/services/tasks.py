@@ -87,13 +87,19 @@ class TaskManager:
         self._transition(task_id, TaskStatus.COMPLETED)
         self.publish(task_id, "completed", payload)
 
-    def complete_import_draft(self, task_id: str, payload: dict[str, Any], ttl_seconds: int) -> None:
-        """Complete an import while retaining its body only in volatile process memory."""
+    def complete_import_draft(self, task_id: str, payload: dict[str, Any], ttl_seconds: int) -> bool:
+        """Register a completed payload only if completion wins the cancellation CAS."""
         with self._import_completion_lock:
-            self._transition(task_id, TaskStatus.COMPLETED)
+            if not self.repository.transition(task_id, TaskStatus.RUNNING.value, TaskStatus.COMPLETED.value):
+                task = self.repository.get(task_id)
+                if task is not None and TaskStatus(task["status"]) is TaskStatus.CANCEL_REQUESTED:
+                    self.cancel(task_id, "Importをキャンセルしました。")
+                    return False
+                raise TaskStateError(f"Cannot complete import task {task_id}")
             persisted = self.events_after(task_id, 0)
             next_event_id = (persisted[-1].event_id if persisted else 0) + 1
             self.ephemeral_events.put(task_id, next_event_id, payload, ttl_seconds)
+            return True
 
     def complete_after_publication(self, task_id: str, payload: dict[str, Any]) -> None:
         """Record completion when cancellation races with an already-published document.

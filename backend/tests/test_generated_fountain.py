@@ -4,6 +4,7 @@ import pytest
 
 from narravant.core.generated_fountain import (
     GeneratedFountainCueError,
+    strip_unknown_generated_fountain_tags,
     validate_generated_fountain_cues,
 )
 
@@ -58,6 +59,79 @@ def test_generated_notation_rejects_unknown_tags_without_listener_note() -> None
         validate_generated_fountain_cues(fountain, known_source_speakers=["MAYA"], strict_speaker_names=True)
 
     assert caught.value.reason == "unknown_tag"
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_generated_tag_cleanup_preserves_structure_notes_styles_and_allowed_tags(newline) -> None:
+    source = newline.join([
+        "Title: Synthetic <metadata>",
+        "",
+        "INT. <location> - DAY #6#",
+        "",
+        "[[Private note:",
+        "<note>Keep this note unchanged.",
+        "]]",
+        "# Outline <outline>",
+        "",
+        "@MAYA",
+        "(quietly <direction>)",
+        "[[listener:JON]]",
+        "  <unsupported>Hello <breath> |<sigh>Yes.</unknown>|  ",
+        "  <short pause>We should leave.<unsupported>  ",
+        "",
+        "@JON",
+        "Let's go.",
+        "",
+        "@Narrator",
+        "They leave <legacy>together.",
+        "",
+    ])
+    expected = source.replace("<unsupported>", "").replace("</unknown>", "").replace("<legacy>", "")
+    cleaned, count = strip_unknown_generated_fountain_tags(source)
+
+    assert cleaned == expected
+    assert count == 4
+    validate_generated_fountain_cues(
+        cleaned, known_source_speakers=["MAYA", "JON"], strict_speaker_names=True
+    )
+    assert strip_unknown_generated_fountain_tags(cleaned) == (cleaned, 0)
+
+
+@pytest.mark.parametrize("text", ["<unfinished", "<<nested>>"])
+def test_generated_tag_cleanup_does_not_accept_malformed_notation(text) -> None:
+    source = f"INT. ROOM - DAY #1#\n\n@MAYA\nHello {text}."
+    with pytest.raises(GeneratedFountainCueError):
+        cleaned, _count = strip_unknown_generated_fountain_tags(source)
+        validate_generated_fountain_cues(cleaned, known_source_speakers=["MAYA"], strict_speaker_names=True)
+
+
+@pytest.mark.parametrize(
+    "exposed_structure",
+    ["@JON", "JON", "(quietly)", "[[note]]", "# Outline", "EXT. ROAD - DAY"],
+)
+def test_generated_tag_cleanup_rejects_promoting_speech_to_structure(exposed_structure) -> None:
+    source = f"INT. ROOM - DAY #1#\n\n@MAYA\nHello.\n<unknown>{exposed_structure}\nLet's go."
+    with pytest.raises(GeneratedFountainCueError, match="^tag_removal_changes_structure$"):
+        strip_unknown_generated_fountain_tags(source)
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["Hello.\n<unknown>", "<unknown>\nHello.", "<unknown>\nHello.\n<unknown>",
+     "[[listener:JON]]\nHello |Yes| We should go.\n<unknown>"],
+)
+def test_generated_tag_cleanup_accepts_edge_tag_lines_without_changing_speech(body) -> None:
+    source = "INT. ROOM - DAY #4#\n\n@MAYA\n" + body
+    cleaned, removed = strip_unknown_generated_fountain_tags(source)
+    assert cleaned == source.replace("<unknown>", "")
+    assert removed == body.count("<unknown>")
+    validate_generated_fountain_cues(cleaned, known_source_speakers=["MAYA", "JON"], strict_speaker_names=True)
+
+
+def test_generated_tag_cleanup_still_rejects_a_middle_line_changing_speaker() -> None:
+    source = "INT. ROOM - DAY #4#\n\n@MAYA\nHello.\n<unknown>\nWe should go."
+    with pytest.raises(GeneratedFountainCueError, match="^tag_removal_changes_structure$"):
+        strip_unknown_generated_fountain_tags(source)
 
 
 @pytest.mark.parametrize("tags", ["<breath>", "<short pause>", "<breath> <sigh>"])

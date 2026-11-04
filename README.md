@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-Version: **0.5.2** — see [CHANGELOG.md](CHANGELOG.md).
+Version: **0.6.0** — see [CHANGELOG.md](CHANGELOG.md).
 
 NARRAVANT is a lightweight, local-first application that uses AI to turn novels and screenplays into [Fountain](https://fountain.io/) audiobook scripts with **narration, character dialogue, and acting directions**, then reads them aloud with Gemini TTS.
 
@@ -92,7 +92,7 @@ To run each process separately, use `make dev-backend` (FastAPI on port 8000) an
 
 ### 3. Basic Usage
 
-1. **Import** a novel or screenplay (`.txt`, `.pdf`, `.fountain`, `.fdx`, or Native JSON). NARRAVANT generates a Fountain audiobook script and analyzes the story.
+1. **Import** a novel or screenplay (`.txt`, `.pdf`, `.fountain`, `.fdx`, or Native JSON). You can close progress and work on another document while Import runs. Return through the Import icon and choose **Open result** when ready. NARRAVANT confirms before replacing unsaved edits or stopping playback.
 2. **Review the analysis** — synopsis, five turning points, and the emotional arc. Edit and save as needed.
 3. **Design voices** — write voice traits for the narrator and each character, generate voices with Gemini, and assign them per speaker.
 4. **Play** — once all speakers have voices, start real-time playback from the current paragraph using the current script and voice assignments, even before Save. The editor highlights and auto-scrolls to the spoken text.

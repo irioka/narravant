@@ -10,6 +10,9 @@ import { base64ToUint8Array, pcm16ToAudioBuffer } from './audio-decoder'
 import { playbackSourceAtPosition, type PlaybackStartPosition } from './fountain-scenes'
 
 const MAX_SCHEDULED_SOURCES = 32
+const MAX_BUFFERED_SECONDS = 32
+const MAX_BUFFERED_ITEMS = 4096
+const MAX_PCM_BUFFER_BYTES = 48000
 
 export type PlaybackStatus = 'idle' | 'generating' | 'playing' | 'stopped' | 'error' | 'completed'
 
@@ -39,6 +42,7 @@ interface QueuedAudio {
   speaker?: string
   sourceOffset?: number
   buffer: AudioBuffer
+  acknowledge: () => void
 }
 
 export function AudiobookPlayer({
@@ -63,7 +67,7 @@ export function AudiobookPlayer({
   const deliveryTooLong = Array.from(narratorStyle).length > 500
   const playbackActive = isPlaying || status === 'generating' || status === 'playing'
   const [errorMessage, setErrorMessage] = useState<string>()
-  const [failedPosition, setFailedPosition] = useState<{ scene: number; utterance: number }>()
+  const [failedPosition, setFailedPosition] = useState<{ scene: number; utterance: number; sourceOffset?: number }>()
   const [currentSpeaker, setCurrentSpeaker] = useState<string>()
   const [currentSceneNumber, setCurrentSceneNumber] = useState<number>()
   const [currentUtteranceIndex, setCurrentUtteranceIndex] = useState<number>()
@@ -73,9 +77,12 @@ export function AudiobookPlayer({
   const scheduledSourcesRef = useRef(new Map<AudioBufferSourceNode, { highlightTimer?: ReturnType<typeof setTimeout> }>())
   const scheduledEndRef = useRef(0)
   const audioQueueRef = useRef<QueuedAudio[]>([])
+  const bufferedSecondsRef = useRef(0)
+  const bufferWaitStartedRef = useRef<number | undefined>(undefined)
+  const lastReleaseTimingRef = useRef({ releaseMs: 0, callbackLagMs: 0 })
+  const lastAudiblePositionRef = useRef<PlaybackStartPosition | undefined>(undefined)
   const isPlayingQueueRef = useRef<boolean>(false)
   const streamCompleteRef = useRef(false)
-  const currentChunksRef = useRef<Uint8Array[]>([])
   const currentUtteranceMetaRef = useRef<{ speaker: string; sceneNumber: number; utteranceIndex: number } | undefined>(undefined)
   const sceneNumbers = useMemo(() => scenes.length > 0 ? scenes.map((scene) => scene.scene_number) : [1], [scenes])
   const defaultSceneNumber = sceneNumbers[0] ?? 1
@@ -159,15 +166,31 @@ export function AudiobookPlayer({
     scheduledSourcesRef.current.clear()
     scheduledEndRef.current = 0
     audioQueueRef.current = []
+    bufferedSecondsRef.current = 0
+    bufferWaitStartedRef.current = undefined
+    lastReleaseTimingRef.current = { releaseMs: 0, callbackLagMs: 0 }
     isPlayingQueueRef.current = false
     streamCompleteRef.current = false
-    currentChunksRef.current = []
     currentUtteranceMetaRef.current = undefined
     setCurrentSpeaker(undefined)
     setCurrentSceneNumber(undefined)
     setCurrentUtteranceIndex(undefined)
     onPlaybackPositionChange?.(undefined)
   }, [onPlaybackPositionChange])
+
+  const failPlayback = useCallback((message: string) => {
+    const resume = lastAudiblePositionRef.current
+    const ws = wsRef.current
+    wsRef.current = null
+    stopAudio()
+    setStatus('error')
+    setErrorMessage(message)
+    if (resume) {
+      setFailedPosition({ scene: resume.sceneNumber, utterance: resume.utteranceIndex, sourceOffset: resume.sourceOffset })
+    }
+    onPlayingChange(false)
+    ws?.close()
+  }, [onPlayingChange, stopAudio])
 
   const playNextRef = useRef<() => void>(() => { })
 
@@ -194,10 +217,26 @@ export function AudiobookPlayer({
         source.onended = () => {
           const scheduled = scheduledSourcesRef.current.get(source)
           if (!scheduled) return
+          const releaseStarted = performance.now()
+          const endAt = startAt + item.buffer.length / item.buffer.sampleRate
+          const callbackLagMs = Math.max(0, (ctx.currentTime - endAt) * 1000)
           if (scheduled.highlightTimer !== undefined) clearTimeout(scheduled.highlightTimer)
           scheduledSourcesRef.current.delete(source)
+          source.onended = null
           source.disconnect()
+          bufferedSecondsRef.current = Math.max(0, bufferedSecondsRef.current - item.buffer.length / item.buffer.sampleRate)
+          const releaseMs = performance.now() - releaseStarted
+          lastReleaseTimingRef.current = { releaseMs, callbackLagMs }
+          item.acknowledge()
           playNextRef.current()
+          const callbackMs = performance.now() - releaseStarted
+          if (releaseMs >= 100 || callbackMs >= 100 || callbackLagMs >= 250) {
+            console.warn('Playback audio callback delayed', {
+              release_ms: Math.round(releaseMs), callback_ms: Math.round(callbackMs),
+              callback_lag_ms: Math.round(callbackLagMs),
+              buffered_seconds: Number(bufferedSecondsRef.current.toFixed(3)),
+            })
+          }
         }
         source.start(startAt)
         scheduledEndRef.current = startAt + item.buffer.length / item.buffer.sampleRate
@@ -213,6 +252,9 @@ export function AudiobookPlayer({
             return
           }
           if (item.kind === 'speech' && item.utteranceIndex !== undefined) {
+            lastAudiblePositionRef.current = {
+              sceneNumber: item.sceneNumber, utteranceIndex: item.utteranceIndex, sourceOffset: item.sourceOffset,
+            }
             setCurrentSpeaker(item.speaker)
             setCurrentSceneNumber(item.sceneNumber)
             setCurrentUtteranceIndex(item.utteranceIndex)
@@ -233,7 +275,8 @@ export function AudiobookPlayer({
           showPosition()
         }
       } catch {
-        continue
+        failPlayback(t('analysis:player.genericError'))
+        return
       }
     }
     isPlayingQueueRef.current = scheduledSourcesRef.current.size > 0
@@ -246,8 +289,10 @@ export function AudiobookPlayer({
       setCurrentUtteranceIndex(undefined)
       onPlaybackPositionChange?.(undefined)
       onPlayingChange(false)
+    } else if (wsRef.current?.readyState === WebSocket.OPEN && bufferWaitStartedRef.current === undefined) {
+      bufferWaitStartedRef.current = performance.now()
     }
-  }, [getAudioContext, onPlaybackPositionChange, onPlayingChange])
+  }, [failPlayback, getAudioContext, onPlaybackPositionChange, onPlayingChange, t])
 
   useEffect(() => {
     playNextRef.current = playNextInQueue
@@ -256,6 +301,9 @@ export function AudiobookPlayer({
   const startPlayback = useCallback((sceneNumber: number, utteranceIndex = 0, sourceOffset?: number) => {
     if (deliveryTooLong) return
     const requestedNarratorStyle = narratorStyle.trim()
+    const previousSocket = wsRef.current
+    wsRef.current = null
+    previousSocket?.close()
     stopAudio()
     // ボタン操作中に出力を起動する。音声の到着まで待つと再生制限に掛かる場合がある。
     getAudioContext()
@@ -267,6 +315,7 @@ export function AudiobookPlayer({
     const playbackPosition = sourceOffset === undefined
       ? { sceneNumber, utteranceIndex }
       : { sceneNumber, utteranceIndex, sourceOffset }
+    lastAudiblePositionRef.current = playbackPosition
     const playbackDraft = draft && sourceOffset !== undefined
       ? { ...draft, source_fountain: playbackSourceAtPosition(draft.source_fountain, playbackPosition) }
       : draft
@@ -275,32 +324,64 @@ export function AudiobookPlayer({
     const wsUrl = `${protocol}//${window.location.host}${path}`
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
+    let terminalReceived = false
+    let lastBufferId = 0
 
-    const enqueueCurrentAudioSegment = () => {
-      const chunks = currentChunksRef.current
+    const acknowledgeWhenConsumed = (bufferId: unknown) => {
+      if (!Number.isSafeInteger(bufferId) || Number(bufferId) <= lastBufferId) {
+        throw new Error('invalid_buffer_id')
+      }
+      lastBufferId = Number(bufferId)
+      return () => {
+        if (wsRef.current === ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ action: 'audio_consumed', buffer_id: bufferId }))
+        }
+      }
+    }
+    const canBuffer = (duration: number) => {
+      if (
+        scheduledSourcesRef.current.size + audioQueueRef.current.length >= MAX_BUFFERED_ITEMS
+        || bufferedSecondsRef.current + duration > MAX_BUFFERED_SECONDS + 0.001
+      ) {
+        console.warn('Playback stopped reason=buffer_limit')
+        failPlayback(t('analysis:player.bufferLimitError'))
+        return false
+      }
+      return true
+    }
+
+    const enqueueAudioChunk = (bytes: Uint8Array, acknowledge: () => void) => {
       const context = getAudioContext()
       const meta = currentUtteranceMetaRef.current
-      const byteLength = chunks.reduce((total, chunk) => total + chunk.byteLength, 0)
-      if (byteLength < 2 || !context || !meta) return
-
-      // PCM16のサンプル境界を保ち、分割された末尾1byteだけ次のchunkへ渡す。
-      const bytes = new Uint8Array(byteLength)
-      let offset = 0
-      for (const chunk of chunks) {
-        bytes.set(chunk, offset)
-        offset += chunk.byteLength
+      const byteLength = bytes.byteLength
+      if (!context || !meta || byteLength === 0 || byteLength % 2 !== 0) throw new Error('invalid_pcm_buffer')
+      if (!canBuffer(byteLength / 48000)) return
+      const decodeStarted = performance.now()
+      const buffer = pcm16ToAudioBuffer([bytes], context, 24000)
+      const decodeMs = performance.now() - decodeStarted
+      if (decodeMs >= 100) console.warn('Playback audio decode delayed', { decode_ms: Math.round(decodeMs) })
+      const waitStarted = bufferWaitStartedRef.current
+      if (waitStarted !== undefined) {
+        const waitMs = performance.now() - waitStarted
+        if (waitMs >= 250) {
+          console.info('Playback audio wait ended', {
+            wait_ms: Math.round(waitMs), decode_ms: Math.round(decodeMs),
+            release_ms: Math.round(lastReleaseTimingRef.current.releaseMs),
+            callback_lag_ms: Math.round(lastReleaseTimingRef.current.callbackLagMs),
+          })
+        }
+        bufferWaitStartedRef.current = undefined
       }
-      const playableLength = byteLength - byteLength % 2
-      currentChunksRef.current = playableLength < byteLength ? [bytes.slice(playableLength)] : []
+      bufferedSecondsRef.current += buffer.length / buffer.sampleRate
       audioQueueRef.current.push({
         kind: 'speech',
         sceneNumber: meta.sceneNumber,
         utteranceIndex: meta.utteranceIndex,
         speaker: meta.speaker,
-        // 切り詰めた最初の発話だけ、元原稿での再開位置を表示へ引き継ぐ。
         sourceOffset: playbackDraft && meta.sceneNumber === sceneNumber && meta.utteranceIndex === utteranceIndex
           ? sourceOffset : undefined,
-        buffer: pcm16ToAudioBuffer([bytes.subarray(0, playableLength)], context, 24000),
+        buffer,
+        acknowledge,
       })
       playNextInQueue()
     }
@@ -323,7 +404,6 @@ export function AudiobookPlayer({
         const ev = msg.event
 
         if (ev === 'utterance_start') {
-          currentChunksRef.current = []
           currentUtteranceMetaRef.current = {
             speaker: String(msg.speaker ?? ''),
             sceneNumber: Number(msg.scene_number),
@@ -332,28 +412,34 @@ export function AudiobookPlayer({
         } else if (ev === 'scene_pause' || ev === 'utterance_pause') {
           const ctx = getAudioContext()
           if (ctx) {
-            const rawDurationMs = Number(msg.duration_ms)
-            const durationMs = Number.isFinite(rawDurationMs) && rawDurationMs >= 0 ? rawDurationMs : 3000
+            const durationMs = Number(msg.duration_ms)
+            if (!Number.isFinite(durationMs) || durationMs < 0) throw new Error('invalid_pause')
+            const acknowledge = acknowledgeWhenConsumed(msg.buffer_id)
+            if (!canBuffer(durationMs / 1000)) return
             const frameCount = Math.max(1, Math.round(ctx.sampleRate * durationMs / 1000))
+            const buffer = ctx.createBuffer(1, frameCount, ctx.sampleRate)
+            bufferedSecondsRef.current += buffer.length / buffer.sampleRate
             audioQueueRef.current.push({
-              kind: 'pause',
-              sceneNumber: Number(msg.scene_number),
-              buffer: ctx.createBuffer(1, frameCount, ctx.sampleRate),
+              kind: 'pause', sceneNumber: Number(msg.scene_number), buffer, acknowledge,
             })
             playNextInQueue()
           }
         } else if (ev === 'audio_chunk') {
+          if (typeof msg.data !== 'string' || msg.data.length > Math.ceil(MAX_PCM_BUFFER_BYTES / 3) * 4) {
+            failPlayback(t('analysis:player.bufferLimitError'))
+            return
+          }
           if (msg.data) {
-            currentChunksRef.current.push(base64ToUint8Array(msg.data))
-            enqueueCurrentAudioSegment()
+            const acknowledge = acknowledgeWhenConsumed(msg.buffer_id)
+            enqueueAudioChunk(base64ToUint8Array(msg.data), acknowledge)
           }
         } else if (ev === 'audio_segment_end') {
-          enqueueCurrentAudioSegment()
+          // PCMはサーバーでsample境界へ整列済み。終端で再投入しない。
+          return
         } else if (ev === 'utterance_end') {
-          // audio_segment_end を送らない旧 backend とも再生できるよう、残りをここで flush する。
-          enqueueCurrentAudioSegment()
           currentUtteranceMetaRef.current = undefined
         } else if (ev === 'playback_complete') {
+          terminalReceived = true
           // Playback finished streaming from server
           streamCompleteRef.current = true
           if (!isPlayingQueueRef.current && audioQueueRef.current.length === 0) {
@@ -366,6 +452,7 @@ export function AudiobookPlayer({
             onPlayingChange(false)
           }
         } else if (ev === 'error') {
+          terminalReceived = true
           stopAudio()
           setStatus('error')
           const errorMessage = typeof msg.code === 'string' && msg.code.startsWith('VOICE_')
@@ -381,26 +468,30 @@ export function AudiobookPlayer({
           onPlayingChange(false)
           ws.close()
         }
-      } catch (err) {
-        console.error('Error handling WebSocket message', err)
+      } catch {
+        console.warn('Playback stopped reason=invalid_message')
+        failPlayback(t('analysis:player.connectionError'))
       }
     }
 
     ws.onerror = () => {
       if (wsRef.current !== ws) return
-      stopAudio()
-      setStatus('error')
-      setErrorMessage(t('analysis:player.connectionError'))
-      onPlayingChange(false)
+      failPlayback(t('analysis:player.connectionError'))
     }
 
-    ws.onclose = () => {
-      if (wsRef.current === ws) wsRef.current = null
+    ws.onclose = (event) => {
+      if (wsRef.current !== ws) return
+      wsRef.current = null
+      if (!terminalReceived) {
+        console.warn('Playback disconnected', { code: event?.code ?? 0, clean: event?.wasClean ?? false })
+        failPlayback(t('analysis:player.connectionError'))
+      }
     }
-  }, [deliveryTooLong, narratorStyle, documentId, draft, getAudioContext, onPlaybackPositionChange, onPlayingChange, playNextInQueue, stopAudio, t, tErrors])
+  }, [failPlayback, deliveryTooLong, narratorStyle, documentId, draft, getAudioContext, onPlaybackPositionChange, onPlayingChange, playNextInQueue, stopAudio, t, tErrors])
 
   const stopPlayback = useCallback(() => {
     const ws = wsRef.current
+    wsRef.current = null
     if (ws) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ action: 'stop' }))
@@ -438,7 +529,7 @@ export function AudiobookPlayer({
 
   const retryPlayback = useCallback(() => {
     if (failedPosition) {
-      startPlayback(failedPosition.scene, failedPosition.utterance)
+      startPlayback(failedPosition.scene, failedPosition.utterance, failedPosition.sourceOffset)
     } else {
       const start = playbackStart ?? { sceneNumber: defaultSceneNumber, utteranceIndex: 0 }
       startPlayback(start.sceneNumber, start.utteranceIndex, start.sourceOffset)

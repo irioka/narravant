@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
@@ -7,9 +7,11 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import { getDocument, getVersions, importDocument, saveImportDraft, updateDocument } from '@/api/documents'
 import { streamTaskProgress } from '@/api/tasks'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { createVoice } from '@/api/voices'
 import { createLocaleRuntime, LocaleProvider } from '@/i18n/LocaleProvider'
 import { AnalysisPage } from './AnalysisPage'
+import { ImportSessionProvider } from './ImportSessionProvider'
 import * as scriptScroll from './script-scroll'
 
 vi.mock('@/api/documents', async (importOriginal) => ({
@@ -22,8 +24,9 @@ vi.mock('@/api/voices', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/api/voices')>(), createVoice: vi.fn(),
 }))
 vi.mock('./DocumentList', () => ({ DocumentList: () => null }))
-vi.mock('./AnalysisTabsPanel', () => ({ AnalysisTabsPanel: () => null }))
-vi.mock('@/components/NarravantHeader', () => ({ NarravantHeader: () => null }))
+const { renderTabs } = vi.hoisted(() => ({ renderTabs: vi.fn(() => null) }))
+vi.mock('./AnalysisTabsPanel', () => ({ AnalysisTabsPanel: renderTabs }))
+vi.mock('@/components/NarravantHeader', () => ({ NarravantHeader: ({ actions }: { actions: ReactNode }) => <TooltipProvider>{actions}</TooltipProvider> }))
 vi.mock('./TaskProgressDialog', () => ({ TaskProgressDialog: () => null }))
 vi.mock('react-resizable-panels', () => ({
   Group: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -64,7 +67,7 @@ it('Import失敗のdialogに対象場面・停止理由・リトライ回数を�
     <QueryClientProvider client={client}>
       <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
         <MemoryRouter initialEntries={['/analysis/new']}>
-          <Routes><Route path="/analysis/new" element={<AnalysisPage />} /></Routes>
+          <ImportSessionProvider><Routes><Route path="/analysis/new" element={<AnalysisPage />} /></Routes></ImportSessionProvider>
         </MemoryRouter>
       </LocaleProvider>
     </QueryClientProvider>,
@@ -72,7 +75,7 @@ it('Import失敗のdialogに対象場面・停止理由・リトライ回数を�
   fireEvent.change(container.querySelector('input[type="file"]')!, {
     target: { files: [new File(['合成小説'], 'synthetic.txt')] },
   })
-  const dialog = await screen.findByRole('alertdialog')
+  const dialog = await screen.findByRole('dialog')
   expect(dialog).toHaveTextContent('場面2')
   expect(dialog).toHaveTextContent('2/2回')
   expect(dialog).toHaveTextContent('重大な問題が残っています')
@@ -114,7 +117,7 @@ it('途中再生の選択とスクロールは元原稿の再開位置に一致�
     <QueryClientProvider client={client}>
       <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
         <MemoryRouter initialEntries={['/analysis/new']}>
-          <Routes><Route path="/analysis/new" element={<AnalysisPage />} /></Routes>
+          <ImportSessionProvider><Routes><Route path="/analysis/new" element={<AnalysisPage />} /></Routes></ImportSessionProvider>
         </MemoryRouter>
       </LocaleProvider>
     </QueryClientProvider>,
@@ -122,7 +125,16 @@ it('途中再生の選択とスクロールは元原稿の再開位置に一致�
   fireEvent.change(container.querySelector('input[type="file"]')!, {
     target: { files: [new File([source], 'synthetic.fountain')] },
   })
+  fireEvent.click(await screen.findByRole('button', { name: '結果を開く' }))
   const editor = await screen.findByRole('textbox', { name: '脚本本文' }) as HTMLTextAreaElement
+  Object.defineProperty(editor, 'clientWidth', { value: 500 })
+  const createRange = document.createRange.bind(document)
+  vi.spyOn(document, 'createRange').mockImplementation(() => {
+    const range = createRange()
+    range.getBoundingClientRect = () => ({ top: 100 }) as DOMRect
+    return range
+  })
+  const append = vi.spyOn(document.body, 'append')
   editor.setSelectionRange(start + 2, start + 2)
   fireEvent.select(editor)
   fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
@@ -130,16 +142,29 @@ it('途中再生の選択とスクロールは元原稿の再開位置に一致�
   const scroll = vi.spyOn(scriptScroll, 'scrollTextRangeIntoView')
   const ws = DraftWebSocket.instances[0]
   ws.onmessage?.({ data: JSON.stringify({ event: 'utterance_start', speaker: 'ナレーター', scene_number: 1, utterance_index: 1 }) })
-  ws.onmessage?.({ data: JSON.stringify({ event: 'audio_chunk', data: 'AAA=' }) })
+  ws.onmessage?.({ data: JSON.stringify({ event: 'audio_chunk', data: 'AAA=', buffer_id: 1 }) })
   await waitFor(() => expect(editor.selectionStart).toBe(start))
   expect(editor.selectionEnd).toBe(end)
   expect(scroll).toHaveBeenLastCalledWith(editor, source, { start, end })
   expect(scroll).toHaveBeenCalledTimes(1)
   editor.scrollTop = 500
   context.currentTime = 1
-  act(() => ws.onmessage?.({ data: JSON.stringify({ event: 'audio_chunk', data: 'AAA=' }) }))
+  act(() => ws.onmessage?.({ data: JSON.stringify({ event: 'audio_chunk', data: 'AAA=', buffer_id: 2 }) }))
   await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1))
   expect(editor.scrollTop).toBe(500)
+  const rendersBeforeNextUtterance = renderTabs.mock.calls.length
+  context.currentTime = 2
+  act(() => {
+    ws.onmessage?.({ data: JSON.stringify({ event: 'utterance_start', speaker: 'ナレーター', scene_number: 1, utterance_index: 2 }) })
+    ws.onmessage?.({ data: JSON.stringify({ event: 'audio_chunk', data: 'AAA=', buffer_id: 3 }) })
+  })
+  await waitFor(() => expect(editor.selectionStart).toBe(source.indexOf('次の発話')))
+  expect(renderTabs).toHaveBeenCalledTimes(rendersBeforeNextUtterance)
+  const mirrors = append.mock.calls.flat().filter((node): node is HTMLDivElement => node instanceof HTMLDivElement && node.style.left === '-100000px')
+  expect(mirrors).toHaveLength(1)
+  expect(mirrors[0].isConnected).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: '再生停止' }))
+  await waitFor(() => expect(mirrors[0].isConnected).toBe(false))
   expect(editor.value).toBe(source)
   expect(saveImportDraft).not.toHaveBeenCalled()
   expect(updateDocument).not.toHaveBeenCalled()
@@ -188,7 +213,7 @@ it.each([
     <QueryClientProvider client={client}>
       <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
         <MemoryRouter initialEntries={[route]}>
-          <Routes><Route path="/analysis/new" element={<AnalysisPage />} /><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes>
+          <ImportSessionProvider><Routes><Route path="/analysis/new" element={<AnalysisPage />} /><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes></ImportSessionProvider>
         </MemoryRouter>
       </LocaleProvider>
     </QueryClientProvider>,
@@ -196,6 +221,7 @@ it.each([
   if (!savedDocument) fireEvent.change(container.querySelector('input[type="file"]')!, {
     target: { files: [new File([draft.source_fountain], 'synthetic.fountain')] },
   })
+  if (!savedDocument) fireEvent.click(await screen.findByRole('button', { name: '結果を開く' }))
   const sceneInput = await screen.findByRole('spinbutton', { name: '再生開始シーン番号' })
   expect(sceneInput).toBeEnabled()
   expect(screen.getByRole('button', { name: '再生開始' })).toBeEnabled()
@@ -217,6 +243,7 @@ it.each([
   await user.click(screen.getByRole('button', { name: '話者の操作メニュー' }))
   await user.click(screen.getByRole('menuitem', { name: '全話者の声を生成' }))
   await waitFor(() => expect(createVoice).toHaveBeenCalled())
+  await user.click(within(await screen.findByRole('dialog', { name: '声の生成結果' })).getByRole('button', { name: '閉じる' }))
   await user.click(screen.getByRole('button', { name: '話者の操作メニュー' }))
   const generateAllItem = await screen.findByRole('menuitem', { name: '全話者の声を生成' })
   await waitFor(() => expect(generateAllItem).not.toHaveAttribute('aria-disabled', 'true'))

@@ -16,6 +16,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 
 from narravant.api.authorization import (
@@ -165,7 +166,8 @@ async def import_document(
     max_size_bytes = settings.file_import_max_size_mb * MEBIBYTE_BYTES
     content = await file.read(max_size_bytes + 1)
     try:
-        imported = validate_import(
+        imported = await run_in_threadpool(
+            validate_import,
             file.filename or "",
             content,
             max_size_bytes,

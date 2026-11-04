@@ -53,7 +53,11 @@ class WebSocketTestSession:
     async def receive_json(self) -> dict:
         message = await asyncio.wait_for(self.outgoing.get(), timeout=2)
         assert message["type"] == "websocket.send"
-        return json.loads(message["text"])
+        event = json.loads(message["text"])
+        # このfixtureは受信後の消費を即時通知する。待機量の試験は別途ACKを制御する。
+        if "buffer_id" in event:
+            await self.send_json({"action": "audio_consumed", "buffer_id": event["buffer_id"]})
+        return event
 
 
 @asynccontextmanager
@@ -242,8 +246,9 @@ async def test_playback_ws_full_flow(test_setup):
         assert "audio_segment_end" in event_types
         assert "utterance_end" in event_types
         assert event_types[-1] == "playback_complete"
-        pause = next(event for event in events if event["event"] == "scene_pause")
-        assert pause["duration_ms"] == 1750
+        pauses = [event["duration_ms"] for event in events if event["event"] == "scene_pause"]
+        assert pauses[:2] == [1000, 750]
+        assert all(duration <= 1000 for duration in pauses)
 
         # Check audio chunk contains valid base64
         audio_chunks = [e for e in events if e["event"] == "audio_chunk"]
@@ -316,7 +321,7 @@ async def test_playback_ws_validates_listener_voice_with_primary_voices_before_s
     assert validated == [(LOCAL_USER_ID, ["voice_fake_narrator", "voice_fake_alice", "voice_fake_bob"], False)]
     reaction_segment = next(segment for segment in fake_tts.synthesized_segments if segment.listener is not None)
     assert reaction_segment.listener == SegmentVoice("BOB", "voice_fake_bob")
-    assert any(message["event"] == "scene_pause" and message["duration_ms"] == 1750 for message in events)
+    assert [message["duration_ms"] for message in events if message["event"] == "scene_pause"] == [1000, 750]
     assert not any(message["event"] == "utterance_pause" for message in events)
 
 
@@ -341,7 +346,7 @@ async def test_playback_ws_uses_configured_narrator_sentence_pause(test_setup, s
     assert events[0]["event"] == "utterance_start"
     assert [e["duration_ms"] for e in events if e["event"] == "utterance_pause"] == [500]
     assert [e["duration_ms"] for e in events if e["event"] == "scene_pause"] == (
-        [1750] if start_index == 0 else []
+        [1000, 750] if start_index == 0 else []
     )
 
 
@@ -369,9 +374,9 @@ async def test_playback_ws_accepts_runtime_narrator_sentence_pause(test_setup, p
             if event["event"] in {"playback_complete", "error"}:
                 break
     assert events[-1]["event"] == "playback_complete"
-    assert [e["duration_ms"] for e in events if e["event"] == "utterance_pause"] == (
-        [pause_ms] if pause_ms else []
-    )
+    pauses = [e["duration_ms"] for e in events if e["event"] == "utterance_pause"]
+    assert sum(pauses) == pause_ms
+    assert all(0 < duration <= 1000 for duration in pauses)
     assert app.state.settings.playback_narrator_sentence_pause_duration_ms == 1500
 
 

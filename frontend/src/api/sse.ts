@@ -4,6 +4,8 @@ export interface SseEvent {
   id?: string
 }
 
+export class SseTransportError extends Error {}
+
 function parseData(lines: string[]): unknown {
   const values = lines.map((line) => JSON.parse(line) as unknown)
   return values.length === 1 ? values[0] : values
@@ -56,7 +58,7 @@ export async function consumeSseStream(
   response: Response,
   onEvent: (event: SseEvent) => void,
 ): Promise<ConsumeSseStreamResult> {
-  if (!response.body) throw new Error('The SSE response has no body.')
+  if (!response.body) throw new SseTransportError('The SSE response has no body.')
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -64,8 +66,11 @@ export async function consumeSseStream(
   let receivedBytes = 0
   let eventCount = 0
 
+  try {
   while (true) {
-    const { done, value } = await reader.read()
+    let chunk: ReadableStreamReadResult<Uint8Array>
+    try { chunk = await reader.read() } catch { throw new SseTransportError('The SSE read failed.') }
+    const { done, value } = chunk
     if (done) break
     if (value) {
       receivedBytes += value.length
@@ -78,6 +83,7 @@ export async function consumeSseStream(
       onEvent(event)
     }
   }
+  } finally { reader.releaseLock() }
 
   return { receivedBytes, eventCount }
 }

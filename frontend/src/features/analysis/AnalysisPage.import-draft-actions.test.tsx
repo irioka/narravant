@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -15,10 +15,12 @@ import {
   updateDocument,
 } from '@/api/documents'
 import { streamTaskProgress } from '@/api/tasks'
+import type { TaskStreamCallbacks } from '@/api/tasks'
 import type { DocumentDetail } from '@/api/contracts'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { createLocaleRuntime, LocaleProvider } from '@/i18n/LocaleProvider'
 import { AnalysisPage } from './AnalysisPage'
+import { ImportSessionProvider } from './ImportSessionProvider'
 
 vi.mock('@/api/documents', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/api/documents')>(),
@@ -56,14 +58,14 @@ const savedDocument: DocumentDetail = {
   capabilities: { can_delete: true, can_edit: true, can_share: false },
   source_fountain: 'Title: Saved source\n\nINT. SAVED ROOM - DAY #1#\n\nSaved body.',
   scenes: [{ scene_number: 1, heading: 'INT. SAVED ROOM - DAY', text: 'Saved body.', dialogues: [] }],
-  metadata: { synopsis: 'Synthetic synopsis.' }, narrator: { voice_traits: '' }, voice_assignments: [],
+  metadata: { synopsis: 'Synthetic synopsis.', logline: 'Synthetic logline.', theme_setting: 'Synthetic theme.' }, narrator: { voice_traits: '' }, voice_assignments: [],
   emotion_arc: {
     valence: [4], tension: [0], characters: { ALICE: [4] },
     scene_mapping: [{ point_number: 1, start_scene_number: 1, end_scene_number: 1, representative_scene_number: 1 }],
     valence_vector: [0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
   },
   analysis: {
-    status: 'completed', turning_points: [],
+    status: 'completed', turning_points: [1, 2, 3, 4, 5].map((tp_number) => ({ tp_number, label: `TP${tp_number}`, availability: 'not_applicable', scene_number: null, change: null, involved_characters: [], reason: 'Synthetic absence.' })),
     characters: [{
       name: 'ALICE', external_goal: 'Synthetic goal', internal_need: 'Synthetic need',
       fear_or_cost: 'Synthetic risk', obstacle: 'Synthetic obstacle', choice: 'Synthetic choice',
@@ -91,16 +93,16 @@ function importedDraft(documentId: string, title: string, sourceFountain: string
 function renderPage(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const rendered = render(
-    <QueryClientProvider client={client}>
+    <QueryClientProvider client={client}><TooltipProvider>
       <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
         <MemoryRouter initialEntries={[path]}>
-          <Routes>
+          <ImportSessionProvider><Routes>
             <Route path="/analysis/new" element={<AnalysisPage />} />
             <Route path="/analysis/:documentId" element={<AnalysisPage />} />
-          </Routes>
+          </Routes></ImportSessionProvider>
         </MemoryRouter>
       </LocaleProvider>
-    </QueryClientProvider>,
+    </TooltipProvider></QueryClientProvider>,
   )
   return { ...rendered, client }
 }
@@ -118,6 +120,26 @@ beforeEach(() => {
 })
 
 describe('Import後、Save前の操作', () => {
+  it('Import完了が表示中の未保存編集を上書きしない', async () => {
+    let complete!: NonNullable<TaskStreamCallbacks['onCompleted']>
+    vi.mocked(streamTaskProgress).mockImplementation((_id, callbacks) => new Promise<void>((resolve) => {
+      complete = (event) => { callbacks.onCompleted?.(event); resolve() }
+    }))
+    const { container, client } = renderPage('/analysis/existing-document')
+    await screen.findByRole('textbox', { name: '脚本本文' })
+    fireEvent.change(container.querySelector('input[type="file"]')!, {
+      target: { files: [new File(['synthetic input'], 'synthetic.fountain')] },
+    })
+    await waitFor(() => expect(complete).toBeTypeOf('function'))
+    fireEvent.click(screen.getByRole('button', { name: '閉じる' }))
+    const edited = savedDocument.source_fountain + '\n手元の合成編集。'
+    fireEvent.change(screen.getByRole('textbox', { name: '脚本本文' }), { target: { value: edited } })
+    await act(async () => { complete({ import_draft: importedDraft('pending', 'Pending', 'Title: Pending\n\nINT. ROOM - DAY #1#\n\nImported.') }) })
+    expect(screen.getByRole('textbox', { name: '脚本本文' })).toHaveValue(edited)
+    expect(saveImportDraft).not.toHaveBeenCalled()
+    expect(updateDocument).not.toHaveBeenCalled()
+    client.clear()
+  })
   it('Native JSON draftではDeleteを無効にし、Saveを有効にする', async () => {
     const nativeDraft = importedDraft('native-unsaved', 'Native import', 'Title: Native import\n\nINT. IMPORTED ROOM - DAY #1#\n\nNative body.')
     vi.mocked(streamTaskProgress).mockImplementation(async (_taskId, callbacks) => {
@@ -130,8 +152,8 @@ describe('Import後、Save前の操作', () => {
       target: { files: [new File(['synthetic native'], 'synthetic.native.json', { type: 'application/json' })] },
     })
 
+    fireEvent.click(await screen.findByRole('button', { name: '結果を開く' }))
     await waitFor(() => expect(screen.getByRole('textbox', { name: '脚本本文' })).toHaveValue(nativeDraft.source_fountain))
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss task progress' }))
     expect(screen.getByRole('button', { name: '削除' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '保存' })).toBeEnabled()
     expect(deleteDocument).not.toHaveBeenCalled()
@@ -141,7 +163,7 @@ describe('Import後、Save前の操作', () => {
   it('Import draftを再Importでき、表示本文で再分析した結果をそのdraftのSaveに含める', async () => {
     const firstDraft = importedDraft('first-import', 'First import', 'Title: First\n\nINT. IMPORTED ROOM - DAY #1#\n\nFirst body.')
     const secondDraft = importedDraft('second-import', 'Second import', 'Title: Second\n\nINT. IMPORTED ROOM - DAY #1#\n\nSecond body.')
-    const editedSource = 'Title: Second\n\nINT. IMPORTED ROOM - DAY #1#\n\n@ALICE\nEdited visible body.'
+    const editedSource = 'Title: Second import\n\nINT. IMPORTED ROOM - DAY #1#\n\n@ALICE\nEdited visible body.'
     const updatedArc = {
       valence: [6], tension: [1], characters: { ALICE: [6] },
       scene_mapping: [{ point_number: 1, start_scene_number: 1, end_scene_number: 1, representative_scene_number: 1 }],
@@ -162,15 +184,16 @@ describe('Import後、Save前の操作', () => {
     fireEvent.change(container.querySelector('input[type="file"]')!, {
       target: { files: [new File(['first synthetic'], 'first.fountain')] },
     })
+    fireEvent.click(await screen.findByRole('button', { name: '結果を開く' }))
     await waitFor(() => expect(screen.getByRole('textbox', { name: '脚本本文' })).toHaveValue(firstDraft.source_fountain))
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss task progress' }))
-    expect(screen.getByRole('button', { name: '文書を取り込む' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '文書の取り込み' })).toBeEnabled()
 
     fireEvent.change(container.querySelector('#analysis-document-import')!, {
       target: { files: [new File(['second synthetic'], 'second.fountain')] },
     })
+    fireEvent.click(await screen.findByRole('button', { name: '結果を開く' }))
+    fireEvent.click(await screen.findByRole('button', { name: '破棄して結果を開く' }))
     await waitFor(() => expect(screen.getByRole('textbox', { name: '脚本本文' })).toHaveValue(secondDraft.source_fountain))
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss task progress' }))
     expect(discardImportDraft).toHaveBeenCalledWith('import-task-1')
     expect(importDocument).toHaveBeenCalledTimes(2)
 
@@ -180,6 +203,21 @@ describe('Import後、Save前の操作', () => {
     await waitFor(() => expect(reanalyzeImportDraftEmotionArc).toHaveBeenCalledWith('import-task-2', editedSource))
     expect(saveImportDraft).not.toHaveBeenCalled()
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss task progress' }))
+
+    const createObjectURL = vi.fn((_blob: Blob) => 'blob:synthetic-export')
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = createObjectURL
+      static revokeObjectURL = vi.fn()
+    })
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    fireEvent.click(screen.getByRole('button', { name: '書き出し' }))
+    fireEvent.click(screen.getByRole('button', { name: /Native JSON/ }))
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    const exported = JSON.parse(await createObjectURL.mock.calls[0][0].text())
+    expect(exported.document.source_fountain).toBe(editedSource)
+    expect(exported.document.emotion_arc).toEqual({ valence: updatedArc.valence, tension: updatedArc.tension, characters: updatedArc.characters })
+    anchorClick.mockRestore()
+    vi.unstubAllGlobals()
 
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
     const titleInput = screen.getByRole('textbox', { name: 'ドキュメントのタイトル' })

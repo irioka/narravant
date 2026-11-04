@@ -47,7 +47,7 @@ from narravant.core.generated_fountain import (
 )
 from narravant.core.valence_vector import default_valence_vectorizer
 from narravant.db.database import DocumentRepository, OptimisticLockError
-from narravant.domain.tasks import TERMINAL_TASK_STATUSES, TaskStatus
+from narravant.domain.tasks import TERMINAL_TASK_STATUSES, TaskStateError, TaskStatus
 from narravant.services.narrative_adaptation import (
     AdaptationResult,
     NarrativeAdaptationError,
@@ -59,8 +59,10 @@ from narravant.services.tasks import TaskManager
 from narravant.services.vertex_analysis import (
     TURNING_POINT_LABELS,
     CanonicalAnalysis,
+    VertexAnalysisValidationError,
     VertexStreamTimeoutError,
     is_transient_vertex_error,
+    safe_vertex_error_metadata,
 )
 from narravant.storage.gcs import GcsConflictError, ScriptStorageClient
 
@@ -406,7 +408,13 @@ class ImportService:
         document_id = str(payload["document_id"])
         adaptation_result: AdaptationResult | None = None
         try:
-            self.tasks.start(task_id)
+            self._ensure_not_cancelled(task_id)
+            try:
+                self.tasks.start(task_id)
+            except TaskStateError:
+                # queuedの読取りとrunningへのCASの間にcancelが入る場合も中止する。
+                self._ensure_not_cancelled(task_id)
+                raise
             imported = validate_import(
                 str(payload["filename"]),
                 content,
@@ -616,11 +624,14 @@ class ImportService:
                 monotonic() + self.drafts.ttl_seconds,
             )
             self.drafts.put(draft)
-            self.tasks.complete_import_draft(
+            completed = self.tasks.complete_import_draft(
                 task_id,
                 {"import_draft": draft_response(draft).model_dump(mode="json")},
                 self.drafts.ttl_seconds,
             )
+            if not completed:
+                self.drafts.discard(task_id)
+                return
             logger.info(
                 "Import draft completed task_id=%s document_id=%s format=%s",
                 task_id,
@@ -643,6 +654,17 @@ class ImportService:
                 "CONFLICT",
                 "文書が更新されました。再読み込みして再試行してください。",
                 retryable=True,
+            )
+        except VertexAnalysisValidationError as exc:
+            logger.error(
+                "Import analysis validation failed task_id=%s reason=%s attempt_count=%s "
+                "max_attempts=%s expected_scene_count=%s",
+                task_id, exc.context["reason"], exc.context["attempt_count"],
+                exc.context["max_attempts"], exc.context["expected_scene_count"],
+            )
+            self._fail(
+                task_id, "IMPORT_FAILED", "生成された分析結果を検証できませんでした。",
+                retryable=False, context=exc.context,
             )
         except VertexStreamTimeoutError:
             self._fail(task_id, "IMPORT_FAILED", VERTEX_TIMEOUT_MESSAGE, retryable=True)
@@ -686,8 +708,19 @@ class ImportService:
                 )
                 self._fail(task_id, "IMPORT_FAILED", message, retryable=True)
             else:
-                # 検証例外の本文には原文・中間計画が含まれ得るため、型だけを記録する。
-                logger.error("Import task failed task_id=%s error_type=%s", task_id, type(exc).__name__)
+                # 例外本文には原文・中間計画が含まれ得るため、安全なメタデータだけを記録する。
+                error_metadata = safe_vertex_error_metadata(exc)
+                if error_metadata is not None:
+                    logger.error(
+                        "Import task failed task_id=%s error_type=%s error_code=%s error_status=%s reason=%s",
+                        task_id,
+                        type(exc).__name__,
+                        error_metadata.code,
+                        error_metadata.status,
+                        error_metadata.reason,
+                    )
+                else:
+                    logger.error("Import task failed task_id=%s error_type=%s", task_id, type(exc).__name__)
                 self._fail(
                     task_id,
                     "IMPORT_FAILED",
@@ -864,6 +897,8 @@ class ImportService:
         context: dict[str, object] | None = None,
     ) -> None:
         task = self.tasks.repository.get(task_id)
+        if task is not None and TaskStatus(task["status"]) is TaskStatus.COMPLETED:
+            return
         if task is not None and TaskStatus(task["status"]) not in TERMINAL_TASK_STATUSES:
             payload = {"code": code, "message": message, "retryable": retryable}
             if context is not None:

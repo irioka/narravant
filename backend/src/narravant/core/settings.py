@@ -66,6 +66,7 @@ class Settings:
     gemini_source_voice_traits_max_attempts: int
     gemini_source_voice_traits_max_output_tokens: int
     gemini_analysis_max_attempts: int
+    gemini_planning_max_attempts: int
     gemini_generation_max_attempts: int
     gemini_voice_design_max_attempts: int
     gemini_retry_backoff_seconds: int
@@ -203,6 +204,7 @@ class Settings:
             "source_voice_traits_max_attempts",
             "source_voice_traits_max_output_tokens",
             "analysis_max_attempts",
+            "planning_max_attempts",
             "generation_max_attempts",
             "voice_design_max_attempts",
             "retry_backoff_seconds",
@@ -289,6 +291,7 @@ class Settings:
                 "source_voice_traits_max_output_tokens"
             ],
             gemini_analysis_max_attempts=positive_gemini_integers["analysis_max_attempts"],
+            gemini_planning_max_attempts=positive_gemini_integers["planning_max_attempts"],
             gemini_generation_max_attempts=positive_gemini_integers["generation_max_attempts"],
             gemini_voice_design_max_attempts=positive_gemini_integers["voice_design_max_attempts"],
             gemini_retry_backoff_seconds=positive_gemini_integers["retry_backoff_seconds"],

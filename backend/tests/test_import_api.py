@@ -162,6 +162,150 @@ def _service() -> tuple[ImportService, DocumentRepository, InMemoryScriptStorage
     return service, repository, storage, tasks
 
 
+def test_import_cancelled_before_worker_start_never_runs_analysis():
+    service, repository, storage, tasks = _service()
+    content = _native_bytes()
+    imported = validate_import(
+        "synthetic.json", content, 1024 * 1024,
+        pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.70,
+    )
+    task_id = service.start("owner-1", imported)
+    tasks.request_cancel(task_id)
+    service.run(task_id, content)
+    assert tasks.repository.get(task_id)["status"] == "cancelled"
+    assert tasks.events_after(task_id, 0)[-1].event_type == "cancelled"
+    assert service.drafts.get(task_id) is None
+    assert repository.list_documents(limit=10, offset=0)[1] == 0
+    assert storage._objects == {}
+
+
+def test_import_cancel_between_queued_read_and_start_cas(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    service, repository, storage, tasks = _service()
+    content = _native_bytes()
+    imported = validate_import(
+        "synthetic.json", content, 1024 * 1024,
+        pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.70,
+    )
+    task_id = service.start("owner-1", imported)
+    reached, release = Event(), Event()
+    transition = tasks.repository.transition
+
+    def paused_transition(task_id, expected, target):
+        if expected == "queued" and target == "running":
+            reached.set()
+            assert release.wait(5)
+        return transition(task_id, expected, target)
+
+    monkeypatch.setattr(tasks.repository, "transition", paused_transition)
+    with ThreadPoolExecutor() as pool:
+        worker = pool.submit(service.run, task_id, content)
+        try:
+            assert reached.wait(5)
+            tasks.request_cancel(task_id)
+        finally:
+            release.set()
+        worker.result(timeout=5)
+    assert tasks.repository.get(task_id)["status"] == "cancelled"
+    assert [e.event_type for e in tasks.events_after(task_id, 0)].count("cancelled") == 1
+    assert service.drafts.get(task_id) is None
+    assert repository.list_documents(limit=10, offset=0)[1] == 0
+    assert storage._objects == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pause_validation", [False, True])
+async def test_background_import_allows_other_document_requests_before_release(monkeypatch, pause_validation):
+    import asyncio
+    from threading import Event
+
+    from fastapi import FastAPI
+
+    from narravant.api import dependencies as deps
+    from narravant.api import documents as document_api
+    from narravant.api import voices as voice_api
+    from narravant.db.voice_registry import VoiceRegistryRepository
+    from narravant.services.voice_design import FakeVoiceDesignClient
+
+    service, repository, storage, tasks = _service()
+    content = _native_bytes()
+    imported = validate_import(
+        "synthetic.json", content, 1024 * 1024,
+        pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.70,
+    )
+    previous = service.start("owner-1", imported)
+    service.run(previous, content)
+    doc_id, _, _ = service.save(previous, "owner-1")
+    reached, release = Event(), Event()
+    run = service.run
+    validate = document_api.validate_import
+
+    def blocking_worker(task_id, body):
+        reached.set()
+        assert release.wait(5)
+        run(task_id, body)
+
+    def blocking_validation(*args, **kwargs):
+        reached.set()
+        assert release.wait(5)
+        return validate(*args, **kwargs)
+
+    if pause_validation:
+        monkeypatch.setattr(document_api, "validate_import", blocking_validation)
+    else:
+        monkeypatch.setattr(service, "run", blocking_worker)
+    monkeypatch.setattr(document_api, "_import_service", lambda *args: service)
+    settings = SimpleNamespace(
+        file_import_max_size_mb=1, file_import_pdf_max_pages=100, file_import_fdx_max_depth=32,
+        file_import_txt_minimum_confidence=0.70, emotion_arc_max_points=36,
+    )
+    from narravant.services.voice_management import VoiceManagementService
+    provider = FakeVoiceDesignClient()
+    registry = VoiceRegistryRepository(repository.db)
+    voice_service = VoiceManagementService(provider, registry, repository, storage, local_owner_id='owner-1')
+    isolated_app = FastAPI()
+    isolated_app.include_router(document_api.router)
+    isolated_app.include_router(voice_api.router)
+    # 機密設定と実providerを参照しない、実endpointを使う合成構成。
+    isolated_app.dependency_overrides.update({
+        deps.get_current_user: lambda: CurrentUser("owner-1", "owner@example.test"),
+        deps.get_document_repo: lambda: repository,
+        deps.get_storage_client: lambda: storage,
+        deps.get_task_manager: lambda: tasks,
+        deps.get_import_draft_store: lambda: service.drafts,
+        deps.get_document_analyzer: lambda: service.analyzer,
+        deps.get_narrative_adaptation_service: lambda: service.adapter,
+        deps.get_settings: lambda: settings,
+        deps.get_voice_design_client: lambda: provider,
+        deps.get_voice_management_service: lambda: voice_service,
+        deps.get_voice_registry_repo: lambda: VoiceRegistryRepository(repository.db),
+    })
+    async with AsyncClient(transport=ASGITransport(app=isolated_app), base_url="http://synthetic") as client:
+        post = asyncio.create_task(client.post(
+            "/api/v1/documents/import", files={"file": ("synthetic.json", content, "application/json")},
+        ))
+        try:
+            assert await asyncio.to_thread(reached.wait, 2)
+            response = await asyncio.wait_for(client.get(f"/api/v1/documents/{doc_id}"), 1)
+            assert response.status_code == 200
+            update = await asyncio.wait_for(client.put(f"/api/v1/documents/{doc_id}", json={
+                "expected_version": response.json()["expected_version"], "title": "Edited while importing",
+            }), 1)
+            assert update.status_code == 200
+            voice = await asyncio.wait_for(client.post(f"/api/v1/documents/{doc_id}/voices", json={
+                "speaker": "A", "voice_traits": "Synthetic warm voice",
+            }), 1)
+            assert voice.status_code == 200
+            assert not release.is_set()
+            assert not post.done()
+        finally:
+            release.set()
+            response = await post
+        assert response.status_code == 202
+
+
 def test_native_import_keeps_every_content_store_empty_until_explicit_save() -> None:
     service, repository, storage, tasks = _service()
     content = _native_bytes()
@@ -900,6 +1044,75 @@ def _service_with_adapter(
         emotion_arc_max_points=36,
     )
     return service, repository, storage, tasks
+
+
+def test_provider_rejection_at_analysis_65_logs_safe_metadata_and_fails_without_persistence(caplog):
+    from google.genai.errors import ClientError
+
+    marker = "SYNTHETIC_PRIVATE_PROVIDER_RESPONSE"
+    service, repository, storage, tasks = _service_with_adapter()
+    calls = []
+
+    def reject(*_args, **_kwargs):
+        calls.append(True)
+        raise ClientError(400, {"error": {"status": "INVALID_ARGUMENT", "message": marker}})
+
+    service.analyzer.analyze = reject
+    content = b"Title: Synthetic\n\nINT. ROOM - DAY #1#\n\nA synthetic story.\n"
+    imported = validate_import(
+        "synthetic.fountain",
+        content,
+        1048576,
+        pdf_max_pages=100,
+        fdx_max_depth=32,
+        txt_minimum_confidence=0.7,
+    )
+    task_id = service.start("owner-1", imported)
+    with caplog.at_level(logging.ERROR):
+        service.run(task_id, content)
+
+    events = tasks.events_after(task_id, 0)
+    assert calls == [True]
+    assert any(event.payload.get("percentage") == 65 for event in events)
+    assert events[-1].event_type == "error"
+    assert events[-1].payload["retryable"] is False
+    assert "error_code=400 error_status=INVALID_ARGUMENT reason=unspecified" in caplog.text
+    assert "error_type=ClientError" in caplog.text
+    assert marker not in caplog.text and marker not in json.dumps(events[-1].payload)
+    assert all(record.exc_info is None for record in caplog.records)
+    assert service.drafts.get(task_id) is None
+    assert repository.list_documents(limit=10, offset=0)[1] == 0
+    assert storage._objects == {}
+
+
+def test_analysis_validation_failure_keeps_safe_context_and_never_persists(caplog):
+    from narravant.services.vertex_analysis import VertexAnalysisValidationError
+
+    service, repository, storage, tasks = _service_with_adapter()
+
+    def fail(*_args, **_kwargs):
+        raise VertexAnalysisValidationError("valence_length", 2, 2, 15)
+
+    service.analyzer.analyze = fail
+    content = b"Title: Synthetic\n\nINT. ROOM - DAY #1#\n\nA synthetic story.\n"
+    imported = validate_import(
+        "synthetic.fountain", content, 1048576,
+        pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.7,
+    )
+    task_id = service.start("owner-1", imported)
+    with caplog.at_level(logging.ERROR):
+        service.run(task_id, content)
+    terminal = tasks.events_after(task_id, 0)[-1]
+    assert terminal.event_type == "error" and terminal.payload["code"] == "IMPORT_FAILED"
+    assert terminal.payload["context"] == {
+        "reason": "analysis_valence_length", "phase": "analyzing", "attempt_count": 2,
+        "max_attempts": 2, "expected_scene_count": 15,
+    }
+    assert "reason=analysis_valence_length" in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+    assert service.drafts.get(task_id) is None
+    assert repository.list_documents(limit=10, offset=0)[1] == 0
+    assert storage._objects == {}
 
 
 @pytest.mark.parametrize("revised", [False, True])

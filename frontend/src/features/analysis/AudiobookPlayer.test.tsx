@@ -5,12 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Scene } from '@/api/contracts'
 import { createLocaleRuntime, LocaleProvider } from '@/i18n/LocaleProvider'
 import { AudiobookPlayer } from './AudiobookPlayer'
+import * as audioDecoder from './audio-decoder'
 
 class MockWebSocket {
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSING = 2
+  static CLOSED = 3
   static instances: MockWebSocket[] = []
   url: string
   readyState: number = WebSocket.OPEN
   sentMessages: string[] = []
+  onSend?: (data: string) => void
   onopen: (() => void) | null = null
   onmessage: ((event: { data: string }) => void) | null = null
   onerror: (() => void) | null = null
@@ -26,6 +32,7 @@ class MockWebSocket {
 
   send(data: string) {
     this.sentMessages.push(data)
+    this.onSend?.(data)
   }
 
   close() {
@@ -33,8 +40,16 @@ class MockWebSocket {
     this.onclose?.()
   }
 
+  private nextBufferId = 0
   emitMessage(data: unknown) {
-    this.onmessage?.({ data: JSON.stringify(data) })
+    const message = data as Record<string, unknown>
+    if (['audio_chunk', 'scene_pause', 'utterance_pause'].includes(String(message.event))) {
+      const bufferId = message.buffer_id ?? ++this.nextBufferId
+      this.nextBufferId = Math.max(this.nextBufferId, Number(bufferId) || 0)
+      this.onmessage?.({ data: JSON.stringify({ ...message, buffer_id: bufferId }) })
+    } else {
+      this.onmessage?.({ data: JSON.stringify(data) })
+    }
   }
 }
 
@@ -92,28 +107,55 @@ class MockAudioContext {
 }
 
 describe('AudiobookPlayer', () => {
-  it('8分の先行受信でも予約ノードを制限し、音声を欠落・重複なく最後まで補充する', async () => {
+  it('2時間分でも消費ACKで生成を待たせ、未再生音声を32個以下に保つ', async () => {
     const onPlayingChange = vi.fn()
+    let created = 0
+    let consumed = 0
+    let peak = 0
+    const decode = vi.spyOn(audioDecoder, 'pcm16ToAudioBuffer').mockImplementation((_chunks, context) => {
+      created++
+      peak = Math.max(peak, created - consumed)
+      return context.createBuffer(1, 24000, 24000)
+    })
     renderPlayer({ documentId: 'doc-long', isPlaying: false, onPlayingChange, scenes })
     fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
     await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
     const ws = MockWebSocket.instances[0]
-    const pcm = btoa(String.fromCharCode(...new Uint8Array(48000))) // 1秒の合成PCM。
+    const count = 7200
+    let sent = 0
+    const feed = () => {
+      if (sent >= count) return
+      sent++
+      ws.emitMessage({ event: 'audio_chunk', buffer_id: sent, data: 'AAA=' })
+      if (sent === count) {
+        ws.emitMessage({ event: 'utterance_end' })
+        ws.emitMessage({ event: 'playback_complete' })
+      }
+    }
+    ws.onSend = (data) => {
+      const msg = JSON.parse(data)
+      if (msg.action === 'audio_consumed') {
+        consumed++
+        feed()
+      }
+    }
     act(() => {
       ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
-      for (let i = 0; i < 480; i++) ws.emitMessage({ event: 'audio_chunk', data: pcm })
-      ws.emitMessage({ event: 'utterance_end' })
-      ws.emitMessage({ event: 'playback_complete' })
+      for (let i = 0; i < 32; i++) feed()
     })
-    expect(MockAudioContext.activeSources.length).toBeLessThanOrEqual(32)
-    expect(onPlayingChange).not.toHaveBeenCalledWith(false)
-    for (let i = 0; i < 480; i++) {
+    expect(created).toBe(32)
+    expect(consumed).toBe(0)
+    for (let i = 0; i < count; i++) {
       MockAudioContext.instances[0].currentTime = i + 2
       act(() => MockAudioContext.finishCurrentSource())
       expect(MockAudioContext.activeSources.length).toBeLessThanOrEqual(32)
     }
-    expect(MockAudioContext.startTimes).toEqual(Array.from({ length: 480 }, (_, i) => i + 1))
+    expect(created).toBe(count)
+    expect(consumed).toBe(count)
+    expect(peak).toBe(32)
+    expect(MockAudioContext.startTimes).toEqual(Array.from({ length: count }, (_, i) => i + 1))
     expect(onPlayingChange).toHaveBeenLastCalledWith(false)
+    decode.mockRestore()
   })
 
   it('先着PCMは終了通知を待たず音声時計で隙間なく予約する', async () => {
@@ -230,9 +272,7 @@ describe('AudiobookPlayer', () => {
     await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
     const ws = MockWebSocket.instances[0]
     ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 1 })
-    ws.emitMessage({ event: 'audio_chunk', data: 'AQ==' })
-    expect(MockAudioContext.starts).toHaveLength(0)
-    ws.emitMessage({ event: 'audio_chunk', data: 'AgME' })
+    ws.emitMessage({ event: 'audio_chunk', data: 'AQIDBA==' })
     expect(MockAudioContext.startedBufferLengths).toEqual([2])
     ws.emitMessage({ event: 'audio_chunk', data: 'BQY=' })
     ws.emitMessage({ event: 'audio_segment_end', scene_number: 1, utterance_index: 1 })
@@ -282,6 +322,7 @@ describe('AudiobookPlayer', () => {
     cleanup()
     vi.useRealTimers()
     vi.unstubAllGlobals()
+    vi.restoreAllMocks()
   })
 
   const renderPlayer = (props: ComponentProps<typeof AudiobookPlayer>) => render(
@@ -713,5 +754,224 @@ describe('AudiobookPlayer', () => {
       scene_number: 1,
       start_utterance_index: 2,
     })
+  })
+  it('音声の実際の終了後だけ消費ACKを送り、重複終了では送らない', async () => {
+    renderPlayer({ documentId: 'ack', isPlaying: false, onPlayingChange: vi.fn(), scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    act(() => {
+      ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+      ws.emitMessage({ event: 'audio_chunk', buffer_id: 7, data: 'AAA=' })
+    })
+    expect(ws.sentMessages).toHaveLength(1)
+    const ended = MockAudioContext.activeSources[0].onended!
+    act(() => {
+      MockAudioContext.finishCurrentSource()
+      ended()
+    })
+    expect(ws.sentMessages.map(value => JSON.parse(value)).filter(msg => msg.action === 'audio_consumed'))
+      .toEqual([{ action: 'audio_consumed', buffer_id: 7 }])
+  })
+
+  it('上限を超える先行音声は展開前に停止してメモリを解放する', async () => {
+    const onPlayingChange = vi.fn()
+    const decode = vi.spyOn(audioDecoder, 'pcm16ToAudioBuffer')
+    renderPlayer({ documentId: 'overflow', isPlaying: false, onPlayingChange, scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    const pcm = btoa(String.fromCharCode(...new Uint8Array(48000)))
+    act(() => {
+      ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+      for (let i = 1; i <= 40; i++) ws.emitMessage({ event: 'audio_chunk', buffer_id: i, data: pcm })
+    })
+    expect(decode).toHaveBeenCalledTimes(32)
+    expect(onPlayingChange).toHaveBeenLastCalledWith(false)
+    expect(ws.readyState).toBe(WebSocket.CLOSED)
+    expect(await screen.findByText('音声の受信量が上限を超えたため停止しました。もう一度再生してください。')).toBeInTheDocument()
+    expect(MockAudioContext.activeSources.every(source => vi.mocked(source.stop).mock.calls.length === 1)).toBe(true)
+    decode.mockRestore()
+  })
+
+  it('予期しない切断で再生中のまま残らず、停止後の切断はエラーにしない', async () => {
+    const onPlayingChange = vi.fn()
+    renderPlayer({ documentId: 'disconnect', isPlaying: false, onPlayingChange, scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    act(() => MockWebSocket.instances[0].close())
+    expect(onPlayingChange).toHaveBeenLastCalledWith(false)
+    expect(await screen.findByText('再生サーバーへの接続でエラーが発生しました。')).toBeInTheDocument()
+  })
+  it('大きな音声packetはBase64展開とAudioBuffer作成の前に拒否する', async () => {
+    const decode = vi.spyOn(audioDecoder, 'pcm16ToAudioBuffer')
+    const base64 = vi.spyOn(audioDecoder, 'base64ToUint8Array')
+    const onPlayingChange = vi.fn()
+    renderPlayer({ documentId: 'large-packet', isPlaying: false, onPlayingChange, scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    act(() => {
+      ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+      ws.emitMessage({ event: 'audio_chunk', buffer_id: 1, data: 'AAAA'.repeat(16001) })
+    })
+    expect(base64).not.toHaveBeenCalled()
+    expect(decode).not.toHaveBeenCalled()
+    expect(onPlayingChange).toHaveBeenLastCalledWith(false)
+    expect(ws.readyState).toBe(WebSocket.CLOSED)
+  })
+
+  it('間も再生終了後だけACKし、完了後の接続Closeで残り音声を止めない', async () => {
+    const onPlayingChange = vi.fn()
+    renderPlayer({ documentId: 'pause-ack', isPlaying: false, onPlayingChange, scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    act(() => {
+      ws.emitMessage({ event: 'utterance_pause', scene_number: 1, duration_ms: 1000, buffer_id: 1 })
+    })
+    expect(ws.sentMessages).toHaveLength(1)
+    act(() => MockAudioContext.finishCurrentSource())
+    expect(JSON.parse(ws.sentMessages[1])).toEqual({ action: 'audio_consumed', buffer_id: 1 })
+    act(() => {
+      ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+      ws.emitMessage({ event: 'audio_chunk', buffer_id: 2, data: 'AAA=' })
+      ws.emitMessage({ event: 'playback_complete' })
+      ws.close()
+    })
+    expect(onPlayingChange).not.toHaveBeenCalledWith(false)
+    act(() => MockAudioContext.finishCurrentSource())
+    expect(onPlayingChange).toHaveBeenLastCalledWith(false)
+    expect(screen.queryByText('再生サーバーへの接続でエラーが発生しました。')).not.toBeInTheDocument()
+  })
+
+  it('停止後のCloseと古いonendedはエラーや次の再生へのACKを起こさない', async () => {
+    const onPlayingChange = vi.fn()
+    const props = { documentId: 'stop-ack', onPlayingChange, scenes }
+    const { rerender } = renderPlayer({ ...props, isPlaying: false })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    rerender(<LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+      <AudiobookPlayer {...props} isPlaying />
+    </LocaleProvider>)
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const old = MockWebSocket.instances[0]
+    act(() => {
+      old.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+      old.emitMessage({ event: 'audio_chunk', buffer_id: 1, data: 'AAA=' })
+    })
+    const ended = MockAudioContext.activeSources[0].onended!
+    fireEvent.click(screen.getByRole('button', { name: '再生停止' }))
+    rerender(<LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+      <AudiobookPlayer {...props} isPlaying={false} />
+    </LocaleProvider>)
+    expect(screen.queryByText('再生サーバーへの接続でエラーが発生しました。')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[1]?.sentMessages).toHaveLength(1))
+    act(() => {
+      ended()
+      old.close()
+      old.emitMessage({ event: 'audio_chunk', buffer_id: 2, data: 'AAA=' })
+    })
+    expect(MockWebSocket.instances[1].sentMessages).toHaveLength(1)
+    expect(old.sentMessages.map(value => JSON.parse(value)).filter(msg => msg.action === 'audio_consumed')).toEqual([])
+    expect(screen.queryByText('再生サーバーへの接続でエラーが発生しました。')).not.toBeInTheDocument()
+  })
+
+  it('音声量の上限は件数とは別に守り、過大な間を確保しない', async () => {
+    const buffer = vi.spyOn(MockAudioContext.prototype, 'createBuffer')
+    const onPlayingChange = vi.fn()
+    renderPlayer({ documentId: 'large-pause', isPlaying: false, onPlayingChange, scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    act(() => MockWebSocket.instances[0].emitMessage({
+      event: 'scene_pause', scene_number: 1, duration_ms: 33000, buffer_id: 1,
+    }))
+    expect(buffer).not.toHaveBeenCalled()
+    expect(onPlayingChange).toHaveBeenLastCalledWith(false)
+  })
+  it('20msの細かい音声でも32秒分を保持し、数百msで先読みを止めない', async () => {
+    const onPlayingChange = vi.fn()
+    const decode = vi.spyOn(audioDecoder, 'pcm16ToAudioBuffer')
+    renderPlayer({ documentId: 'fine-pcm', isPlaying: false, onPlayingChange, scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    const pcm = btoa(String.fromCharCode(...new Uint8Array(960)))
+    act(() => {
+      ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+      for (let i = 1; i <= 1600; i++) ws.emitMessage({ event: 'audio_chunk', buffer_id: i, data: pcm })
+    })
+    expect(decode).toHaveBeenCalledTimes(1600)
+    expect(MockAudioContext.activeSources).toHaveLength(32)
+    expect(onPlayingChange).not.toHaveBeenCalledWith(false)
+    act(() => {
+      MockAudioContext.instances[0].currentTime = 1.02
+      MockAudioContext.finishCurrentSource()
+      ws.emitMessage({ event: 'audio_chunk', buffer_id: 1601, data: pcm })
+    })
+    expect(decode).toHaveBeenCalledTimes(1601)
+    expect(onPlayingChange).not.toHaveBeenCalledWith(false)
+  })
+  it('極端に細かい音声は秒数とは別の件数上限で止める', async () => {
+    const decode = vi.spyOn(audioDecoder, 'pcm16ToAudioBuffer')
+    const onPlayingChange = vi.fn()
+    renderPlayer({ documentId: 'tiny-pcm', isPlaying: false, onPlayingChange, scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    act(() => {
+      ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+      for (let i = 1; i <= 4097; i++) ws.emitMessage({ event: 'audio_chunk', buffer_id: i, data: 'AAA=' })
+    })
+    expect(decode).toHaveBeenCalledTimes(4096)
+    expect(onPlayingChange).toHaveBeenLastCalledWith(false)
+    expect(ws.readyState).toBe(WebSocket.CLOSED)
+  })
+  it.each([
+    { releaseDelay: 15000, callbackLag: 0 },
+    { releaseDelay: 0, callbackLag: 15000 },
+  ])('解放処理と終了通知の遅延を混同せず記録する $releaseDelay/$callbackLag', async ({ releaseDelay, callbackLag }) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    renderPlayer({ documentId: 'release-timing', isPlaying: false, onPlayingChange: vi.fn(), scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    act(() => {
+      ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+      ws.emitMessage({ event: 'audio_chunk', data: 'AAA=' })
+    })
+    let clock = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    const source = MockAudioContext.activeSources[0]
+    vi.mocked(source.disconnect).mockImplementation(() => { clock += releaseDelay })
+    MockAudioContext.instances[0].currentTime = 1 + 1 / 24000 + callbackLag / 1000
+    act(() => MockAudioContext.finishCurrentSource())
+    expect(warning).toHaveBeenCalledWith('Playback audio callback delayed', expect.objectContaining({
+      release_ms: releaseDelay, callback_lag_ms: callbackLag,
+    }))
+  })
+
+  it('音声の到着待ちを解放処理の時間とは別に記録する', async () => {
+    const information = vi.spyOn(console, 'info').mockImplementation(() => {})
+    renderPlayer({ documentId: 'audio-wait', isPlaying: false, onPlayingChange: vi.fn(), scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0]?.sentMessages).toHaveLength(1))
+    const ws = MockWebSocket.instances[0]
+    act(() => {
+      ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 0 })
+      ws.emitMessage({ event: 'audio_chunk', data: 'AAA=' })
+    })
+    let clock = 1000
+    vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    MockAudioContext.instances[0].currentTime = 1 + 1 / 24000
+    act(() => MockAudioContext.finishCurrentSource())
+    clock += 20000
+    act(() => {
+      ws.emitMessage({ event: 'utterance_start', speaker: 'Narrator', scene_number: 1, utterance_index: 1 })
+      ws.emitMessage({ event: 'audio_chunk', data: 'AAA=' })
+    })
+    expect(information).toHaveBeenCalledWith('Playback audio wait ended', expect.objectContaining({
+      wait_ms: 20000, release_ms: 0, callback_lag_ms: 0, decode_ms: 0,
+    }))
   })
 })

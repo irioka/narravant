@@ -9,6 +9,7 @@ import { streamTaskProgress } from '@/api/tasks'
 import type { DocumentDetail } from '@/api/contracts'
 import { createLocaleRuntime, LocaleProvider } from '@/i18n/LocaleProvider'
 import { AnalysisPage } from './AnalysisPage'
+import { ImportSessionProvider } from './ImportSessionProvider'
 
 vi.mock('@/api/documents', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/api/documents')>(),
@@ -81,7 +82,7 @@ describe('AnalysisPage の未保存本文 Reanalyze', () => {
     vi.mocked(getDocument).mockImplementation(async (id) => id === 'next-document'
       ? new Promise<DocumentDetail>((resolve) => { resolveNext = resolve })
       : baseDocument)
-    render(<QueryClientProvider client={client}><LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><MemoryRouter initialEntries={['/analysis/synthetic-document']}><Routes><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes></MemoryRouter></LocaleProvider></QueryClientProvider>)
+    render(<QueryClientProvider client={client}><LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><MemoryRouter initialEntries={['/analysis/synthetic-document']}><ImportSessionProvider><Routes><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes></ImportSessionProvider></MemoryRouter></LocaleProvider></QueryClientProvider>)
     await screen.findByRole('textbox', { name: '脚本本文' })
     const list = screen.getByTestId('document-list')
     list.scrollTop = 420
@@ -119,7 +120,7 @@ describe('AnalysisPage の未保存本文 Reanalyze', () => {
       <QueryClientProvider client={client}>
         <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
           <MemoryRouter initialEntries={['/analysis/synthetic-document']}>
-            <Routes><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes>
+            <ImportSessionProvider><Routes><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes></ImportSessionProvider>
           </MemoryRouter>
         </LocaleProvider>
       </QueryClientProvider>,

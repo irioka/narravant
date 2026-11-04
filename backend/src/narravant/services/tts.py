@@ -8,6 +8,8 @@ import hashlib
 import json
 import logging
 from collections.abc import AsyncIterator, Iterator
+from contextlib import aclosing
+from time import monotonic
 from typing import Any, Protocol
 
 import httpx
@@ -372,16 +374,26 @@ class TtsPlaybackCoordinator:
                         }
                     if self._stopped:
                         break
+                    synthesis_started = monotonic()
+                    first_audio = True
                     stream = self.tts_client.synthesize_segment_stream(segment)
-                    async for chunk in stream:
-                        if self._stopped:
-                            break
-                        yield {
-                            "type": "audio_chunk",
-                            "scene_number": utterance.scene_number,
-                            "utterance_index": utterance.utterance_index,
-                            "data": chunk,
-                        }
+                    async with aclosing(stream):
+                        async for chunk in stream:
+                            if self._stopped:
+                                break
+                            if first_audio and chunk:
+                                logger.debug(
+                                    "Playback synthesis first_audio_wait_ms=%d scene_number=%d utterance_index=%d",
+                                    round((monotonic() - synthesis_started) * 1000),
+                                    utterance.scene_number, utterance.utterance_index,
+                                )
+                                first_audio = False
+                            yield {
+                                "type": "audio_chunk",
+                                "scene_number": utterance.scene_number,
+                                "utterance_index": utterance.utterance_index,
+                                "data": chunk,
+                            }
                     if self._stopped:
                         break
                     yield {

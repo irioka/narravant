@@ -1,8 +1,25 @@
 import { describe, expect, it } from 'vitest'
 
-import { countSceneHeadings, firstUtteranceLine, hasSceneHeadings, narratorSpeakerName, playbackSourceAtPosition, playbackStartAtOffset, sceneHeadingRange, spokenCharacterNames, utteranceRange } from './fountain-scenes'
+import { countSceneHeadings, createUtteranceRangeLookup, firstUtteranceLine, hasSceneHeadings, narratorSpeakerName, playbackSourceAtPosition, playbackStartAtOffset, sceneHeadingRange, spokenCharacterNames, utteranceRange } from './fountain-scenes'
 
 const NARRATOR = 'ナレーター'
+
+it('本文単位の発話位置indexは場面・話者・再開位置を変えず、次の本文へ持ち越さない', () => {
+  const source = 'INT. ROOM - DAY #1#\r\n\r\n@ナレーター\r\n前の文です。再開対象です。\r\n\r\n@子供\r\n<whispers>次の台詞です。\r\n\r\nEXT. ROAD - NIGHT #3#\r\n\r\n@子供\r\n最後の台詞です。'
+  const lookup = createUtteranceRangeLookup(source)
+  for (const scene of [1, 2, 3]) {
+    for (const utterance of [0, 1, 2, 3]) {
+      for (const offset of [undefined, 0, source.indexOf('再開対象'), source.indexOf('最後'), source.length]) {
+        expect(lookup(scene, utterance, offset)).toEqual(utteranceRange(source, scene, utterance, offset))
+      }
+    }
+  }
+  const changed = 'INT. NEW - DAY #1#\n\n@Narrator\nNew synthetic text.'
+  const changedLookup = createUtteranceRangeLookup(changed)
+  const range = changedLookup(1, 1)!
+  expect(changed.slice(range.start, range.end)).toBe('New synthetic text.')
+  expect(changedLookup(3, 0)).toBeUndefined()
+})
 
 it('文途中から再開した表示範囲は、発音しない前半へ戻さない', () => {
   const source = 'INT. ROOM - DAY #1#\n\n@ナレーター\n前の文です。再開対象です。\n\n@子供\n次の台詞です。'

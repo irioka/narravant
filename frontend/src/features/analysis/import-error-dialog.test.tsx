@@ -13,6 +13,42 @@ function errorsT(locale: 'en' | 'ja') {
 }
 
 describe('Importの再試行案内', () => {
+  it.each(['ja', 'en'] as const)('分析内容の検証理由と試行数を%sで表示する', (locale) => {
+    const error = importTaskRuntimeError(errorsT(locale), {
+      code: 'IMPORT_FAILED', message: 'PRIVATE_ANALYSIS', retryable: false,
+      context: {
+        reason: 'analysis_valence_length', phase: 'analyzing',
+        attempt_count: 2, max_attempts: 2, expected_scene_count: 15,
+      },
+    })
+    expect(error.message).toContain(locale === 'ja' ? '感情アークの長さが場面数と一致しません' : 'valence arc length does not match the scene count')
+    expect(error.message).toContain(locale === 'ja' ? '分析の試行: 2/2回' : 'Analysis attempts: 2/2')
+    expect(error.message).toContain(locale === 'ja' ? '対象: 15場面' : 'Expected scenes: 15')
+    expect(error.message).not.toContain('PRIVATE_')
+  })
+
+  it.each(['ja', 'en'] as const)('計画の参照対応不正と計画試行数を%sで表示する', (locale) => {
+    const error = importTaskRuntimeError(errorsT(locale), {
+      code: 'ADAPTATION_VERIFICATION_FAILED', message: 'PRIVATE_PROVIDER_MESSAGE', retryable: false,
+      context: {
+        reason: 'plan_source_coverage', phase: 'planning', scene_number: 2,
+        attempt_count: 2, max_attempts: 2, source_id: 'PRIVATE_SOURCE_ID',
+      },
+    })
+    expect(error.message).toContain(locale === 'ja' ? '場面と原文範囲の対応' : 'scene and source ranges')
+    expect(error.message).toContain(locale === 'ja' ? '計画の試行: 2/2回' : 'Plan attempts: 2/2')
+    expect(error.message).not.toContain('PRIVATE_')
+  })
+
+  it('計画の不正な試行数は表示しない', () => {
+    const error = importTaskRuntimeError(errorsT('en'), {
+      code: 'ADAPTATION_VERIFICATION_FAILED', message: 'PRIVATE_MESSAGE', retryable: false,
+      context: { reason: 'plan_source_coverage', phase: 'planning', attempt_count: 'PRIVATE_COUNT', max_attempts: 2 },
+    })
+    expect(error.message).not.toContain('Plan attempts:')
+    expect(error.message).not.toContain('PRIVATE_')
+  })
+
   it.each(['ja', 'en'] as const)('整合性検証の停止理由・場面・改稿回数を%sで表示する', (locale) => {
     const error = importTaskRuntimeError(errorsT(locale), {
       code: 'ADAPTATION_VERIFICATION_FAILED',

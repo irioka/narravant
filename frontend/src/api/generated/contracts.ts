@@ -3,7 +3,7 @@
  * Do not edit manually.
  * NARRAVANT API
  * Intelligent screenplay analysis and narrative arc workbench API
- * OpenAPI spec version: 0.5.2
+ * OpenAPI spec version: 0.6.0
  */
 import * as zod from 'zod';
 

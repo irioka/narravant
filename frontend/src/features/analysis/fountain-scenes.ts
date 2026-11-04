@@ -135,7 +135,21 @@ export function sceneHeadingRange(source: string, sceneNumber: number): TextRang
 /** Return the source range for the ordered utterance emitted by the playback plan. */
 export function utteranceRange(source: string, sceneNumber: number, utteranceIndex: number, sourceOffset?: number): TextRange | undefined {
   const matches = playbackUtteranceRanges(source).filter((item) => item.scene === sceneNumber)
-  const range = matches[utteranceIndex]?.range
+  return rangeFromOffset(matches[utteranceIndex]?.range, sourceOffset)
+}
+
+/** 再生中は現在の本文を一度だけ解析し、発話位置の数値だけを保持する。 */
+export function createUtteranceRangeLookup(source: string): (sceneNumber: number, utteranceIndex: number, sourceOffset?: number) => TextRange | undefined {
+  const scenes = new Map<number, TextRange[]>()
+  for (const { scene, range } of playbackUtteranceRanges(source)) {
+    const ranges = scenes.get(scene)
+    if (ranges) ranges.push(range)
+    else scenes.set(scene, [range])
+  }
+  return (sceneNumber, utteranceIndex, sourceOffset) => rangeFromOffset(scenes.get(sceneNumber)?.[utteranceIndex], sourceOffset)
+}
+
+function rangeFromOffset(range: TextRange | undefined, sourceOffset?: number): TextRange | undefined {
   if (!range || sourceOffset === undefined || sourceOffset <= range.start || sourceOffset >= range.end) return range
   return { start: sourceOffset, end: range.end }
 }

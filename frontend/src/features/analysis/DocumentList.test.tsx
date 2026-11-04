@@ -37,12 +37,12 @@ const documentItem: DocumentItem = {
   version_id: 1,
 }
 
-function renderDocumentList() {
+function renderDocumentList(onRequestNavigate?: (id: string) => void, onBeforeNavigate?: () => void) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <DocumentList />
+        <DocumentList onRequestNavigate={onRequestNavigate} onBeforeNavigate={onBeforeNavigate} />
       </QueryClientProvider>
     </MemoryRouter>,
   )
@@ -55,6 +55,14 @@ function rowForTitle(title: string): HTMLButtonElement {
 }
 
 describe('DocumentList', () => {
+  it('指定された移動要求は親に委譲し、再生停止を先行しない', async () => {
+    vi.mocked(listDocuments).mockResolvedValue({ items: [documentItem], limit: 50, offset: 0, total: 1 })
+    const request = vi.fn(), before = vi.fn()
+    renderDocumentList(request, before)
+    fireEvent.click(await screen.findByText('Original title'))
+    expect(request).toHaveBeenCalledExactlyOnceWith('document-1')
+    expect(before).not.toHaveBeenCalled()
+  })
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()

@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-04
+
+### Added
+
+- Keep long imports running while you close the progress dialog and edit, save, generate voices, or play another work.
+- Return to progress or an unapplied result from the Import icon. Open completed results when ready, with confirmation before replacing unsaved edits or stopping playback.
+- Close progress without cancelling, confirm cancellation separately, and reconnect interrupted progress without starting the import again.
+
+### Fixed
+
+- Show completed imports at 100% and retain the elapsed time from start to completion or cancellation, including when the dialog is closed and reopened.
+- Localize document Import titles, progress labels, and tooltips consistently, including Japanese import/export labels.
+- Remove duplicate status text and transient progress counters that caused the Import dialog to flicker.
+- Keep cancellation and import completion consistent, including cancellation before the worker starts.
+- Keep other document requests responsive while validating import input.
+- Repair unsupported inline tags in adapted scenes within the existing retry limit, then remove remaining unsupported tags and continue only when dialogue and structure remain valid.
+- Bound queued playback audio and pace synthesis with actual playback to prevent unbounded audio-buffer growth during long works. Release streams on stop and report unexpected disconnections.
+- Measure playback lookahead by audio duration so small packets do not exhaust the buffer window prematurely. Add separate diagnostics for audio waits and browser callback delays.
+- Reduce repeated rendering and script-layout work while tracking playback in long documents.
+- Split initial script measurements into short tasks and defer rendering of closed character details.
+- Retry each failed speaker once during batch voice generation, continue with remaining speakers, and show generated and failed speakers in a results dialog.
+- Request whole-work analysis as JSON from the first attempt, preserve retries for content corrections, and report specific validation failures.
+- Repair empty speaker cues using the rejected scene, preserve valid dialogue when removing unsupported tag lines, and reject revisions that leave a scene without speech.
+- Retry invalid adaptation plans within a configurable limit, retaining source-reference checks and showing specific plan failure reasons and attempt counts.
+
 ## [0.5.2] - 2026-10-29
 
 ### Fixed

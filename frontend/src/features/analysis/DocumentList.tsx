@@ -103,7 +103,7 @@ function toggleSort(current: DocumentSortTerm | undefined, field: DocumentSortFi
   return { field, direction: 'asc' }
 }
 
-export function DocumentList({ activeDocumentId, onBeforeNavigate }: { activeDocumentId?: string; onBeforeNavigate?: () => void }) {
+export function DocumentList({ activeDocumentId, onBeforeNavigate, onRequestNavigate }: { activeDocumentId?: string; onBeforeNavigate?: () => void; onRequestNavigate?: (documentId: string) => void }) {
   const { t } = useTranslation('documents')
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -184,7 +184,7 @@ export function DocumentList({ activeDocumentId, onBeforeNavigate }: { activeDoc
       {!documentsQuery.isPending && !documentsQuery.isError && documents.length === 0 && <p className="px-3 py-6 text-center text-xs text-muted-foreground">{t('states.noMatches')}</p>}
       {documents.map((document) => editingId === document.document_id
         ? <div className="grid w-full items-center gap-2 border-b px-3 py-1.5" key={document.document_id} style={{ gridTemplateColumns }}><Input aria-label={t('list.titleInputAria')} autoFocus className="h-6 min-w-0 text-xs" disabled={renameMutation.isPending} onBlur={() => commitRename(document)} onChange={(event) => setTitleDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') commitRename(document); if (event.key === 'Escape') setEditingId(undefined) }} value={titleDraft} /><span /><span /></div>
-        : <button className={`grid w-full items-center gap-2 border-b px-3 py-2 text-left text-xs hover:bg-accent/50 ${activeDocumentId === document.document_id ? 'bg-accent/70' : ''}`} key={document.document_id} onClick={() => { onBeforeNavigate?.(); navigate(`/analysis/${document.document_id}`) }} onDoubleClick={(event) => { event.preventDefault(); startRename(document) }} style={{ gridTemplateColumns }} type="button"><span className="min-w-0 truncate font-medium">{document.title}</span><span className="min-w-0 truncate font-mono text-[10px] text-muted-foreground">v{document.version_id}</span><span className="min-w-0 truncate font-mono text-[10px] tabular-nums text-muted-foreground">{document.is_saved ? formatDate(document.updated_at) : '----/--/-- --:--'}</span></button>)}
+        : <button className={`grid w-full items-center gap-2 border-b px-3 py-2 text-left text-xs hover:bg-accent/50 ${activeDocumentId === document.document_id ? 'bg-accent/70' : ''}`} key={document.document_id} onClick={() => { if (onRequestNavigate) onRequestNavigate(document.document_id); else { onBeforeNavigate?.(); navigate(`/analysis/${document.document_id}`) } }} onDoubleClick={(event) => { event.preventDefault(); startRename(document) }} style={{ gridTemplateColumns }} type="button"><span className="min-w-0 truncate font-medium">{document.title}</span><span className="min-w-0 truncate font-mono text-[10px] text-muted-foreground">v{document.version_id}</span><span className="min-w-0 truncate font-mono text-[10px] tabular-nums text-muted-foreground">{document.is_saved ? formatDate(document.updated_at) : '----/--/-- --:--'}</span></button>)}
       <div ref={sentinelRef} />{isFetchingNextPage && <p className="px-3 py-2 text-center text-xs text-muted-foreground">{t('states.loadingMore')}</p>}
     </div></div></ScrollArea>
   </div>

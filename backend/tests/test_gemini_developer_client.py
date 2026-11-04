@@ -1,4 +1,4 @@
-"""Gemini Developer API のクライアント切替と安全なエラー処理の検証。"""
+"""Tests for Gemini Developer API client switching and safe error handling (Task 5 / A5)."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ def dummy_settings():
         gemini_source_voice_traits_max_attempts=2,
         gemini_source_voice_traits_max_output_tokens=4096,
         gemini_analysis_max_attempts=3,
+        gemini_planning_max_attempts=2,
         gemini_generation_max_attempts=3,
         gemini_retry_backoff_seconds=1,
         gemini_connection_timeout_seconds=30,

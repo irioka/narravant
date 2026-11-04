@@ -8,12 +8,15 @@ from typing import TYPE_CHECKING
 from narravant.core.fountain import (
     NARRATOR_SPEAKERS,
     FountainParser,
+    is_ascii_character_cue,
     is_parenthetical_line,
     normalize_speaker_name,
     sanitize_fountain_text,
 )
 from narravant.core.speech_notation import (
+    PERFORMANCE_TAGS,
     SpeechNotationError,
+    spoken_turns,
     validate_generated_speech_notation,
 )
 
@@ -195,6 +198,70 @@ def validate_generated_fountain_cues(
                     line_number=utterance.source_line,
                     scene_number=utterance.scene_number,
                 )
+
+
+def strip_unknown_generated_fountain_tags(fountain: str) -> tuple[str, int]:
+    """生成発話の未知タグだけを除去し、空発話や構造変化を拒否する。呼出側でも再検証する。"""
+    removed_count = 0
+    tag_pattern = re.compile(r"<([^<>\r\n]*)>")
+
+    def remove_unknown(match: re.Match[str]) -> str:
+        nonlocal removed_count
+        if match.group(1) in PERFORMANCE_TAGS:
+            return match.group(0)
+        removed_count += 1
+        return ""
+
+    def spoken_structure(text: str) -> list[tuple[object, ...]]:
+        validate_generated_fountain_cues(text)
+        return [
+            (
+                item.scene_number, item.speaker, item.listener, item.performance_direction,
+                # 単独タグ行の検査用置換は、可聴turnの端に空白だけを残すことがある。
+                # 比較だけ前後の空白を除き、返す原稿・本文中の空白・構造は変更しない。
+                tuple(
+                    (speaker, text.strip())
+                    for speaker, text in spoken_turns(
+                        item.speaker, validate_generated_speech_notation(item.text, item.listener)
+                    )
+                ),
+            )
+            for item in FountainParser.parse(text).all_utterances()
+        ]
+
+    lines = fountain.splitlines(keepends=True)
+    validation_lines = lines.copy()
+    in_scene = False
+    in_note = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if in_note:
+            in_note = "]]" not in stripped
+            continue
+        if stripped.startswith("[["):
+            in_note = "]]" not in stripped
+            continue
+        is_heading, _, _ = FountainParser.parse_scene_heading(stripped)
+        if is_heading:
+            in_scene = True
+            continue
+        if (
+            not in_scene
+            or stripped.startswith(("@", "#"))
+            or is_ascii_character_cue(stripped)
+            or is_parenthetical_line(stripped)
+        ):
+            continue
+        lines[index] = tag_pattern.sub(remove_unknown, line)
+        # 検査専用の許可タグで元の発話境界を保持する。この文字列は返却・生成へ使わない。
+        validation_lines[index] = tag_pattern.sub(
+            lambda match: match.group(0) if match.group(1) in PERFORMANCE_TAGS else "<breath>",
+            line,
+        )
+    cleaned = "".join(lines)
+    if removed_count and spoken_structure("".join(validation_lines)) != spoken_structure(cleaned):
+        raise GeneratedFountainCueError("tag_removal_changes_structure")
+    return cleaned, removed_count
 
 
 def combined_speaker_passages(

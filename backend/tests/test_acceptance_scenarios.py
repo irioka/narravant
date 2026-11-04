@@ -1,4 +1,4 @@
-"""合成データと Fake を使うオーディオブックの受入シナリオ。
+"""合成データと Fake を使う A1〜A10 の受入シナリオ。
 
 実サービスや実原稿を使わず、費用の生じる外部 API は呼び出さない。
 """
@@ -958,7 +958,9 @@ INT. 古時計店 - NIGHT #1#
     assert validated_voice_ids == ["voice_fake_narrator", "voice_fake_alice", "voice_fake_bob"]
     pauses = [event for event in events if event["event"] == "utterance_pause"]
     assert pauses == []
-    assert [event["duration_ms"] for event in events if event["event"] == "scene_pause"] == [3000]
+    scene_pauses = [event["duration_ms"] for event in events if event["event"] == "scene_pause"]
+    assert scene_pauses == [1000, 1000, 1000]
+    assert sum(scene_pauses) == 3000
     assert any(event["event"] == "audio_chunk" for event in events)
 
     segments = fake_tts.synthesized_segments

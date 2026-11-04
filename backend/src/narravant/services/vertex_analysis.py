@@ -9,7 +9,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 from typing import Annotated, Any, Literal
 
 from google.genai import types
@@ -41,6 +41,7 @@ from narravant.core.generated_fountain import combined_speaker_passages, validat
 from narravant.core.settings import Settings
 from narravant.core.valence_vector import default_valence_vectorizer
 from narravant.services.narrative_adaptation import (
+    PLAN_FAILURE_REASONS,
     CausalEdge,
     CausalPlotGraph,
     CharacterKnowledge,
@@ -63,6 +64,7 @@ from narravant.services.narrative_adaptation import (
     SourceUnit,
     StoryEvent,
     StoryPlan,
+    _validate_narrative_plan,
     split_pdf_windows,
 )
 from narravant.services.performance_guidance import build_performance_guidance
@@ -71,6 +73,26 @@ from narravant.services.voice_prompt_guidance import build_voice_traits_guidance
 
 logger = logging.getLogger(__name__)
 TRANSIENT_VERTEX_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+VERTEX_ERROR_STATUSES = frozenset(
+    {
+        "CANCELLED",
+        "UNKNOWN",
+        "INVALID_ARGUMENT",
+        "DEADLINE_EXCEEDED",
+        "NOT_FOUND",
+        "ALREADY_EXISTS",
+        "PERMISSION_DENIED",
+        "UNAUTHENTICATED",
+        "RESOURCE_EXHAUSTED",
+        "FAILED_PRECONDITION",
+        "ABORTED",
+        "OUT_OF_RANGE",
+        "UNIMPLEMENTED",
+        "INTERNAL",
+        "UNAVAILABLE",
+        "DATA_LOSS",
+    }
+)
 TRANSIENT_NETWORK_EXCEPTIONS = (
     ConnectionResetError,
     BrokenPipeError,
@@ -99,6 +121,26 @@ class VertexStreamTimeoutError(TimeoutError):
         self.timeout_seconds = timeout_seconds
 
 
+ANALYSIS_FAILURE_REASONS = frozenset({
+    "output_language", "invalid_title", "valence_length", "valence_scale", "tension_length", "tension_scale",
+    "character_arc", "character_profiles", "turning_points", "related_turning_points", "theme_citation",
+    "required_schema_fields",
+})
+
+
+class VertexAnalysisValidationError(ValueError):
+    """分析本文を含めず、検証失敗の固定理由と試行数だけを上位へ返す。"""
+
+    def __init__(self, reason: str, attempt_count: int, max_attempts: int, scene_count: int) -> None:
+        super().__init__("Vertex returned incomplete structured analysis after configured attempts")
+        safe_reason = reason if reason in ANALYSIS_FAILURE_REASONS else "required_schema_fields"
+        self.context: dict[str, object] = {
+            "reason": "analysis_" + safe_reason, "phase": "analyzing",
+            "attempt_count": attempt_count, "max_attempts": max_attempts,
+            "expected_scene_count": scene_count,
+        }
+
+
 def is_transient_vertex_error(exc: Exception) -> bool:
     """Return whether the Vertex error is transient and safe to retry with the same request."""
     if isinstance(exc, VertexStreamTimeoutError):
@@ -115,6 +157,32 @@ def is_transient_vertex_error(exc: Exception) -> bool:
     except ImportError:
         pass
     return False
+
+
+@dataclass(frozen=True)
+class VertexErrorMetadata:
+    code: int | None
+    status: str
+    reason: str
+
+
+def safe_vertex_error_metadata(exc: Exception) -> VertexErrorMetadata | None:
+    """API応答の本文を出さず、HTTP値・許可済みstatus・固定の診断候補だけを返す。"""
+    if not isinstance(exc, APIError):
+        return None
+    code = exc.code if type(exc.code) is int and 100 <= exc.code <= 599 else None
+    status = exc.status if isinstance(exc.status, str) and exc.status in VERTEX_ERROR_STATUSES else "UNKNOWN"
+    reason = "unspecified"
+    # 本文由来の分類は診断候補であり、リトライや生成設定の変更には使わない。
+    if code == 400 and isinstance(exc.message, str):
+        message = exc.message[:16384].lower()
+        if re.search(r"\bresponse(?:[ _]?json)?[ _]?schema\b", message):
+            reason = "response_schema"
+        elif re.search(r"\bmax[ _]?output[ _]?tokens\b", message):
+            reason = "output_token_limit"
+        elif "input token" in message and re.search(r"\b(?:exceeds?|maximum|limit)\b", message):
+            reason = "input_token_limit"
+    return VertexErrorMetadata(code, status, reason)
 
 
 ProgressReporter = Callable[[int], None]
@@ -733,6 +801,7 @@ class VertexDocumentAnalyzer:
         self.classification_max_output_tokens = settings.gemini_classification_max_output_tokens
         self.reader_max_output_tokens = settings.gemini_reader_max_output_tokens
         self.planning_max_output_tokens = settings.gemini_planning_max_output_tokens
+        self.planning_max_attempts = settings.gemini_planning_max_attempts
         self.scene_writing_max_output_tokens = settings.gemini_scene_writing_max_output_tokens
         self.verification_max_output_tokens = settings.gemini_verification_max_output_tokens
         self.verification_max_attempts = settings.gemini_verification_max_attempts
@@ -904,27 +973,34 @@ class VertexDocumentAnalyzer:
         effective_processing_deadline = (
             processing_deadline if processing_deadline is not None else monotonic() + self.processing_timeout_seconds
         )
+        required_character_names = parsed.dialogue_character_names() or list(expected_characters or [])
+        response_character_cap = max(self.max_main_characters, len(required_character_names))
+        schema = generated_analysis_json_schema(response_character_cap)
         for attempt in range(1, self.analysis_max_attempts + 1):
+            on_progress(received_before_attempt)
+            if monotonic() >= effective_processing_deadline:
+                raise VertexStreamTimeoutError("processing", self.processing_timeout_seconds)
 
             def report_attempt_progress(received_characters: int, offset: int = received_before_attempt) -> None:
                 on_progress(offset + received_characters)
 
-            required_character_names = parsed.dialogue_character_names() or list(expected_characters or [])
-            response_character_cap = max(self.max_main_characters, len(required_character_names))
+            contents = self._analysis_prompt(
+                parsed,
+                correction_reason,
+                source_filename,
+                required_character_names,
+                max_main_characters=response_character_cap,
+                source_language=source_language,
+                source_character_cards=source_character_cards,
+            )
+            # 400への切替で内容修正の枠を消費しないよう、全体分析は初回からJSONへ統一する。
+            contents += (
+                "\nReturn one JSON object matching this schema; do not use Markdown or explanations."
+                "\nOUTPUT JSON SCHEMA:\n" + json.dumps(schema, ensure_ascii=False)
+            )
             result = self._collect_stream_text(
-                contents=self._analysis_prompt(
-                    parsed,
-                    correction_reason,
-                    source_filename,
-                    required_character_names,
-                    max_main_characters=response_character_cap,
-                    source_language=source_language,
-                    source_character_cards=source_character_cards,
-                ),
-                config={
-                    "response_mime_type": "application/json",
-                    "response_json_schema": generated_analysis_json_schema(response_character_cap),
-                },
+                contents=contents,
+                config={"response_mime_type": "application/json"},
                 on_progress=report_attempt_progress,
                 operation="screenplay_analysis",
                 attempt=attempt,
@@ -949,18 +1025,25 @@ class VertexDocumentAnalyzer:
                 )
             except (ValidationError, ValueError) as exc:
                 correction_reason = self._correction_reason(exc)
-                if attempt == self.analysis_max_attempts:
-                    raise ValueError(
-                        "Vertex returned incomplete structured analysis after configured attempts"
-                    ) from exc
-                logger.warning(
-                    "Vertex structured analysis rejected; regenerating operation=screenplay_analysis attempt=%d "
-                    "max_attempts=%d expected_scene_count=%d reason=%s",
-                    attempt,
-                    self.analysis_max_attempts,
-                    parsed.scene_count(),
-                    correction_reason,
+                exhausted = attempt == self.analysis_max_attempts
+                logger.log(
+                    logging.WARNING if exhausted else logging.INFO,
+                    "Vertex analysis validation failed; %s operation=screenplay_analysis reason=%s "
+                    "attempt_count=%d max_attempts=%d expected_scene_count=%d",
+                    "attempts exhausted" if exhausted else "regenerating",
+                    correction_reason, attempt, self.analysis_max_attempts, parsed.scene_count(),
                 )
+                if exhausted:
+                    raise VertexAnalysisValidationError(
+                        correction_reason, attempt, self.analysis_max_attempts, parsed.scene_count(),
+                    ) from exc
+                on_progress(received_before_attempt)
+                remaining = effective_processing_deadline - monotonic()
+                if remaining <= 0:
+                    raise VertexStreamTimeoutError("processing", self.processing_timeout_seconds) from exc
+                backoff = min(float(attempt) * self.retry_backoff_seconds, remaining)
+                if backoff > 0:
+                    sleep(backoff)
         raise AssertionError("analysis retry loop must return or raise")
 
     @staticmethod
@@ -1118,7 +1201,23 @@ class VertexDocumentAnalyzer:
                         on_progress(received_before_retry + received_characters)
                 except Exception as exc:
                     received_before_retry += received_characters
+                    error_metadata = safe_vertex_error_metadata(exc)
                     if not is_transient_vertex_error(exc) or generation_attempt == self.generation_max_attempts:
+                        if error_metadata is not None:
+                            logger.error(
+                                "Vertex generation failed operation=%s attempt=%d generation_attempt=%d "
+                                "generation_max_attempts=%d error_type=%s error_code=%s error_status=%s "
+                                "reason=%s received_characters=%d mode=stream",
+                                operation,
+                                attempt,
+                                generation_attempt,
+                                self.generation_max_attempts,
+                                type(exc).__name__,
+                                error_metadata.code,
+                                error_metadata.status,
+                                error_metadata.reason,
+                                received_characters,
+                            )
                         raise
                     backoff = min(
                         float(generation_attempt) * self.retry_backoff_seconds,
@@ -1131,7 +1230,7 @@ class VertexDocumentAnalyzer:
                         attempt,
                         generation_attempt,
                         self.generation_max_attempts,
-                        getattr(exc, "code", None),
+                        error_metadata.code if error_metadata is not None else None,
                         backoff,
                     )
                     if backoff > 0:
@@ -1476,7 +1575,7 @@ class VertexDocumentAnalyzer:
             return "character_arc"
         if "character profile names" in str(exc):
             return "character_profiles"
-        if "character profiles" in str(exc) or "voice traits" in str(exc):
+        if "character profiles" in str(exc) or "voice traits" in str(exc) or "character count" in str(exc):
             return "character_profiles"
         if "turning points must be exactly five" in str(exc):
             return "turning_points"
@@ -2059,72 +2158,133 @@ class VertexDocumentAnalyzer:
             f"CHARACTER KNOWLEDGE INPUT:\n{json.dumps(character_input, ensure_ascii=False)}\n\n"
             f"EXPECTED PRESENTATION ORDER EVENT IDS:\n{json.dumps(source_event_ids, ensure_ascii=False)}"
         )
-        stream = self._collect_stream_text(
-            contents=prompt,
-            on_progress=on_progress or (lambda _: None),
-            config={
-                "response_mime_type": "application/json",
-                "response_json_schema": PlannedScenesResult.model_json_schema(),
-            },
-            operation="plan_scenes",
-            processing_deadline=deadline,
-            max_output_tokens=self.planning_max_output_tokens,
-        )
-        parsed = PlannedScenesResult.model_validate_json(stream.text)
-        planned_turning_points: list[SourceTurningPoint] = []
-        for point in parsed.story_plan.turning_points:
-            try:
-                evidence = [event_map[event_id].source_anchor for event_id in point.event_ids]
-            except KeyError as exc:
-                raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED") from exc
-            planned_turning_points.append(
-                SourceTurningPoint(
-                    tp_number=point.tp_number,
-                    label=point.label,
-                    availability=point.availability,
-                    event_ids=point.event_ids,
-                    evidence=evidence,
-                    change=point.change,
-                    reason=point.reason,
+        def parse_plan(text: str) -> NarrativePlan:
+            parsed = PlannedScenesResult.model_validate_json(text)
+            planned_turning_points: list[SourceTurningPoint] = []
+            for point in parsed.story_plan.turning_points:
+                try:
+                    evidence = [event_map[event_id].source_anchor for event_id in point.event_ids]
+                except KeyError as exc:
+                    raise NarrativeAdaptationError.plan_failure("plan_event_reference") from exc
+                planned_turning_points.append(
+                    SourceTurningPoint(
+                        tp_number=point.tp_number,
+                        label=point.label,
+                        availability=point.availability,
+                        event_ids=point.event_ids,
+                        evidence=evidence,
+                        change=point.change,
+                        reason=point.reason,
+                    )
                 )
-            )
 
-        story_plan = StoryPlan(
-            turning_points=planned_turning_points,
-            important_event_ids=parsed.story_plan.important_event_ids,
-            character_motivations=parsed.story_plan.character_motivations,
-            central_theme=parsed.story_plan.central_theme,
-            intended_outcome=parsed.story_plan.intended_outcome,
-            foreshadowings=[
-                ForeshadowingPlan(
-                    setup_event_id=item.setup_event_id,
-                    payoff_event_id=item.payoff_event_id,
-                    description=item.description,
-                )
-                for item in parsed.story_plan.foreshadowings
-            ],
-            presentation_order_event_ids=parsed.story_plan.presentation_order_event_ids,
-        )
-        scenes = [
-            PlannedScene(
-                scene_number=scene.scene_number,
-                heading=scene.heading,
-                source_unit_ids=scene.source_unit_ids,
-                retained_event_ids=scene.retained_event_ids,
-                omitted_event_ids=scene.omitted_event_ids,
-                omitted_event_reasons=scene.omitted_event_reasons,
-                purpose=scene.purpose,
-                characters=scene.characters,
-                causal_notes=scene.causal_notes,
-                dependency_scene_numbers=scene.dependency_scene_numbers,
+            story_plan = StoryPlan(
+                turning_points=planned_turning_points,
+                important_event_ids=parsed.story_plan.important_event_ids,
+                character_motivations=parsed.story_plan.character_motivations,
+                central_theme=parsed.story_plan.central_theme,
+                intended_outcome=parsed.story_plan.intended_outcome,
+                foreshadowings=[
+                    ForeshadowingPlan(
+                        setup_event_id=item.setup_event_id,
+                        payoff_event_id=item.payoff_event_id,
+                        description=item.description,
+                    )
+                    for item in parsed.story_plan.foreshadowings
+                ],
+                presentation_order_event_ids=parsed.story_plan.presentation_order_event_ids,
             )
-            for scene in parsed.scenes
-        ]
-        return NarrativePlan(
-            story_plan=story_plan,
-            character_knowledge=parsed.character_knowledge,
-            planned_scenes=scenes,
-        )
+            scenes = [
+                PlannedScene(
+                    scene_number=scene.scene_number,
+                    heading=scene.heading,
+                    source_unit_ids=scene.source_unit_ids,
+                    retained_event_ids=scene.retained_event_ids,
+                    omitted_event_ids=scene.omitted_event_ids,
+                    omitted_event_reasons=scene.omitted_event_reasons,
+                    purpose=scene.purpose,
+                    characters=scene.characters,
+                    causal_notes=scene.causal_notes,
+                    dependency_scene_numbers=scene.dependency_scene_numbers,
+                )
+                for scene in parsed.scenes
+            ]
+            plan = NarrativePlan(
+                story_plan=story_plan,
+                character_knowledge=parsed.character_knowledge,
+                planned_scenes=scenes,
+            )
+            _validate_narrative_plan(plan, source_context, dag.events, character_knowledge)
+            return plan
+
+        effective_deadline = deadline if deadline is not None else monotonic() + self.processing_timeout_seconds
+        report_progress = on_progress or (lambda _: None)
+        received_before_attempt = 0
+        correction_reason: str | None = None
+        for attempt in range(1, self.planning_max_attempts + 1):
+            report_progress(received_before_attempt)
+            if monotonic() >= effective_deadline:
+                raise VertexStreamTimeoutError("processing", self.processing_timeout_seconds)
+            contents = prompt
+            if correction_reason is not None:
+                contents += (
+                    "\n\nTRUSTED PLAN VALIDATION FEEDBACK: " + correction_reason + ". "
+                    "Correct this requirement using the same authoritative unit, event, and character maps. "
+                    "Return the complete corrected plan. Do not invent IDs or characters, reorder source events, "
+                    "or drop important events to bypass validation."
+                )
+
+            def report_attempt_progress(received: int, offset: int = received_before_attempt) -> None:
+                report_progress(offset + received)
+
+            stream = self._collect_stream_text(
+                contents=contents,
+                on_progress=report_attempt_progress,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_json_schema": PlannedScenesResult.model_json_schema(),
+                },
+                operation="plan_scenes",
+                attempt=attempt,
+                processing_deadline=effective_deadline,
+                max_output_tokens=self.planning_max_output_tokens,
+            )
+            received_before_attempt += stream.received_characters
+            try:
+                return parse_plan(stream.text)
+            except (ValidationError, NarrativeAdaptationError) as exc:
+                if isinstance(exc, NarrativeAdaptationError) and exc.code != "ADAPTATION_VERIFICATION_FAILED":
+                    raise
+                error_context = exc.context if isinstance(exc, NarrativeAdaptationError) else None
+                reason = error_context.get("reason") if error_context else None
+                correction_reason = (
+                    reason if isinstance(reason, str) and reason in PLAN_FAILURE_REASONS else "plan_schema"
+                )
+                scene_number = error_context.get("scene_number") if error_context else None
+                context: dict[str, object] = {
+                    "reason": correction_reason, "phase": "planning",
+                    "attempt_count": attempt, "max_attempts": self.planning_max_attempts,
+                }
+                if type(scene_number) is int and scene_number > 0:
+                    context["scene_number"] = scene_number
+                exhausted = attempt == self.planning_max_attempts
+                logger.log(
+                    logging.WARNING if exhausted else logging.INFO,
+                    "Narrative plan validation failed; %s phase=planning reason=%s scene_number=%s "
+                    "attempt_count=%d max_attempts=%d",
+                    "attempts exhausted" if exhausted else "replanning",
+                    correction_reason, context.get("scene_number"), attempt, self.planning_max_attempts,
+                )
+                if exhausted:
+                    raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED", context=context) from exc
+                report_progress(received_before_attempt)
+                remaining = effective_deadline - monotonic()
+                if remaining <= 0:
+                    raise VertexStreamTimeoutError("processing", self.processing_timeout_seconds) from exc
+                backoff = min(float(attempt) * self.retry_backoff_seconds, remaining)
+                if backoff > 0:
+                    sleep(backoff)
+        raise AssertionError("planning retry loop must return or raise")
 
     def write_scene(
         self,

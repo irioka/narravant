@@ -179,6 +179,66 @@ async def test_import_completion_stream_emits_completed_event_when_payload_regis
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_first", [True, False])
+async def test_import_completion_cancel_race_has_one_terminal_and_matching_draft(monkeypatch, cancel_first):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from narravant.domain.tasks import TaskStateError
+    from narravant.services.ingestion import validate_import
+    from test_import_api import _native_bytes, _service
+
+    service, _, _, manager = _service()
+    content = _native_bytes()
+    imported = validate_import(
+        "synthetic.json", content, 1024 * 1024,
+        pdf_max_pages=100, fdx_max_depth=32, txt_minimum_confidence=0.70,
+    )
+    task_id = service.start("owner-1", imported)
+    reached, release = Event(), Event()
+    original = manager.repository.transition
+
+    def paused_transition(task_id, expected, target):
+        if expected == "running" and target == "completed":
+            if cancel_first:
+                reached.set()
+                assert release.wait(5)
+                return original(task_id, expected, target)
+            result = original(task_id, expected, target)
+            reached.set()
+            assert release.wait(5)
+            return result
+        return original(task_id, expected, target)
+
+    monkeypatch.setattr(manager.repository, "transition", paused_transition)
+    with ThreadPoolExecutor() as pool:
+        worker = pool.submit(service.run, task_id, content)
+        try:
+            assert reached.wait(5)
+            if cancel_first:
+                manager.request_cancel(task_id)
+            else:
+                with pytest.raises(TaskStateError):
+                    manager.request_cancel(task_id)
+        finally:
+            release.set()
+        worker.result(timeout=5)
+    status = manager.repository.get(task_id)["status"]
+    assert status == ("cancelled" if cancel_first else "completed")
+    assert (service.drafts.get(task_id) is not None) is (not cancel_first)
+    frames = [frame async for frame in manager.stream(task_id, 0, heartbeat_seconds=15)]
+    terminals = [
+        frame for frame in frames
+        if any(f"event: {name}\n" in frame for name in ("completed", "error", "cancelled"))
+    ]
+    assert len(terminals) == 1
+    assert f"event: {status}\n" in terminals[0]
+    if not cancel_first:
+        # 完了後の後処理例外が成功draftだけを削除しない。
+        service._fail(task_id, "IMPORT_FAILED", "synthetic cleanup failure", retryable=False)
+        assert service.drafts.get(task_id) is not None
+
+
+@pytest.mark.asyncio
 async def test_completed_import_without_process_local_payload_still_requires_reimport() -> None:
     from narravant.db.database import DocumentRepository
     from narravant.services.tasks import EphemeralTaskEvents, TaskManager

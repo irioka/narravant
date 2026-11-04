@@ -70,6 +70,31 @@ def test_source_trait_settings_reach_analyzer(monkeypatch):
     assert analyzer._request_config({}, max_output_tokens=4096)["max_output_tokens"] >= 4096
 
 
+@pytest.mark.parametrize("attempts", [1, 2, 3])
+def test_planning_attempt_setting_reaches_analyzer(monkeypatch, tmp_path, attempts):
+    from narravant.core.settings import Settings
+    from narravant.services.vertex_analysis import VertexDocumentAnalyzer
+
+    _set_required_environment(monkeypatch)
+    config = yaml.safe_load((BACKEND_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    config["gemini"]["planning_max_attempts"] = attempts
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    settings = Settings.load(tmp_path)
+    assert settings.gemini_planning_max_attempts == attempts
+    assert VertexDocumentAnalyzer(settings).planning_max_attempts == attempts
+
+
+def test_planning_attempt_setting_rejects_zero(monkeypatch, tmp_path):
+    from narravant.core.settings import Settings, SettingsError
+
+    _set_required_environment(monkeypatch)
+    config = yaml.safe_load((BACKEND_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    config["gemini"]["planning_max_attempts"] = 0
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    with pytest.raises(SettingsError, match="planning_max_attempts"):
+        Settings.load(tmp_path)
+
+
 @pytest.mark.parametrize(
     "threshold", ["OFF", "BLOCK_NONE", "BLOCK_ONLY_HIGH", "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_LOW_AND_ABOVE"]
 )

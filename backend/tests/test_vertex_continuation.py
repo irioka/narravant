@@ -263,6 +263,100 @@ def test_is_transient_vertex_error_classification() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure_phase", ["connection", "chunk"])
+@pytest.mark.parametrize(
+    ("code", "status", "message", "expected_status", "expected_reason"),
+    [
+        (400, "INVALID_ARGUMENT", "response_json_schema is too complex", "INVALID_ARGUMENT", "response_schema"),
+        (
+            400,
+            "INVALID_ARGUMENT",
+            "The input token count exceeds the maximum allowed",
+            "INVALID_ARGUMENT",
+            "input_token_limit",
+        ),
+        (
+            400,
+            "INVALID_ARGUMENT",
+            "max_output_tokens exceeds the allowed range",
+            "INVALID_ARGUMENT",
+            "output_token_limit",
+        ),
+        (403, "PERMISSION_DENIED", "Permission denied", "PERMISSION_DENIED", "unspecified"),
+        (503, "UNAVAILABLE", "Service unavailable", "UNAVAILABLE", "unspecified"),
+        (400, "SYNTHETIC_PRIVATE_STATUS", "Unrecognized failure", "UNKNOWN", "unspecified"),
+    ],
+)
+async def test_terminal_provider_failure_logs_safe_metadata_without_retry_or_payload(
+    caplog,
+    failure_phase,
+    code,
+    status,
+    message,
+    expected_status,
+    expected_reason,
+):
+    import logging
+    from types import SimpleNamespace
+
+    from google.genai.errors import ClientError
+
+    marker = "SYNTHETIC_PRIVATE_PAYLOAD"
+    error = ClientError(code, {"error": {"status": status, "message": f"{message}: {marker}"}})
+    analyzer = object.__new__(VertexDocumentAnalyzer)
+    analyzer.generation_max_attempts = 1
+    analyzer.model = "synthetic-model"
+    analyzer.thinking_level = "LOW"
+    analyzer.connection_timeout_seconds = 300
+    analyzer.chunk_timeout_seconds = 60
+    analyzer._request_config = lambda *_args, **_kwargs: {"max_output_tokens": 65536}
+    requests = []
+    closed = []
+
+    async def generate(**kwargs):
+        requests.append(kwargs)
+        if failure_phase == "connection":
+            raise error
+
+        async def chunks():
+            yield SimpleNamespace(text=marker)
+            raise error
+
+        return chunks()
+
+    async def close():
+        closed.append(True)
+
+    analyzer._create_client = lambda: SimpleNamespace(
+        aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=generate), aclose=close),
+    )
+    with caplog.at_level(logging.DEBUG, logger="narravant.services.vertex_analysis"):
+        with pytest.raises(ClientError) as caught:
+            await analyzer._collect_stream_text_async(
+                contents=marker,
+                config=None,
+                on_progress=lambda _: None,
+                operation="screenplay_analysis",
+                attempt=1,
+                processing_deadline=1_000_000_000,
+                allow_non_stop=False,
+            )
+
+    assert caught.value is error
+    assert len(requests) == 1 and closed == [True]
+    failures = [record for record in caplog.records if "Vertex generation failed" in record.message]
+    assert len(failures) == 1
+    assert failures[0].levelno == logging.ERROR
+    assert "operation=screenplay_analysis" in failures[0].message
+    assert f"error_code={code}" in failures[0].message
+    assert f"error_status={expected_status}" in failures[0].message
+    assert f"reason={expected_reason}" in failures[0].message
+    assert f"received_characters={len(marker) if failure_phase == 'chunk' else 0}" in failures[0].message
+    assert all(record.exc_info is None for record in caplog.records)
+    assert marker not in caplog.text and "SYNTHETIC_PRIVATE_STATUS" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_collect_stream_text_retries_transient_with_proportional_backoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

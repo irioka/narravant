@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from collections.abc import Sequence
 from io import BytesIO
@@ -849,8 +850,8 @@ def test_minor_issue_after_cue_repair_preserves_scene_without_exceeding_budget(
     else:
         client.verify_results[2] = [(False, "PRIVATE_MINOR_ISSUE")]
     service = NarrativeAdaptationService(client, _make_test_config())
-    adaptation = service.adapt_text("合成小説")
     caplog.set_level("INFO", logger="narravant.services.narrative_adaptation")
+    adaptation = service.adapt_text("合成小説")
 
     result = _verify_adaptation(service, adaptation)
 
@@ -1151,6 +1152,245 @@ def test_tag_only_scene_is_repaired_with_original_and_failure_reason_in_shared_b
     assert "合成の語りです。" in result.scene_fountains[1]
 
 
+@pytest.mark.parametrize("invalid_tag", ["<applause>", "</whispering>", "<sighing>"])
+def test_unknown_scene_tag_is_locally_repaired_with_failure_location(invalid_tag, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="narravant.services.narrative_adaptation")
+    client = FakeNarrativeClient()
+    write = client.write_scene
+    repairs = []
+    speech = "合成の秘密の台詞です。<breath>出発しましょう。"
+
+    def generate(plan, context, **kwargs):
+        valid = write(plan, context, **kwargs)
+        if plan.scene_number == 2:
+            return f"{plan.heading}\n\n@アリス\n{speech}{invalid_tag}\n"
+        return valid
+
+    def repair(plan, context, initial_scene, issues, story_plan, **kwargs):
+        repairs.append((context, initial_scene, issues, story_plan, kwargs))
+        return initial_scene.replace(invalid_tag, "")
+
+    client.write_scene = generate
+    client.revise_scene = repair
+    service = NarrativeAdaptationService(client, _make_test_config())
+    result = _verify_adaptation(
+        service, service.adapt_text("合成小説", deadline=123.0, source_language="ja")
+    )
+
+    assert dict(client.write_counts) == {1: 1, 2: 1, 3: 1}
+    assert len(repairs) == 1
+    context, initial_scene, issues, story_plan, kwargs = repairs[0]
+    assert invalid_tag in initial_scene
+    assert context.source_material
+    assert context.related_previous_scenes == ((1, result.scene_fountains[1]),)
+    assert story_plan is result.story_plan
+    assert kwargs == {"deadline": 123.0, "source_language": "ja"}
+    assert len(issues) == 1
+    assert issues[0].issue_type == "fountain_invalid"
+    assert issues[0].severity == "major"
+    assert "unknown_tag" in issues[0].description
+    assert "line_number=4" in issues[0].description
+    assert f"offset={len(speech)}" in issues[0].description
+    assert issues[0].event_ids or issues[0].source_anchors
+    assert "inline tag catalogue" in issues[0].revision_direction
+    assert result.revision_count == {1: 0, 2: 1, 3: 0}
+    assert speech in result.scene_fountains[2]
+    assert invalid_tag not in result.fountain
+    assert client.verified_scenes == [1, 2, 3]
+    assert "reason=unknown_tag" in caplog.text
+    assert all(record.levelno == logging.INFO for record in caplog.records)
+    assert invalid_tag not in caplog.text
+    assert "合成の秘密" not in caplog.text
+
+
+@pytest.mark.parametrize("max_attempts", [1, 2, 3])
+def test_unknown_scene_tag_limit_strips_only_unknown_tags_and_continues(max_attempts, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="narravant.services.narrative_adaptation")
+    client = FakeNarrativeClient()
+    write = client.write_scene
+    repairs = []
+    speech = "合成の秘密です。<breath>出発しましょう。\nここで<short pause>待ちます。"
+    invalid_speech = speech.replace("出発", "<unregistered>出発") + "</whispering>"
+    originals = {}
+
+    def generate(plan, context, **kwargs):
+        valid = write(plan, context, **kwargs)
+        if plan.scene_number == 2:
+            valid = f"{plan.heading}\n\n@アリス\n{invalid_speech}\n"
+        originals[plan.scene_number] = valid
+        return valid
+
+    def repair(plan, context, initial_scene, issues, story_plan, **kwargs):
+        repairs.append(initial_scene)
+        return initial_scene
+
+    client.write_scene = generate
+    client.revise_scene = repair
+    config = _make_test_config().model_copy(update={"scene_regeneration_max_attempts": max_attempts})
+    service = NarrativeAdaptationService(client, config)
+    result = _verify_adaptation(service, service.adapt_text("合成小説"))
+
+    assert dict(client.write_counts) == {1: 1, 2: 1, 3: 1}
+    assert len(repairs) == max_attempts - 1
+    assert result.scene_fountains[2] == f"{result.planned_scenes[1].heading}\n\n@アリス\n{speech}\n"
+    assert result.scene_fountains[1] == originals[1]
+    assert result.scene_fountains[3] == originals[3]
+    assert result.revision_count == {1: 0, 2: max_attempts - 1, 3: 0}
+    assert client.verified_scenes == [1, 2, 3]
+    retries = [record for record in caplog.records if "regenerating" in record.message]
+    assert len(retries) == max_attempts - 1
+    assert all(record.levelno == logging.INFO for record in retries)
+    warnings = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert "reason=unknown_tag" in warnings[0].message
+    assert "scene_number=2" in warnings[0].message
+    assert "removed_tag_count=2" in warnings[0].message
+    assert f"attempt_count={max_attempts} max_attempts={max_attempts}" in warnings[0].message
+    assert "unregistered" not in caplog.text
+    assert "whispering" not in caplog.text
+    assert "合成の秘密" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("body", "error_type", "reason"),
+    [
+        ("@アリス\n<unregistered>", GeneratedFountainCueError, "missing_speech"),
+        ("<unregistered>", GeneratedFountainCueError, "missing_speech"),
+        ("@UNKNOWN\n合成の台詞。<unregistered>", GeneratedFountainCueError, "unknown_character_cue"),
+        ("@アリス\n合成の台詞。<unregistered>\n<unfinished", GeneratedFountainCueError, "unclosed_tag"),
+        ("@アリス\n合成の台詞。<unregistered> |返答|", GeneratedFountainCueError, "pipe_requires_listener"),
+    ],
+)
+def test_unknown_scene_tag_fallback_preserves_other_validation_failures(body, error_type, reason) -> None:
+    client = FakeNarrativeClient()
+    client.write_scene = lambda plan, context, **kwargs: f"{plan.heading}\n\n{body}\n"
+    config = _make_test_config().model_copy(update={"scene_regeneration_max_attempts": 1})
+    with pytest.raises(error_type, match=f"^{reason}$"):
+        NarrativeAdaptationService(client, config).adapt_text("合成小説")
+    assert client.verified_scenes == []
+    assert client.revision_requests == []
+
+
+def test_unknown_scene_tag_fallback_rechecks_planned_heading() -> None:
+    client = FakeNarrativeClient()
+    client.write_scene = lambda plan, context, **kwargs: (
+        f"INT. WRONG ROOM - DAY #{plan.scene_number}#\n\n@アリス\n合成の台詞。<unregistered>\n"
+    )
+    config = _make_test_config().model_copy(update={"scene_regeneration_max_attempts": 1})
+    with pytest.raises(NarrativeAdaptationError) as caught:
+        NarrativeAdaptationService(client, config).adapt_text("合成小説")
+    assert caught.value.context["reason"] == "scene_structure_invalid"
+    assert client.verified_scenes == []
+
+
+@pytest.mark.parametrize(
+    "empty_utterance",
+    ["<unregistered>", "@アリス\n<unregistered>", "@アリス\n<unregistered>HELLO"],
+)
+def test_unknown_scene_tag_fallback_rejects_losing_one_of_multiple_utterances(empty_utterance, caplog) -> None:
+    client = FakeNarrativeClient()
+    client.write_scene = lambda plan, context, **kwargs: (
+        f"{plan.heading}\n\n{empty_utterance}\n\n@ナレーター\n合成の正常な語りです。\n"
+    )
+    config = _make_test_config().model_copy(update={"scene_regeneration_max_attempts": 1})
+    with pytest.raises(GeneratedFountainCueError) as caught:
+        NarrativeAdaptationService(client, config).adapt_text("合成小説")
+    assert caught.value.scene_number == 1
+    assert client.verified_scenes == []
+    assert "cleanup rejected" in caplog.text
+    assert "unregistered" not in caplog.text
+
+
+@pytest.mark.parametrize("remaining_major", [False, True])
+def test_unknown_scene_tag_at_last_content_revision_is_stripped_then_verified(remaining_major, caplog) -> None:
+    client = FakeNarrativeClient()
+    service = NarrativeAdaptationService(client, _make_test_config())
+    adapted = service.adapt_text("合成小説")
+    client.verify_results[2] = [(False, "合成の初回指摘"), (not remaining_major, "合成の重大指摘")]
+    revisions = []
+    verified_texts = []
+    verify = client.verify_scene
+
+    def repair(plan, context, initial_scene, issues, story_plan, **kwargs):
+        revisions.append(initial_scene)
+        return f"{plan.heading}\n\n@アリス\n合成の秘密です。<breath><unregistered>\n"
+
+    def verify_clean_scene(plan, text, **kwargs):
+        verified_texts.append((plan.scene_number, text))
+        assert "<unregistered>" not in text
+        return verify(plan, text, **kwargs)
+
+    client.revise_scene = repair
+    client.verify_scene = verify_clean_scene
+    if remaining_major:
+        with pytest.raises(NarrativeAdaptationError) as caught:
+            _verify_adaptation(service, adapted)
+        assert caught.value.context["reason"] == "major_issues_after_revision"
+    else:
+        result = _verify_adaptation(service, adapted)
+        assert "合成の秘密です。<breath>" in result.scene_fountains[2]
+        assert result.revision_count[2] == 1
+        assert client.verified_scenes.count(3) == 2
+    assert len(revisions) == 1
+    assert sum(number == 2 for number, _text in verified_texts) == 2
+    assert "removed_tag_count=1" in caplog.text
+    assert "unregistered" not in caplog.text
+    assert "合成の秘密" not in caplog.text
+
+
+def test_cancellation_before_unknown_tag_fallback_stops_without_cleanup(caplog) -> None:
+    client = FakeNarrativeClient()
+    generated = False
+
+    def generate(plan, context, **kwargs):
+        nonlocal generated
+        generated = True
+        return f"{plan.heading}\n\n@アリス\n合成の台詞。<unregistered>\n"
+
+    def ensure_not_cancelled():
+        if generated:
+            raise RuntimeError("synthetic cancellation")
+
+    client.write_scene = generate
+    config = _make_test_config().model_copy(update={"scene_regeneration_max_attempts": 1})
+    with pytest.raises(RuntimeError, match="synthetic cancellation"):
+        NarrativeAdaptationService(client, config).adapt_text(
+            "合成小説", ensure_not_cancelled=ensure_not_cancelled
+        )
+    assert "removed_tag_count" not in caplog.text
+    assert client.verified_scenes == []
+
+
+def test_unknown_scene_tag_repair_consumes_the_semantic_revision_budget() -> None:
+    client = FakeNarrativeClient()
+    write = client.write_scene
+    repairs = []
+
+    def generate(plan, context, **kwargs):
+        valid = write(plan, context, **kwargs)
+        if plan.scene_number == 2:
+            return f"{plan.heading}\n\n@アリス\n合成の台詞です。<applause>\n"
+        return valid
+
+    def repair(plan, context, initial_scene, issues, story_plan, **kwargs):
+        repairs.append(initial_scene)
+        return initial_scene.replace("<applause>", "")
+
+    client.write_scene = generate
+    client.revise_scene = repair
+    client.verify_results[2] = [(False, "合成の重大指摘")]
+    service = NarrativeAdaptationService(client, _make_test_config())
+    adapted = service.adapt_text("合成小説")
+    with pytest.raises(NarrativeAdaptationError) as caught:
+        _verify_adaptation(service, adapted)
+
+    assert caught.value.context["reason"] == "revision_budget_exhausted"
+    assert caught.value.context["scene_number"] == 2
+    assert len(repairs) == 1
+    assert dict(client.write_counts) == {1: 1, 2: 1, 3: 1}
+
+
 @pytest.mark.parametrize("remains_invalid", [False, True])
 def test_combined_cue_repair_uses_one_shared_revision_before_analysis(remains_invalid):
     client = FakeNarrativeClient()
@@ -1188,6 +1428,7 @@ def test_combined_cue_repair_uses_one_shared_revision_before_analysis(remains_in
 
 
 def test_empty_cue_is_regenerated_before_verify_with_same_context(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="narravant.services.narrative_adaptation")
     client = FakeNarrativeClient()
     write = client.write_scene
     requests = []
@@ -1215,6 +1456,160 @@ def test_empty_cue_is_regenerated_before_verify_with_same_context(caplog) -> Non
     assert "line_number=3" in caplog.text
     assert "cue_without_speech" in caplog.text
     assert "アリス" not in caplog.text
+
+
+@pytest.mark.parametrize("remaining_tag", [False, True])
+def test_scene_four_empty_cue_uses_local_repair_then_safe_tag_cleanup(remaining_tag, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="narravant.services.narrative_adaptation")
+    client = FakeNarrativeClient()
+    original_plan = client.plan_scenes
+    write = client.write_scene
+    repairs = []
+    initial_scenes = {}
+
+    def plan(*args, **kwargs):
+        result = original_plan(*args, **kwargs)
+        fourth = result.planned_scenes[-1].model_copy(update={
+            "scene_number": 4, "heading": "INT. SYNTHETIC ROOM - DAY #4#", "dependency_scene_numbers": [3],
+        })
+        result.planned_scenes.append(fourth)
+        return result
+
+    def generate(plan, context, **kwargs):
+        valid = write(plan, context, **kwargs)
+        if plan.scene_number != 4:
+            return valid
+        if client.write_counts[4] > 1:
+            # 旧経路の再生成で、不明タグを残して構造比較へ進むログの並びを再現する。
+            return f"{plan.heading}\n\n@アリス\n合成の既存の台詞です。\n<unregistered>"
+        initial = "\n".join([
+            plan.heading, "", "@ナレーター", "合成の語りです。", "",
+            "@アリス", "合成の既存の台詞です。", "", "[[合成の注記]]", "", "", "",
+            "@アリス", "(静かに)",
+        ])
+        assert initial.splitlines()[12] == "@アリス"
+        initial_scenes[4] = initial
+        return initial
+
+    def repair(plan, context, initial, issues, story_plan, **kwargs):
+        repairs.append((plan, context, initial, issues, story_plan, kwargs))
+        repaired = initial.replace("\n@アリス\n(静かに)", "")
+        if remaining_tag:
+            repaired = repaired.replace("合成の既存の台詞です。", "合成の既存の台詞です。\n<unregistered>")
+        return repaired
+
+    client.plan_scenes = plan
+    client.write_scene = generate
+    client.revise_scene = repair
+    service = NarrativeAdaptationService(client, _make_test_config())
+    result = _verify_adaptation(
+        service, service.adapt_text("合成小説", deadline=123.0, source_language="ja"),
+    )
+    assert dict(client.write_counts) == {1: 1, 2: 1, 3: 1, 4: 1}
+    assert len(repairs) == 1
+    scene, context, initial, issues, story_plan, kwargs = repairs[0]
+    assert scene.scene_number == 4 and initial == initial_scenes[4]
+    assert context.source_material and context.related_previous_scenes
+    assert story_plan is result.story_plan
+    assert kwargs == {"deadline": 123.0, "source_language": "ja"}
+    assert len(issues) == 1
+    assert issues[0].issue_type == "fountain_invalid" and issues[0].severity == "major"
+    assert "cue_without_speech" in issues[0].description and "line_number=13" in issues[0].description
+    assert issues[0].event_ids or issues[0].source_anchors
+    assert "Do not invent dialogue" in issues[0].revision_direction
+    assert result.revision_count == {1: 0, 2: 0, 3: 0, 4: 1}
+    assert client.verified_scenes == [1, 2, 3, 4]
+    assert "合成の既存の台詞です。" in result.scene_fountains[4]
+    assert "<unregistered>" not in result.fountain
+    assert "合成の既存" not in caplog.text and "(静かに)" not in caplog.text
+    assert "unregistered" not in caplog.text
+    assert "reason=cue_without_speech" in caplog.text
+    assert bool("stripping unsupported tags" in caplog.text) is remaining_tag
+
+
+def test_empty_cue_local_repair_exhaustion_never_verifies_or_requests_again() -> None:
+    client = FakeNarrativeClient()
+    writes = []
+    repairs = []
+
+    def generate(plan, context, **kwargs):
+        writes.append(plan.scene_number)
+        return f"{plan.heading}\n\n@アリス\n(静かに)"
+
+    def repair(plan, context, initial, issues, story_plan, **kwargs):
+        repairs.append((plan.scene_number, initial, issues))
+        return initial
+
+    client.write_scene = generate
+    client.revise_scene = repair
+    with pytest.raises(GeneratedFountainCueError, match="^cue_without_speech$"):
+        NarrativeAdaptationService(client, _make_test_config()).adapt_text("合成小説")
+    assert writes == [1] and len(repairs) == 1
+    assert client.verified_scenes == []
+
+
+@pytest.mark.parametrize("stage", ["initial", "cue_repair", "after_analysis"])
+def test_heading_only_scene_is_rejected_before_or_after_local_repair(stage) -> None:
+    client = FakeNarrativeClient()
+    write = client.write_scene
+    revisions = []
+
+    def generate(plan, context, **kwargs):
+        valid = write(plan, context, **kwargs)
+        if plan.scene_number == 2 and stage != "after_analysis":
+            return plan.heading + ("\n\n@アリス" if stage == "cue_repair" else "")
+        return valid
+
+    def repair(plan, context, initial, issues, story_plan, **kwargs):
+        revisions.append(plan.scene_number)
+        return plan.heading
+
+    client.write_scene = generate
+    client.revise_scene = repair
+    config = _make_test_config().model_copy(update={
+        "scene_regeneration_max_attempts": 1 if stage == "initial" else 2,
+    })
+    service = NarrativeAdaptationService(client, config)
+    if stage == "after_analysis":
+        adapted = service.adapt_text("合成小説")
+        client.verify_results[2] = [(False, "合成の品質指摘")]
+        with pytest.raises(GeneratedFountainCueError, match="^missing_speech$"):
+            _verify_adaptation(service, adapted)
+        assert client.verified_scenes.count(2) == 1
+    else:
+        with pytest.raises(GeneratedFountainCueError, match="^missing_speech$"):
+            service.adapt_text("合成小説")
+        assert 2 not in client.verified_scenes
+    assert revisions == ([] if stage == "initial" else [2])
+    assert client.write_counts[2] == 1
+
+
+def test_planning_progress_observes_cancellation_before_scene_writing() -> None:
+    client = FakeNarrativeClient()
+    original_plan = client.plan_scenes
+    cancelled = False
+    received = []
+
+    def plan(*args, on_progress=None, **kwargs):
+        nonlocal cancelled
+        assert on_progress is not None
+        on_progress(1)
+        cancelled = True
+        on_progress(2)
+        return original_plan(*args, **kwargs)
+
+    def ensure_not_cancelled():
+        if cancelled:
+            raise RuntimeError("synthetic planning cancellation")
+
+    client.plan_scenes = plan
+    with pytest.raises(RuntimeError, match="synthetic planning cancellation"):
+        NarrativeAdaptationService(client, _make_test_config()).adapt_text(
+            "合成小説", on_progress=lambda phase, count: received.append((phase, count)),
+            ensure_not_cancelled=ensure_not_cancelled,
+        )
+    assert ("planning", 1) in received and ("planning", 2) not in received
+    assert not client.write_counts
 
 
 def test_empty_cue_exhaustion_is_bounded_and_never_verified(caplog) -> None:
@@ -1280,13 +1675,14 @@ def test_cue_failure_during_verification_regeneration_uses_remaining_budget(max_
         assert client.verified_scenes.count(3) == 2
 
 
-def test_cancel_between_cue_failure_and_regeneration_prevents_next_write() -> None:
+@pytest.mark.parametrize("speech", ["", "\n合成の台詞です。<unregistered>"])
+def test_cancel_between_cue_failure_and_regeneration_prevents_next_write(speech) -> None:
     client = FakeNarrativeClient()
     write = client.write_scene
 
     def generate(plan, context, **kwargs):
         write(plan, context, **kwargs)
-        return f"{plan.heading}\n\n@アリス"
+        return f"{plan.heading}\n\n@アリス{speech}"
 
     def ensure_not_cancelled():
         if client.write_counts[1]:
@@ -1298,4 +1694,5 @@ def test_cancel_between_cue_failure_and_regeneration_prevents_next_write() -> No
             "合成小説", ensure_not_cancelled=ensure_not_cancelled
         )
     assert client.write_counts[1] == 1
+    assert client.revision_requests == []
     assert client.verified_scenes == []

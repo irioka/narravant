@@ -16,6 +16,7 @@ gemini:
   source_voice_traits_max_attempts: 3 # Invalid source voice-trait response schemas or evidence references
   source_voice_traits_max_output_tokens: 4096
   analysis_max_attempts: 2 # Incomplete or invalid whole-work structured analysis
+  planning_max_attempts: 2 # Invalid plan JSON or source consistency; each can use generation_max_attempts
   generation_max_attempts: 2 # Shared text generation: transient errors, empty responses, or incomplete responses
   voice_design_max_attempts: 2 # Transient 502/503/504 on create/read; uncertain creation results are not retried
   retry_backoff_seconds: 3 # Base retry wait unit (seconds); grows in proportion to the attempt number

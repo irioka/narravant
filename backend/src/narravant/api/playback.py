@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+from contextlib import aclosing, suppress
 from typing import Literal
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
@@ -23,6 +24,7 @@ from narravant.services.playback import (
     PlaybackPlanError,
     build_playback_plan,
 )
+from narravant.services.playback_flow import PLAYBACK_BUFFER_SECONDS, PlaybackBufferWindow
 from narravant.services.tts import (
     TtsPlaybackCoordinator,
     create_tts_client,
@@ -145,6 +147,7 @@ async def document_playback_websocket(
 
     coordinator: TtsPlaybackCoordinator | None = None
     active_task: asyncio.Task | None = None
+    buffer_window = PlaybackBufferWindow()
 
     async def _execute_playback(
         start_scene: int,
@@ -197,75 +200,89 @@ async def document_playback_websocket(
                     else getattr(settings, "playback_narrator_sentence_pause_duration_ms", 0)
                 ),
             )
-            async for ev in coordinator.run_stream(plan.utterances):
-                ev_type = ev["type"]
-                if ev_type == "utterance_start":
-                    await websocket.send_json(
-                        {
-                            "event": "utterance_start",
-                            "scene_number": ev["scene_number"],
-                            "utterance_index": ev["utterance_index"],
-                            "speaker": ev["speaker"],
-                            "target_type": ev["target_type"],
-                        }
-                    )
-                elif ev_type == "scene_pause":
-                    await websocket.send_json(
-                        {
-                            "event": "scene_pause",
-                            "scene_number": ev["scene_number"],
-                            "duration_ms": ev["duration_ms"],
-                        }
-                    )
-                elif ev_type == "utterance_pause":
-                    await websocket.send_json(
-                        {
-                            "event": "utterance_pause",
-                            "scene_number": ev["scene_number"],
-                            "duration_ms": ev["duration_ms"],
-                        }
-                    )
-                elif ev_type == "audio_chunk":
-                    b64_data = base64.b64encode(ev["data"]).decode("ascii")
-                    await websocket.send_json(
-                        {
-                            "event": "audio_chunk",
-                            "scene_number": ev["scene_number"],
-                            "utterance_index": ev["utterance_index"],
-                            "data": b64_data,
-                        }
-                    )
-                elif ev_type == "audio_segment_end":
-                    await websocket.send_json(
-                        {
-                            "event": "audio_segment_end",
-                            "scene_number": ev["scene_number"],
-                            "utterance_index": ev["utterance_index"],
-                        }
-                    )
-                elif ev_type == "utterance_end":
-                    await websocket.send_json(
-                        {
-                            "event": "utterance_end",
-                            "scene_number": ev["scene_number"],
-                            "utterance_index": ev["utterance_index"],
-                        }
-                    )
-                elif ev_type == "error":
-                    await websocket.send_json(
-                        {
-                            "event": "error",
-                            "scene_number": ev["scene_number"],
-                            "utterance_index": ev["utterance_index"],
-                            "message": ev["message"],
-                        }
-                    )
-                elif ev_type == "playback_complete":
-                    await websocket.send_json(
-                        {
-                            "event": "playback_complete",
-                        }
-                    )
+            events = buffer_window.stream(coordinator.run_stream(plan.utterances))
+            async with aclosing(events):
+                async for ev in events:
+                    ev_type = ev["type"]
+                    flow_metadata = {"buffer_id": ev["buffer_id"]} if "buffer_id" in ev else {}
+                    if ev_type == "utterance_start":
+                        await websocket.send_json(
+                            {
+                                "event": "utterance_start",
+                                "scene_number": ev["scene_number"],
+                                "utterance_index": ev["utterance_index"],
+                                "speaker": ev["speaker"],
+                                "target_type": ev["target_type"],
+                            }
+                        )
+                    elif ev_type == "scene_pause":
+                        await websocket.send_json(
+                            {
+                                "event": "scene_pause",
+                                "scene_number": ev["scene_number"],
+                                "duration_ms": ev["duration_ms"],
+                                **flow_metadata,
+                            }
+                        )
+                    elif ev_type == "utterance_pause":
+                        await websocket.send_json(
+                            {
+                                "event": "utterance_pause",
+                                "scene_number": ev["scene_number"],
+                                "duration_ms": ev["duration_ms"],
+                                **flow_metadata,
+                            }
+                        )
+                    elif ev_type == "audio_chunk":
+                        b64_data = base64.b64encode(ev["data"]).decode("ascii")
+                        await websocket.send_json(
+                            {
+                                "event": "audio_chunk",
+                                "scene_number": ev["scene_number"],
+                                "utterance_index": ev["utterance_index"],
+                                "data": b64_data,
+                                **flow_metadata,
+                            }
+                        )
+                    elif ev_type == "audio_segment_end":
+                        await websocket.send_json(
+                            {
+                                "event": "audio_segment_end",
+                                "scene_number": ev["scene_number"],
+                                "utterance_index": ev["utterance_index"],
+                            }
+                        )
+                    elif ev_type == "utterance_end":
+                        await websocket.send_json(
+                            {
+                                "event": "utterance_end",
+                                "scene_number": ev["scene_number"],
+                                "utterance_index": ev["utterance_index"],
+                            }
+                        )
+                    elif ev_type == "error":
+                        logger.warning(
+                            "Playback failed reason=tts_stream_error scene_number=%s utterance_index=%s",
+                            ev["scene_number"], ev["utterance_index"],
+                        )
+                        await websocket.send_json(
+                            {
+                                "event": "error",
+                                "scene_number": ev["scene_number"],
+                                "utterance_index": ev["utterance_index"],
+                                "message": ev["message"],
+                            }
+                        )
+                    elif ev_type == "playback_complete":
+                        logger.info(
+                            "Playback stream completed pending_buffers=%d buffered_seconds=%.3f",
+                            buffer_window.pending_count, buffer_window.pending_seconds,
+                        )
+                        await websocket.send_json(
+                            {
+                                "event": "playback_complete",
+                            }
+                        )
         except PlaybackPlanError as plan_err:
             await websocket.send_json(
                 {
@@ -310,7 +327,7 @@ async def document_playback_websocket(
             action = msg.get("action") if isinstance(msg, dict) else None
             if action == "start":
                 # Duplicate start while actively playing is ignored (SC-3)
-                if active_task and not active_task.done():
+                if (active_task and not active_task.done()) or buffer_window.pending_count:
                     continue
 
                 try:
@@ -328,6 +345,10 @@ async def document_playback_websocket(
                         }
                     )
                     continue
+                logger.info(
+                    "Playback started buffer_window=%d buffer_seconds=%d",
+                    buffer_window.max_items, PLAYBACK_BUFFER_SECONDS,
+                )
                 active_task = asyncio.create_task(
                     _execute_playback(
                         request.scene_number,
@@ -338,16 +359,27 @@ async def document_playback_websocket(
                     )
                 )
 
+            elif action == "audio_consumed":
+                buffer_window.acknowledge(msg.get("buffer_id"))
+
             elif action == "stop":
                 if coordinator:
                     coordinator.stop()
                 if active_task and not active_task.done():
                     active_task.cancel()
-                    active_task = None
+                    with suppress(asyncio.CancelledError):
+                        await active_task
+                active_task = None
+                buffer_window.clear()
+                logger.info("Playback stopped reason=user_stop")
 
-    except WebSocketDisconnect:
+    except WebSocketDisconnect as disconnect:
+        logger.info("Playback disconnected code=%d", disconnect.code)
         # Cost control (SC-1): guarantee immediate cancellation of background synthesis
         if coordinator:
             coordinator.stop()
         if active_task and not active_task.done():
             active_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await active_task
+        buffer_window.clear()
