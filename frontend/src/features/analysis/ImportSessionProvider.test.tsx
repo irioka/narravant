@@ -102,8 +102,11 @@ it.each(['IMPORT_DRAFT_EXPIRED', 'PROCESS_RESTARTED', 'PERMISSION_DENIED'])('既
   render(<ImportSessionProvider><Expose /></ImportSessionProvider>)
   fireEvent.click(screen.getByText('start'))
   await screen.findByText('failed:task:true')
-  expect(api.session.pendingResult).toBeUndefined()
-  expect(api.session.failure).toMatchObject({ kind: 'task', event: { code } })
+  // Wait for the useEffect-exposed reference separately from the DOM update.
+  await waitFor(() => {
+    expect(api.session.pendingResult).toBeUndefined()
+    expect(api.session.failure).toMatchObject({ kind: 'task', event: { code } })
+  })
   expect(importDocument).toHaveBeenCalledTimes(1)
 })
 it('旧Importのcancel HTTP保留は次Importのキャンセルを抑止しない', async () => {

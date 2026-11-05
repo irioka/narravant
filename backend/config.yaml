@@ -10,7 +10,8 @@ gemini:
   # "OFF" / BLOCK_NONE / BLOCK_ONLY_HIGH / BLOCK_MEDIUM_AND_ABOVE / BLOCK_LOW_AND_ABOVE
   # Voice Design (POST /voices) has no corresponding safety setting.
   safety_threshold: BLOCK_NONE
-  performance_review_max_attempts: 2 # Invalid performance-review or context-summary responses; also capped at 2 in code
+  # Invalid scene edits are skipped after these attempts; context-summary failures still stop the import.
+  performance_review_max_attempts: 2 # Total attempts; also capped at 2 in code
   performance_review_max_output_tokens: 4096
   performance_context_window_max_characters: 24000
   source_voice_traits_max_attempts: 3 # Invalid source voice-trait response schemas or evidence references

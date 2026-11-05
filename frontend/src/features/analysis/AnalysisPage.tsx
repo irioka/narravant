@@ -23,6 +23,7 @@ import { AnalysisContent, type AnalysisDraftUpdate } from './AnalysisContent'
 import { AnalysisTabsPanel } from './AnalysisTabsPanel'
 import { AudiobookPlayer } from './AudiobookPlayer'
 import { DocumentList } from './DocumentList'
+import { WorkbenchPanels } from './WorkbenchPanels'
 import { canExportNative, exportFilename, serializeNativeJson } from './export'
 import { countSceneHeadings, createUtteranceRangeLookup, playbackStartAtOffset, sceneHeadingRange, type PlaybackStartPosition } from './fountain-scenes'
 import { useImportSession } from './ImportSessionProvider'
@@ -60,7 +61,7 @@ function IconAction({ children, label, onClick, destructive = false, disabled = 
   return <Tooltip><TooltipTrigger asChild><Button aria-label={label} disabled={disabled} onClick={onClick} size="icon" variant="ghost"><span className={destructive ? 'text-destructive' : undefined}>{children}</span></Button></TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>
 }
 
-// 読込み中も一覧とパネルを保持し、文書切替でスクロール位置を失わない。
+// Keep the list and panels mounted during loading to preserve scroll across document changes.
 function AnalysisLayout({ documentId, onBeforeNavigate, onRequestNavigate, actions, tabs, editor, content, children }: {
   documentId?: string
   onBeforeNavigate: () => void
@@ -73,17 +74,15 @@ function AnalysisLayout({ documentId, onBeforeNavigate, onRequestNavigate, actio
 }) {
   return <main className="flex h-svh min-w-[1180px] flex-col overflow-hidden bg-background">
     <NarravantHeader actions={actions} />
-    <Group className="flex-1" orientation="horizontal">
-      <Panel defaultSize="30" minSize="24"><Group className="h-full" orientation="vertical">
+    <WorkbenchPanels
+      left={<Group className="h-full" orientation="vertical">
         <Panel defaultSize="40" minSize="20"><aside className="h-full overflow-hidden border-b bg-card"><DocumentList activeDocumentId={documentId} onBeforeNavigate={onBeforeNavigate} onRequestNavigate={onRequestNavigate} /></aside></Panel>
         <Separator className="h-px bg-border hover:bg-primary/50" />
         <Panel defaultSize="60" minSize="20">{tabs}</Panel>
-      </Group></Panel>
-      <Separator className="w-px bg-border hover:bg-primary/50" />
-      <Panel defaultSize="47" minSize="30">{editor}</Panel>
-      <Separator className="w-px bg-border hover:bg-primary/50" />
-      <Panel defaultSize="23" minSize="18"><aside className="h-full overflow-hidden bg-card">{content}</aside></Panel>
-    </Group>
+      </Group>}
+      script={editor}
+      characters={<aside className="h-full overflow-hidden bg-card">{content}</aside>}
+    />
     {children}
   </main>
 }

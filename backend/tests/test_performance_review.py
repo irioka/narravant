@@ -273,3 +273,119 @@ def test_narrator_delivery_is_ephemeral_and_narrator_only():
 def test_invalid_narrator_delivery(value):
     with pytest.raises(ValueError):
         PlaybackStartRequest.model_validate({"action": "start", "narrator_style": value})
+
+
+@pytest.mark.parametrize("failure", ["target", "offset", "style", "schema", "unknown"])
+def test_invalid_scene_review_is_skipped_without_losing_other_scene_edits(failure, caplog):
+    source = (
+        "INT. FIRST - DAY #6#\n\n@MINA\nAlpha. Beta.\n\n"
+        "INT. SECOND - DAY #7#\n\n@MINA\n(urgent)\nHello.<short pause> World.\n\n"
+        "INT. THIRD - DAY #8#\n\n@MINA\nGoodbye.\n"
+    )
+    valid_edits = [
+        TurnPerformance(scene_number=number, utterance_index=0, split_offsets=[], styles=["calm"], insertions=[])
+        for number in (6, 8)
+    ]
+
+    class Client(FakePerformanceClient):
+        def review_scene_performance(self, number, utterances, context, **kwargs):
+            self.scenes.append(number)
+            if number != 7:
+                return PerformanceReviewResult(edits=[valid_edits[0 if number == 6 else 1]])
+            payload = {
+                "scene_number": 7, "utterance_index": 0, "split_offsets": [],
+                "styles": ["urgent"], "insertions": [],
+            }
+            if failure == "target":
+                payload["utterance_index"] = 999
+            elif failure == "offset":
+                payload.update(split_offsets=[1], styles=["urgent", "calm"])
+            elif failure == "style":
+                payload["styles"] = ["PRIVATE_STYLE\n@EVIL"]
+            elif failure == "schema":
+                payload["insertions"] = [{"offset": 0, "tag": "PRIVATE_UNSUPPORTED_TAG"}]
+            else:
+                raise ValueError("PRIVATE_PROVIDER_ERROR")
+            return PerformanceReviewResult.model_validate({"edits": [payload]})
+
+    client = Client()
+    progress = []
+    result = PerformanceReviewService(client, PerformanceReviewConfig(max_attempts=5)).review_performance(
+        source, SimpleNamespace(metadata={}), source_cards=(), deadline=monotonic() + 10,
+        ensure_not_cancelled=lambda: None, on_progress=progress.append, preserve_existing_directions=False,
+    )
+    assert result == apply_performance_review(source, valid_edits)
+    assert client.scenes == [6, 7, 7, 8]
+    assert progress == [1, 2, 3]
+    assert "(urgent)\nHello.<short pause> World." in result
+    assert "reason=scene_edits_skipped" in caplog.text
+    assert "PRIVATE_" not in caplog.text
+    assert "Hello." not in caplog.text
+
+
+def test_successful_scene_review_retry_is_applied(caplog):
+    source = "INT. ROOM - DAY #7#\n\n@MINA\nHello.\n"
+
+    class Client(FakePerformanceClient):
+        def review_scene_performance(self, number, utterances, context, **kwargs):
+            self.scenes.append(number)
+            if len(self.scenes) == 1:
+                raise ValueError("PRIVATE_REJECTED_RESPONSE")
+            return PerformanceReviewResult(edits=[
+                TurnPerformance(
+                    scene_number=7, utterance_index=0, split_offsets=[],
+                    styles=["calm"], insertions=[],
+                ),
+            ])
+
+    client = Client()
+    result = PerformanceReviewService(client, PerformanceReviewConfig()).review_performance(
+        source, SimpleNamespace(metadata={}), source_cards=(), deadline=monotonic() + 10,
+        ensure_not_cancelled=lambda: None, on_progress=lambda _: None, preserve_existing_directions=False,
+    )
+    assert "(calm)\nHello." in result
+    assert client.scenes == [7, 7]
+    assert "scene_edits_skipped" not in caplog.text
+    assert "PRIVATE_" not in caplog.text
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("cancelled"), TimeoutError("PRIVATE_TRANSPORT")])
+def test_scene_review_does_not_skip_cancellation_or_transport_failures(failure):
+    class Client(FakePerformanceClient):
+        def review_scene_performance(self, *args, **kwargs):
+            raise failure
+
+    with pytest.raises(type(failure), match=str(failure)):
+        PerformanceReviewService(Client(), PerformanceReviewConfig()).review_performance(
+            "INT. ROOM - DAY #7#\n\n@MINA\nHello.\n", SimpleNamespace(metadata={}),
+            source_cards=(), deadline=monotonic() + 10, ensure_not_cancelled=lambda: None,
+            on_progress=lambda _: pytest.fail("failed review advanced progress"),
+            preserve_existing_directions=False,
+        )
+
+
+@pytest.mark.parametrize("stop", ["cancelled", "deadline"])
+def test_last_invalid_response_checks_stop_before_skipping(stop, monkeypatch, caplog):
+    state = {"calls": 0}
+    monkeypatch.setattr("narravant.services.performance_review.monotonic", lambda: int(state["calls"] == 2))
+
+    class Client(FakePerformanceClient):
+        def review_scene_performance(self, *args, **kwargs):
+            state["calls"] += 1
+            raise ValueError("PRIVATE_INVALID_RESPONSE")
+
+    def check():
+        if stop == "cancelled" and state["calls"] == 2:
+            raise RuntimeError("cancelled")
+
+    expected = RuntimeError if stop == "cancelled" else NarrativeAdaptationError
+    with pytest.raises(expected, match="cancelled" if stop == "cancelled" else "ADAPTATION_VERIFICATION_FAILED"):
+        PerformanceReviewService(Client(), PerformanceReviewConfig()).review_performance(
+            "INT. ROOM - DAY #7#\n\n@MINA\nHello.\n", SimpleNamespace(metadata={}),
+            source_cards=(), deadline=1, ensure_not_cancelled=check,
+            on_progress=lambda _: pytest.fail("stopped review advanced progress"),
+            preserve_existing_directions=False,
+        )
+    assert state["calls"] == 2
+    assert "scene_edits_skipped" not in caplog.text
+    assert "PRIVATE_" not in caplog.text

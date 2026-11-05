@@ -19,6 +19,20 @@ if TYPE_CHECKING:
     from narravant.services.vertex_analysis import CanonicalAnalysis
 
 logger = logging.getLogger(__name__)
+
+_PERFORMANCE_VALIDATION_REASONS = frozenset({
+    "performance_invalid_target", "performance_listener_edit", "performance_invalid_offset",
+    "performance_invalid_style", "performance_existing_direction", "performance_invalid_insertion",
+    "performance_source_range", "performance_empty_fragment", "performance_adjacent_pause",
+    "performance_note_boundary", "performance_scene_changed", "performance_text_changed",
+    "performance_wrong_scene", "performance_context_coverage", "performance_duplicate_scene",
+})
+
+
+class _PerformanceResponseExhausted(NarrativeAdaptationError):
+    """Raised only when the bounded response-validation attempts are exhausted."""
+
+
 class InlineCue(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     offset: int = Field(ge=0)
@@ -239,11 +253,18 @@ class PerformanceReviewService:
             self._check(deadline, ensure_not_cancelled)
             try:
                 result = validate(request())
-                self._check(deadline, ensure_not_cancelled)
-                return result
-            except ValueError:
-                logger.warning("performance_review scene=%d attempt=%d reason=invalid_response", scene, attempt + 1)
-        raise NarrativeAdaptationError("ADAPTATION_VERIFICATION_FAILED")
+            except ValueError as exc:
+                reason = exc.args[0] if exc.args and isinstance(exc.args[0], str) else ""
+                if reason not in _PERFORMANCE_VALIDATION_REASONS:
+                    reason = "invalid_response"
+                logger.warning(
+                    "performance_review scene=%d attempt=%d reason=%s", scene, attempt + 1, reason,
+                )
+                continue
+            self._check(deadline, ensure_not_cancelled)
+            return result
+        self._check(deadline, ensure_not_cancelled)
+        raise _PerformanceResponseExhausted("ADAPTATION_VERIFICATION_FAILED")
 
     def build_performance_context(
         self,
@@ -349,22 +370,26 @@ class PerformanceReviewService:
                 )
                 return result
 
-            result = self._request(
-                lambda scene=scene, related=related: self.client.review_scene_performance(
-                    scene.scene_number,
-                    scene.utterances,
-                    context,
-                    related_turns=related,
-                    source_cards=source_cards,
+            try:
+                result = self._request(
+                    lambda scene=scene, related=related: self.client.review_scene_performance(
+                        scene.scene_number,
+                        scene.utterances,
+                        context,
+                        related_turns=related,
+                        source_cards=source_cards,
+                        deadline=deadline,
+                        preserve_existing_directions=preserve_existing_directions,
+                        ensure_not_cancelled=ensure_not_cancelled,
+                    ),
+                    validate,
+                    scene=scene.scene_number,
                     deadline=deadline,
-                    preserve_existing_directions=preserve_existing_directions,
                     ensure_not_cancelled=ensure_not_cancelled,
-                ),
-                validate,
-                scene=scene.scene_number,
-                deadline=deadline,
-                ensure_not_cancelled=ensure_not_cancelled,
-            )
+                )
+            except _PerformanceResponseExhausted:
+                logger.warning("performance_review scene=%d reason=scene_edits_skipped", scene.scene_number)
+                result = PerformanceReviewResult(edits=[])
             edits.extend(result.edits)
             on_progress(index + 1)
         self._check(deadline, ensure_not_cancelled)

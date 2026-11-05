@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-11-05
+
+### Security
+
+- Update PDF parsing, certificate, and ASN.1 dependencies to address security advisories.
+- Keep shared shadcn styles locally and remove the CLI dependency, eliminating vulnerable deepmerge and systeminformation packages.
+
+### Fixed
+
+- Complete imports when a scene's additional performance directions remain invalid after two attempts, preserving the verified script and valid directions from other scenes.
+- Log fixed performance-review rejection reasons without manuscript text or provider response details.
+- Start the workbench columns at 30% / 40% / 30% and show adjacent panel percentages beside the active divider while resizing.
+
 ## [0.6.0] - 2026-11-04
 
 ### Added

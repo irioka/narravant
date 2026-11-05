@@ -1,10 +1,19 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
+@import "./styles/shadcn.css";
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/dancing-script";
 
 @custom-variant dark (&:is(.dark *));
+
+.workbench-panel-ratios {
+  display: none;
+}
+
+.workbench-panels [data-separator="active"] > .workbench-panel-ratios,
+.workbench-panels [data-separator]:focus-visible > .workbench-panel-ratios {
+  display: flex;
+}
 
 :root {
   /* VSCode Light 2026 / Paper & Book inspired elegant palette */

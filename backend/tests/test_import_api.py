@@ -1202,7 +1202,8 @@ def test_native_save_roundtrip_keeps_performance_order_and_voice_assignments():
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_screenplay_review_preserves_existing_directions_or_fails_without_draft(fail):
+def test_screenplay_review_invalid_edits_do_not_discard_verified_draft(fail):
+    from narravant.core.fountain import FountainParser
     from narravant.services.performance_review import (
         PerformanceReviewConfig,
         PerformanceReviewResult,
@@ -1236,9 +1237,13 @@ def test_screenplay_review_preserves_existing_directions_or_fails_without_draft(
     task_id = service.start("owner-1", imported)
     service.run(task_id, content)
     draft = service.drafts.get(task_id)
-    assert (draft is None) == fail
-    if draft:
-        assert "PRIVATE_PERFORMANCE_CONTEXT_SENTINEL" not in json.dumps(draft.structured)
+    assert draft is not None
+    assert (
+        FountainParser.parse(draft.structured["source_fountain"]).raw_script_body
+        == FountainParser.parse(service.analyzer.analyzed_fountains[-1]).raw_script_body
+    )
+    assert service.tasks.events_after(task_id, 0)[-1].event_type == "completed"
+    assert "PRIVATE_PERFORMANCE_CONTEXT_SENTINEL" not in json.dumps(draft.structured)
 
 
 @pytest.mark.parametrize("extension", [".fountain", ".fdx", ".txt", ".pdf"])

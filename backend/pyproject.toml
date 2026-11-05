@@ -1,6 +1,6 @@
 [project]
 name = "narravant"
-version = "0.6.0"
+version = "0.6.1"
 description = "NARRAVANT audiobook workbench backend"
 requires-python = ">=3.12"
 dependencies = [
@@ -16,7 +16,7 @@ dependencies = [
     "numpy>=2.0.0",
     "pydantic>=2.8.0",
     "pydantic-settings>=2.4.0",
-    "pypdf>=6.21.2",
+    "pypdf>=6.21.4",
     "python-dotenv>=1.2.1",
     "python-multipart>=0.0.12",
     "pyyaml>=6.0.3",
@@ -35,8 +35,12 @@ dev = [
 ]
 
 [tool.uv]
-# requests経由の間接依存にも、既知の脆弱性を修正した版を要求する。
-constraint-dependencies = ["urllib3>=2.8.0"]
+# Require patched versions of transitive dependencies for known security advisories.
+constraint-dependencies = [
+    "certifi>=2026.10.18",
+    "pyasn1>=0.6.5",
+    "urllib3>=2.8.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
