@@ -1,7 +1,9 @@
-import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, LoaderCircle, Pause, RefreshCw, Volume2 } from 'lucide-react'
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, LoaderCircle, Pause, RefreshCw, Settings2, Volume2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { PlaybackSettingsDialog } from './PlaybackSettingsDialog'
+import type { PlaybackPauseOverrides } from '@/api/playback'
 import type { DocumentDetail, Scene } from '@/api/contracts'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -61,6 +63,9 @@ export function AudiobookPlayer({
   const { t } = useTranslation(['analysis'])
   const { t: tErrors } = useTranslation('errors')
   const [status, setStatus] = useState<PlaybackStatus>('idle')
+  const [pauseSetting, setPauseSetting] = useState<{ documentId: string; value?: PlaybackPauseOverrides }>({ documentId })
+  const [settingsOpen, setSettingsOpen] = useState<string>()
+  const pauseOverrides = pauseSetting.documentId === documentId ? pauseSetting.value : undefined
   const [deliverySetting, setDeliverySetting] = useState({ documentId, value: '' })
   // 作品の切替直後にも前作品の指定を送信しない。
   const narratorStyle = deliverySetting.documentId === documentId ? deliverySetting.value : ''
@@ -301,6 +306,7 @@ export function AudiobookPlayer({
   const startPlayback = useCallback((sceneNumber: number, utteranceIndex = 0, sourceOffset?: number) => {
     if (deliveryTooLong) return
     const requestedNarratorStyle = narratorStyle.trim()
+    const requestedPauseOverrides = pauseOverrides ? { ...pauseOverrides } : undefined
     const previousSocket = wsRef.current
     wsRef.current = null
     previousSocket?.close()
@@ -390,6 +396,7 @@ export function AudiobookPlayer({
       if (wsRef.current !== ws) return
       ws.send(JSON.stringify({
         action: 'start',
+        ...requestedPauseOverrides,
         ...(requestedNarratorStyle ? { narrator_style: requestedNarratorStyle } : {}),
         scene_number: sceneNumber,
         start_utterance_index: utteranceIndex,
@@ -487,7 +494,7 @@ export function AudiobookPlayer({
         failPlayback(t('analysis:player.connectionError'))
       }
     }
-  }, [failPlayback, deliveryTooLong, narratorStyle, documentId, draft, getAudioContext, onPlaybackPositionChange, onPlayingChange, playNextInQueue, stopAudio, t, tErrors])
+  }, [failPlayback, deliveryTooLong, narratorStyle, pauseOverrides, documentId, draft, getAudioContext, onPlaybackPositionChange, onPlayingChange, playNextInQueue, stopAudio, t, tErrors])
 
   const stopPlayback = useCallback(() => {
     const ws = wsRef.current
@@ -511,6 +518,8 @@ export function AudiobookPlayer({
     if (previousDocumentIdRef.current === documentId) return
     previousDocumentIdRef.current = documentId
     setDeliverySetting({ documentId, value: '' })
+    setPauseSetting({ documentId })
+    setSettingsOpen(undefined)
     stopPlayback()
   }, [documentId, stopPlayback])
 
@@ -619,6 +628,7 @@ export function AudiobookPlayer({
             </div>
           )}
 
+          <Button aria-label={t('analysis:playbackSettings.title')} title={t('analysis:playbackSettings.title')} variant="outline" size="icon" onClick={() => setSettingsOpen(documentId)}><Settings2 /></Button>
           {isPlaying ? (
             <Button
               aria-label={t('analysis:player.stopAria')}
@@ -656,6 +666,7 @@ export function AudiobookPlayer({
         </div>
       </div>
 
+      <PlaybackSettingsDialog key={documentId} open={settingsOpen === documentId} overrides={pauseOverrides} onOpenChange={(open) => setSettingsOpen(open ? documentId : undefined)} onConfirm={(value) => { setPauseSetting({ documentId, value }); setSettingsOpen(undefined) }} />
       {deliveryTooLong && (
         <p id="narrator-delivery-error" className="text-xs text-destructive" role="alert">
           {t('analysis:player.narratorDeliveryTooLong')}

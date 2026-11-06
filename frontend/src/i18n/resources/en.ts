@@ -33,6 +33,8 @@ export const en = {
     sections: { theme: 'Theme', synopsis: 'Synopsis', emotionalArc: 'Emotional Arc', turningPoints: 'Turning Points', mainCharacters: 'Main Characters', characters: 'Characters', narrator: 'Narrator' },
     characterManagement: { add: 'Add character', nameInput: 'Character name', invalidName: 'A name is required and must be unique.', delete: 'Remove {{name}} from Characters', deleteTitle: 'Remove this character?', deleteDescription: 'This removes the profile and its emotional arc series for “{{name}}”. Turning point records are kept.', unregistered: 'Script speaker · unregistered', register: 'Add to Characters' },
     voices: {
+      assignedName: 'Voice: {{name}}', unassigned: 'Unassigned', assignedUnavailable: 'Unavailable', nameLoading: 'Loading Voice name…',
+      providerNameHint: 'Voice names are Gemini display_name values. The current Gemini API does not support renaming after creation.',
       generateAll: 'Generate all voices',
       generate: 'Generate',
       play: 'Play',
@@ -52,7 +54,10 @@ export const en = {
       created: 'Voice created.',
       registrySyncPending: 'The voice was created, but the library did not sync. Reload the library; do not create the voice again.',
       actionsMenu: 'Character actions',
-      libraryTitle: 'Created voices',
+      playCandidate: 'Play {{voice}}',
+      previewLoading: 'Preparing preview…',
+      previewPlaying: 'Playing preview',
+      libraryTitle: 'Manage Voices', manageVoices: 'Manage Voices',
       libraryDescription: 'Check expiry and current document usages, assign a voice to another speaker, or delete it.',
       libraryLoading: 'Loading voices…',
       libraryEmpty: 'No created voices.',
@@ -90,6 +95,7 @@ export const en = {
       limitExceeded: 'The voice creation limit was reached. Please delete old voices.',
       creationFailedTitle: 'Unable to create the voice',
       failureReasons: {
+        naming_failed: 'Naming or name checking failed before voice creation. No voice was created.',
         invalid_argument: 'The input or settings were rejected. The specific cause is unknown.',
         credentials: 'API authentication failed.',
         permission_denied: 'Permission to use Voice Design was denied.',
@@ -101,6 +107,7 @@ export const en = {
         unknown: 'The voice could not be created. The specific cause is unknown.',
       },
       failureActions: {
+        naming_failed: 'Check the connection and voice library, then generate again.',
         invalid_argument: 'Review and edit Voice traits, model, and language settings.',
         credentials: 'Check the Gemini API key configuration and validity.',
         permission_denied: 'Check whether the configured API key has access to Voice Design.',
@@ -115,6 +122,7 @@ export const en = {
       missingVoicesTitle: 'Voices are missing',
       missingVoicesBody: 'Please create voices for the following speakers.',
     },
+    playbackSettings: { title: 'Playback settings', nextPlay: 'Applies to the next Play. Settings remain only while this document is open.', loading: 'Loading settings…', loadFailed: 'Unable to load settings. Please reload.', reload: 'Reload settings', invalid: 'Enter values from 0.0 to 60.0 sec in steps of 0.1 seconds.', reset: 'Restore defaults', scene_pause_duration_ms: 'Scene interval', speaker_change_pause_duration_ms: 'Speaker change interval', narrator_sentence_pause_duration_ms: 'Narrator sentence interval' },
     player: {
       narratorDelivery: 'Narrator delivery',
       clearNarratorDelivery: 'Clear',

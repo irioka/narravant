@@ -254,7 +254,8 @@
                 "type": "null"
               }
             ],
-            "description": "Optional display name for the stored voice",
+            "deprecated": true,
+            "description": "Accepted for compatibility; new voices use a server-generated trait-based name",
             "title": "Display Name"
           },
           "language_code": {
@@ -286,6 +287,17 @@
       "CreateVoiceResponse": {
         "description": "Response payload containing created voice assignment details.",
         "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
           "speaker": {
             "title": "Speaker",
             "type": "string"
@@ -1159,6 +1171,47 @@
         "title": "NotApplicableTurningPointSchema",
         "type": "object"
       },
+      "PlaybackSettingsResponse": {
+        "properties": {
+          "max_ms": {
+            "const": 60000,
+            "default": 60000,
+            "title": "Max Ms",
+            "type": "integer"
+          },
+          "min_ms": {
+            "const": 0,
+            "default": 0,
+            "title": "Min Ms",
+            "type": "integer"
+          },
+          "narrator_sentence_pause_duration_ms": {
+            "title": "Narrator Sentence Pause Duration Ms",
+            "type": "integer"
+          },
+          "scene_pause_duration_ms": {
+            "title": "Scene Pause Duration Ms",
+            "type": "integer"
+          },
+          "speaker_change_pause_duration_ms": {
+            "title": "Speaker Change Pause Duration Ms",
+            "type": "integer"
+          },
+          "step_ms": {
+            "const": 100,
+            "default": 100,
+            "title": "Step Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "scene_pause_duration_ms",
+          "speaker_change_pause_duration_ms",
+          "narrator_sentence_pause_duration_ms"
+        ],
+        "title": "PlaybackSettingsResponse",
+        "type": "object"
+      },
       "ReanalysisTaskResultEvent": {
         "description": "Validated emotion-arc draft returned by a completed reanalysis task.",
         "properties": {
@@ -1850,7 +1903,7 @@
   "info": {
     "description": "Intelligent screenplay analysis and narrative arc workbench API",
     "title": "NARRAVANT API",
-    "version": "0.6.1"
+    "version": "0.7.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -3543,6 +3596,97 @@
         "summary": "Get Valence Patterns",
         "tags": [
           "emotion-arc"
+        ]
+      }
+    },
+    "/api/v1/playback/settings": {
+      "get": {
+        "operationId": "get_playback_settings_api_v1_playback_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybackSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Playback Settings",
+        "tags": [
+          "playback"
         ]
       }
     },

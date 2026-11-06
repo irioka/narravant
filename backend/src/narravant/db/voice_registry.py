@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterable
+from contextlib import nullcontext
 
 from narravant.db.database import DatabaseManager
-from narravant.services.voice_models import StoredVoiceRecord, canonical_voice_id
+from narravant.services.voice_models import StoredVoiceRecord, canonical_voice_id, parse_provider_datetime
 
 
 class VoiceRegistryRepository:
@@ -62,17 +64,27 @@ class VoiceRegistryRepository:
                 conflicts.update(str(row["voice_id"]) for row in rows)
         return conflicts
 
-    def upsert(self, record: StoredVoiceRecord) -> None:
+    def upsert(self, record: StoredVoiceRecord, *, connection: sqlite3.Connection | None = None) -> None:
         owner = self._require_owner(record.owner_user_id)
         voice_id = canonical_voice_id(record.voice_id)
-        with self.db.session() as conn:
+        with nullcontext(connection) if connection is not None else self.db.immediate_session() as conn:
+            current = conn.execute(
+                "SELECT last_checked_at FROM voice_registry WHERE owner_user_id = ? AND voice_id = ?",
+                (owner, voice_id),
+            ).fetchone()
+            if current and current[0] and record.last_checked_at:
+                try:
+                    if parse_provider_datetime(current[0]) > parse_provider_datetime(record.last_checked_at):
+                        return
+                except (TypeError, ValueError):
+                    pass
             conn.execute(
                 """
                 INSERT INTO voice_registry (
                     owner_user_id, voice_id, speaker_label, voice_traits, language_code,
                     created_at, created_at_source, registered_at, expire_time,
-                    last_checked_at, availability
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_checked_at, availability, display_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(owner_user_id, voice_id) DO UPDATE SET
                     speaker_label = COALESCE(excluded.speaker_label, voice_registry.speaker_label),
                     voice_traits = COALESCE(excluded.voice_traits, voice_registry.voice_traits),
@@ -84,7 +96,8 @@ class VoiceRegistryRepository:
                     END,
                     expire_time = excluded.expire_time,
                     last_checked_at = excluded.last_checked_at,
-                    availability = excluded.availability
+                    availability = excluded.availability,
+                    display_name = excluded.display_name
                 """,
                 (
                     owner,
@@ -98,13 +111,20 @@ class VoiceRegistryRepository:
                     record.expire_time,
                     record.last_checked_at,
                     record.availability,
+                    record.display_name if record.display_name and record.display_name.strip() else None,
                 ),
             )
+            # Confirmed names are provider metadata, not an independent local alias.
+            # The registry cache now protects concurrent reservations with stale snapshots.
+            conn.execute(
+                "DELETE FROM voice_name_claims WHERE owner_user_id = ? AND voice_id = ? AND state = 'confirmed'",
+                (owner, voice_id),
+            )
 
-    def delete(self, owner_user_id: str, voice_id: str) -> None:
+    def delete(self, owner_user_id: str, voice_id: str, *, connection: sqlite3.Connection | None = None) -> None:
         owner = self._require_owner(owner_user_id)
         canonical_id = canonical_voice_id(voice_id)
-        with self.db.session() as conn:
+        with nullcontext(connection) if connection is not None else self.db.session() as conn:
             conn.execute(
                 "DELETE FROM voice_registry WHERE owner_user_id = ? AND voice_id = ?",
                 (owner, canonical_id),

@@ -72,6 +72,8 @@ def _playback_ws_env(db: DatabaseManager, storage: InMemoryScriptStorageClient, 
         gemini_tts_model="gemini-3.8-flash-tts",
         gemini_safety_threshold="BLOCK_NONE",
         playback_speaker_change_pause_duration_ms=1000,
+        playback_scene_pause_duration_ms=3000,
+        playback_narrator_sentence_pause_duration_ms=0,
         emotion_arc_max_points=36,
         valence_max_arc_distance=1.0,
     )

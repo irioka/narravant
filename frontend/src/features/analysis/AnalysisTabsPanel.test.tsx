@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DocumentDetail } from '@/api/contracts'
 import { createLocaleRuntime, LocaleProvider } from '@/i18n/LocaleProvider'
 import { AnalysisTabsPanel } from './AnalysisTabsPanel'
+import { VoiceLibraryProvider } from './VoiceLibraryProvider'
 
 vi.mock('./EmotionArcChart', () => ({
   EmotionArcChart: () => <div data-testid="emotion-arc-chart" />,
@@ -62,9 +63,9 @@ afterEach(() => cleanup())
 
 function renderPanel() {
   return render(
-    <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+    <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><VoiceLibraryProvider>
       <AnalysisTabsPanel document={mockDocument} onDraftChange={() => undefined} onSelectVersion={() => undefined} titleMode="editable" versions={[{ version_id: 1, created_at: '2026-09-14T00:00:00Z' }]} />
-    </LocaleProvider>,
+    </VoiceLibraryProvider></LocaleProvider>,
   )
 }
 

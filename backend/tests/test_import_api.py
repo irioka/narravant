@@ -228,6 +228,7 @@ async def test_background_import_allows_other_document_requests_before_release(m
     from narravant.api import voices as voice_api
     from narravant.db.voice_registry import VoiceRegistryRepository
     from narravant.services.voice_design import FakeVoiceDesignClient
+    from narravant.services.voice_naming import FakeVoiceNameClient
 
     service, repository, storage, tasks = _service()
     content = _native_bytes()
@@ -279,6 +280,8 @@ async def test_background_import_allows_other_document_requests_before_release(m
         deps.get_narrative_adaptation_service: lambda: service.adapter,
         deps.get_settings: lambda: settings,
         deps.get_voice_design_client: lambda: provider,
+        deps.get_db_manager: lambda: repository.db,
+        deps.get_voice_name_client: lambda: FakeVoiceNameClient(),
         deps.get_voice_management_service: lambda: voice_service,
         deps.get_voice_registry_repo: lambda: VoiceRegistryRepository(repository.db),
     })

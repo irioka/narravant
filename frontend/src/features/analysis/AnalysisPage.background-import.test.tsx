@@ -1,3 +1,4 @@
+import { useVoiceLibrary, VoiceLibraryProvider } from '@/features/analysis/VoiceLibraryProvider'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -8,17 +9,19 @@ import type { DocumentDetail } from '@/api/contracts'
 import { ApiClientError } from '@/api/client'
 import { discardImportDraft, getDocument, getVersions, importDocument, updateDocument } from '@/api/documents'
 import { streamTaskProgress, type TaskStreamCallbacks } from '@/api/tasks'
-import { createVoice } from '@/api/voices'
+import { createVoice, getVoice, listVoices, previewVoice, type VoiceSummary } from '@/api/voices'
+import { getPlaybackSettings } from '@/api/playback'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { LocaleProvider, createLocaleRuntime } from '@/i18n/LocaleProvider'
 import { AnalysisPage } from './AnalysisPage'
 import { ImportSessionProvider } from './ImportSessionProvider'
 vi.mock('@/api/documents', async (original) => ({ ...await original<typeof import('@/api/documents')>(), discardImportDraft: vi.fn(), getDocument: vi.fn(), getVersions: vi.fn(), importDocument: vi.fn(), updateDocument: vi.fn() }))
 vi.mock('@/api/tasks', () => ({ cancelTask: vi.fn(), streamTaskProgress: vi.fn() }))
-vi.mock('@/api/voices', async (original) => ({ ...await original<typeof import('@/api/voices')>(), createVoice: vi.fn() }))
+vi.mock('@/api/voices', async (original) => ({ ...await original<typeof import('@/api/voices')>(), createVoice: vi.fn(), getVoice: vi.fn(), listVoices: vi.fn(), previewVoice: vi.fn() }))
+vi.mock('@/api/playback', async (original) => ({ ...await original<typeof import('@/api/playback')>(), getPlaybackSettings: vi.fn() }))
 vi.mock('./DocumentList', () => ({ DocumentList: ({ onRequestNavigate }: { onRequestNavigate: (id: string) => void }) => <><button onClick={() => onRequestNavigate('A')}>Document A</button><button onClick={() => onRequestNavigate('B')}>Document B</button></> }))
 vi.mock('./AnalysisTabsPanel', () => ({ AnalysisTabsPanel: () => null }))
-vi.mock('@/components/NarravantHeader', () => ({ NarravantHeader: ({ actions }: { actions: ReactNode }) => <TooltipProvider>{actions}</TooltipProvider> }))
+vi.mock('@/components/NarravantHeader', () => ({ NarravantHeader: ({ actions }: { actions: ReactNode }) => { const { openManagement } = useVoiceLibrary(); return <TooltipProvider><button onClick={openManagement}>Manage Voices</button>{actions}</TooltipProvider> } }))
 vi.mock('react-resizable-panels', () => ({ Group: ({ children }: { children: ReactNode }) => <div>{children}</div>, Panel: ({ children }: { children: ReactNode }) => <div>{children}</div>, Separator: () => null }))
 class FakeWebSocket {
   static OPEN = 1
@@ -51,7 +54,7 @@ let callbacks: TaskStreamCallbacks
 function ExternalRoute() { const navigate = useNavigate(); return <button onClick={() => navigate('/analysis/A')}>External route A</button> }
 function setup(path = '/analysis/A') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const view = render(<QueryClientProvider client={client}><LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><MemoryRouter initialEntries={[path]}><ImportSessionProvider><ExternalRoute /><Routes><Route path="/analysis/new" element={<AnalysisPage />} /><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes></ImportSessionProvider></MemoryRouter></LocaleProvider></QueryClientProvider>)
+  const view = render(<QueryClientProvider client={client}><LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><VoiceLibraryProvider><MemoryRouter initialEntries={[path]}><ImportSessionProvider><ExternalRoute /><Routes><Route path="/analysis/new" element={<AnalysisPage />} /><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes></ImportSessionProvider></MemoryRouter></VoiceLibraryProvider></LocaleProvider></QueryClientProvider>)
   return { ...view, client, user: userEvent.setup() }
 }
 beforeEach(() => {
@@ -231,5 +234,50 @@ it.each(['loading', 'error'] as const)('文書%s画面にも同じImportの操�
   await user.click(screen.getByRole('button', { name: '文書の取り込み: 処理中…' }))
   expect(await screen.findByRole('dialog')).toHaveAccessibleName('文書の取り込み')
   expect(importDocument).toHaveBeenCalledTimes(1)
+  client.clear()
+})
+
+
+it('background Import completion preserves management, preview/Assign boundaries and next-Play settings', async () => {
+  const voice: VoiceSummary = { voice_id: 'voice_candidate', display_name: 'Warm Velvet', availability: 'available', expiry_state: 'unknown', speaker_label: null, voice_traits: 'Warm synthetic narrator', created_at: null, created_at_source: 'unknown', expire_time: null, last_checked_at: null, usage_count: 0, language_code: 'en-US' } as VoiceSummary
+  vi.mocked(listVoices).mockResolvedValue({ voices: [voice], complete: true, checked_at: null })
+  vi.mocked(getVoice).mockResolvedValue(voice)
+  vi.mocked(previewVoice).mockResolvedValue(new Uint8Array(2))
+  vi.mocked(getPlaybackSettings).mockResolvedValue({ scene_pause_duration_ms: 1700, speaker_change_pause_duration_ms: 600, narrator_sentence_pause_duration_ms: 800, min_ms: 0, max_ms: 60000, step_ms: 100 })
+  const { container, client, user } = setup('/analysis/B')
+  const editor = await screen.findByRole('textbox', { name: '脚本本文' })
+  await startAndHide(container)
+  await user.click(screen.getByRole('button', { name: 'Manage Voices' }))
+  expect(await screen.findByRole('listitem')).toHaveTextContent('Warm Velvet')
+  await user.click(screen.getByRole('button', { name: '閉じる' }))
+  await user.click(screen.getByRole('button', { name: 'ナレーターを開く' }))
+  await user.click(screen.getByRole('button', { name: 'ナレーターを編集' }))
+  const outer = screen.getByRole('dialog')
+  fireEvent.change(within(outer).getByRole('textbox', { name: 'Narrator チェック用文章' }), { target: { value: 'Latest synthetic check.' } })
+  await user.click(within(outer).getByRole('button', { name: '割り当てる' }))
+  const library = await screen.findByRole('dialog', { name: 'Manage Voices' })
+  await user.click(await within(library).findByRole('button', { name: 'Warm Velvet を試聴' }))
+  expect(previewVoice).toHaveBeenCalledWith('B', { voice_id: voice.voice_id, text: 'Latest synthetic check.' }, fetch, false, expect.any(AbortSignal))
+  await user.click(within(library).getByRole('button', { name: '割り当てる' }))
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Manage Voices' })).not.toBeInTheDocument())
+  await user.click(within(outer).getByRole('button', { name: 'キャンセル' }))
+  expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+  await user.click(screen.getByRole('button', { name: 'ナレーターを編集' }))
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Narrator 生成' }))
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'OK' }))
+  await user.click(screen.getByRole('button', { name: '再生設定' }))
+  fireEvent.change(await screen.findByRole('spinbutton', { name: 'シーン間の間隔 (sec)' }), { target: { value: '1.2' } })
+  await user.click(screen.getByRole('button', { name: 'OK' }))
+  act(() => callbacks.onCompleted?.({ import_draft: pending() }))
+  expect(editor).toHaveValue(doc('B').source_fountain)
+  await user.click(screen.getByRole('button', { name: '再生開始' }))
+  await waitFor(() => expect(FakeWebSocket.instances[0]?.sentMessages.length).toBeGreaterThan(0))
+  const start = JSON.parse(FakeWebSocket.instances[0].sentMessages[0])
+  expect(start.scene_pause_duration_ms).toBe(1200)
+  expect(start.draft.voice_assignments).toEqual([{ speaker: 'Narrator', voice_id: 'voice_synthetic', voice_traits: 'Warm synthetic narrator' }])
+  expect(start.draft.source_fountain).toContain('Synthetic B.')
+  expect(createVoice).toHaveBeenCalledTimes(1)
+  expect(updateDocument).not.toHaveBeenCalled()
+  expect(discardImportDraft).not.toHaveBeenCalled()
   client.clear()
 })

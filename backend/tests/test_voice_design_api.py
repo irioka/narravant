@@ -15,6 +15,7 @@ from narravant.api.dependencies import (
     get_storage_client,
     get_voice_design_client,
     get_voice_management_service,
+    get_voice_name_client,
     get_voice_registry_repo,
 )
 from narravant.db.database import DatabaseManager, DocumentRepository
@@ -22,6 +23,7 @@ from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.main import app
 from narravant.services.voice_design import FakeVoiceDesignClient
 from narravant.services.voice_management import VoiceManagementService
+from narravant.services.voice_naming import FakeVoiceNameClient
 from narravant.storage.gcs import InMemoryScriptStorageClient
 
 
@@ -205,6 +207,7 @@ async def client(fake_voice_client: FakeVoiceDesignClient) -> httpx.AsyncClient:
     async def voice_management_provider():
         return voice_service
 
+    app.dependency_overrides[get_voice_name_client] = lambda: FakeVoiceNameClient("Warm Velvet")
     app.dependency_overrides[get_settings] = settings_provider
     app.dependency_overrides[get_db_manager] = db_provider
     app.dependency_overrides[get_document_repo] = document_repo_provider
@@ -309,7 +312,11 @@ async def test_create_voice_failure_returns_502_and_preserves_document(
     fake_voice_client: FakeVoiceDesignClient,
 ):
     doc_id = "doc-test-123"
-    fake_voice_client.should_fail = True
+    from unittest.mock import AsyncMock
+
+    from narravant.services.voice_design import VoiceDesignError
+
+    fake_voice_client.create_voice = AsyncMock(side_effect=VoiceDesignError("Synthetic creation failure"))
 
     response = await client.post(
         f"/api/v1/documents/{doc_id}/voices",
@@ -935,3 +942,46 @@ async def test_sectioned_import_profile_reaches_mock_http_without_delivery(clien
     assert len(captured) == 1
     assert captured[0]["voice"]["prompted"]["input"] == "An adult actor with a clear light register."
     assert captured[0]["voice"]["language_code"] == "en-US"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/v1/voices", "/api/v1/documents/doc-test-123/voices"])
+@pytest.mark.parametrize("speaker", ["Alice", "Narrator"])
+async def test_legacy_display_name_uses_reserved_ai_name(client, fake_voice_client, path, speaker):
+    response = await client.post(
+        path, json={"speaker": speaker, "voice_traits": "Warm, clear voice", "display_name": "Book ; Alice"}
+    )
+    assert response.status_code == 200
+    result = response.json()
+    provider_voice = await fake_voice_client.get_voice(result["voice_id"])
+    assert result["display_name"] == provider_voice.display_name == "Warm Velvet"
+    assert result["display_name"] != "Book ; Alice"
+
+
+@pytest.mark.asyncio
+async def test_local_rename_endpoint_is_not_exposed(client, fake_voice_client):
+    created = (await client.post("/api/v1/voices", json={"speaker": "Alice", "voice_traits": "Synthetic"})).json()
+    result = await client.patch(f"/api/v1/voices/{created['voice_id']}", json={"display_name": "Local alias"})
+    assert result.status_code == 405
+    assert (await fake_voice_client.get_voice(created["voice_id"])).display_name == created["display_name"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_name", ["Provider canonical name", None])
+async def test_create_response_uses_actual_provider_display_name(client, fake_voice_client, provider_name):
+    from dataclasses import replace
+
+    original_create = fake_voice_client.create_voice
+
+    async def create_with_provider_name(**kwargs):
+        result = await original_create(**kwargs)
+        result = replace(result, display_name=provider_name)
+        fake_voice_client.voices[result.voice_id] = result
+        return result
+
+    fake_voice_client.create_voice = create_with_provider_name
+    result = await client.post("/api/v1/voices", json={"speaker": "Alice", "voice_traits": "Synthetic"})
+    assert result.status_code == 200
+    assert result.json()["display_name"] == provider_name
+    registry = await app.dependency_overrides[get_voice_registry_repo]()
+    assert registry.list(LOCAL_USER_ID)[0].display_name == provider_name

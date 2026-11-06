@@ -1,3 +1,4 @@
+import { VoiceLibraryProvider } from './VoiceLibraryProvider'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -98,7 +99,7 @@ describe('Analysis UI language switching preserves content text verbatim', () =>
 
     // 1. Japanese locale
     const { unmount } = render(
-      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><VoiceLibraryProvider>
         <AnalysisTabsPanel
           document={mockDocument}
           onDraftChange={() => undefined}
@@ -106,7 +107,7 @@ describe('Analysis UI language switching preserves content text verbatim', () =>
           titleMode="editable"
           versions={[{ version_id: 1, created_at: '2026-09-14T00:00:00Z' }]}
         />
-      </LocaleProvider>,
+      </VoiceLibraryProvider></LocaleProvider>,
     )
 
     // Check Japanese tab labels
@@ -131,7 +132,7 @@ describe('Analysis UI language switching preserves content text verbatim', () =>
 
     // 2. English locale
     render(
-      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'en' })}>
+      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'en' })}><VoiceLibraryProvider>
         <AnalysisTabsPanel
           document={mockDocument}
           onDraftChange={() => undefined}
@@ -139,7 +140,7 @@ describe('Analysis UI language switching preserves content text verbatim', () =>
           titleMode="editable"
           versions={[{ version_id: 1, created_at: '2026-09-14T00:00:00Z' }]}
         />
-      </LocaleProvider>,
+      </VoiceLibraryProvider></LocaleProvider>,
     )
 
     // Check English tab labels
@@ -166,13 +167,13 @@ describe('Analysis UI language switching preserves content text verbatim', () =>
 
     // 1. Japanese locale
     const { unmount } = render(
-      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><VoiceLibraryProvider>
         <AnalysisContent
           document={mockDocument}
           titleMode="editable"
           onDraftChange={() => undefined}
         />
-      </LocaleProvider>,
+      </VoiceLibraryProvider></LocaleProvider>,
     )
 
     expect(screen.getByRole('heading', { name: '登場人物' })).toBeInTheDocument()
@@ -185,13 +186,13 @@ describe('Analysis UI language switching preserves content text verbatim', () =>
 
     // 2. English locale
     render(
-      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'en' })}>
+      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'en' })}><VoiceLibraryProvider>
         <AnalysisContent
           document={mockDocument}
           titleMode="editable"
           onDraftChange={() => undefined}
         />
-      </LocaleProvider>,
+      </VoiceLibraryProvider></LocaleProvider>,
     )
 
     expect(screen.getByRole('heading', { name: 'Characters' })).toBeInTheDocument()

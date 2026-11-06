@@ -17,6 +17,7 @@ from narravant.api.dependencies import (
     get_tts_client,
     get_voice_design_client,
     get_voice_management_service,
+    get_voice_naming_service,
     get_voice_registry_repo,
 )
 from narravant.api.errors import ApiError, ApiErrorCode, ApiErrorEnvelope
@@ -29,6 +30,7 @@ from narravant.services.voice_design import VoiceDesignClient, VoiceDesignError
 from narravant.services.voice_design_errors import safe_provider_code, safe_provider_status
 from narravant.services.voice_management import VoiceManagementError, VoiceManagementService
 from narravant.services.voice_models import StoredVoiceRecord, canonical_voice_id, utc_iso
+from narravant.services.voice_naming import VoiceNamingError, VoiceNamingService
 from narravant.services.voice_prompt_guidance import split_voice_traits
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,11 @@ class CreateVoiceRequest(BaseModel):
     speaker: str = Field(min_length=1, description="Speaker name (narrator or character)")
     voice_traits: str = Field(min_length=1, description="Natural language voice description")
     language_code: str = Field(default="ja-JP", description="Language code")
-    display_name: str | None = Field(default=None, description="Optional display name for the stored voice")
+    display_name: str | None = Field(
+        default=None,
+        deprecated=True,
+        description="Accepted for compatibility; new voices use a server-generated trait-based name",
+    )
 
 
 class CreateVoiceResponse(BaseModel):
@@ -54,6 +60,7 @@ class CreateVoiceResponse(BaseModel):
     speaker: str
     voice_id: str
     voice_traits: str
+    display_name: str | None = None
 
 
 class VoicePreviewRequest(BaseModel):
@@ -73,6 +80,8 @@ async def _create_voice(
     owner_user_id: str,
     response: Response,
     owner_lock: asyncio.Lock | None = None,
+    *,
+    naming_service: VoiceNamingService,
 ) -> CreateVoiceResponse:
     """Create a voice without persisting an assignment."""
     design_traits, delivery = split_voice_traits(request.voice_traits)
@@ -80,11 +89,30 @@ async def _create_voice(
     if "language_code" not in request.model_fields_set and delivery and request.voice_traits.startswith("Voice:"):
         language_code = "en-US"
     try:
+        reservation = await naming_service.prepare_voice_name(owner_user_id, design_traits, language_code)
+    except VoiceNamingError as exc:
+        raise ApiError(
+            exc.status_code,
+            ApiErrorCode.VALIDATION_ERROR,
+            "Voice naming failed before voice creation. Retry this operation.",
+            {"operation": "voice_naming", "reason": exc.reason, "creation_started": False, "retryable": True},
+        ) from exc
+
+    def retain_or_release(*, rejected: bool = False) -> None:
+        try:
+            if rejected:
+                naming_service.names.release_rejected(reservation)
+            else:
+                naming_service.names.mark_unknown(reservation)
+        except Exception:
+            logger.warning("Voice name claim result sync pending")
+
+    try:
         created_voice = await voice_client.create_voice(
             speaker=request.speaker,
             voice_traits=design_traits,
             language_code=language_code,
-            display_name=request.display_name,
+            display_name=reservation.display_name,
         )
         try:
             voice_id = canonical_voice_id(created_voice.voice_id)
@@ -93,6 +121,17 @@ async def _create_voice(
         if created_voice.voice_id != voice_id:
             raise VoiceDesignError("Non-canonical voice ID", reason="invalid_response")
     except VoiceDesignError as exc:
+        retain_or_release(
+            rejected=exc.reason
+            in {
+                "invalid_argument",
+                "credentials",
+                "permission_denied",
+                "quota",
+                "configuration",
+                "provider_unavailable",
+            }
+        )
         # 上限と一時障害は既存のHTTPException prefixを維持する。
         # providerの自由文を理由判定へ使わない。
         provider_status = safe_provider_status(exc.provider_status)
@@ -130,7 +169,11 @@ async def _create_voice(
                 "retryable": False,
             },
         ) from exc
+    except asyncio.CancelledError:
+        retain_or_release()
+        raise
     except Exception as exc:
+        retain_or_release()
         logger.warning(
             "operation=voice_design reason=unknown provider_status=None provider_code=UNKNOWN attempt=unknown"
         )
@@ -152,10 +195,13 @@ async def _create_voice(
         expire_time=utc_iso(created_voice.expire_time) if created_voice.expire_time else None,
         last_checked_at=created_at,
         availability="available",
+        display_name=created_voice.display_name,
     )
 
     def persist() -> None:
-        registry.upsert(record)
+        with registry.db.immediate_session() as connection:
+            naming_service.names.confirm(reservation, voice_id, connection=connection)
+            registry.upsert(record, connection=connection)
 
     try:
         if owner_lock is None:
@@ -173,6 +219,7 @@ async def _create_voice(
         speaker=request.speaker,
         voice_id=voice_id,
         voice_traits=request.voice_traits,
+        display_name=created_voice.display_name,
     )
 
 
@@ -228,6 +275,7 @@ async def create_document_voice(
     voice_client: Annotated[VoiceDesignClient, Depends(get_voice_design_client)],
     registry: Annotated[VoiceRegistryRepository, Depends(get_voice_registry_repo)],
     voice_service: Annotated[VoiceManagementService, Depends(get_voice_management_service)],
+    naming_service: Annotated[VoiceNamingService, Depends(get_voice_naming_service)],
     user: Annotated[CurrentUser, Depends(get_current_user)],
     response: Response,
 ) -> CreateVoiceResponse:
@@ -248,6 +296,7 @@ async def create_document_voice(
         user.user_id,
         response,
         voice_service.lock_for_owner(user.user_id),
+        naming_service=naming_service,
     )
 
 
@@ -261,6 +310,7 @@ async def create_draft_voice(
     voice_client: Annotated[VoiceDesignClient, Depends(get_voice_design_client)],
     registry: Annotated[VoiceRegistryRepository, Depends(get_voice_registry_repo)],
     voice_service: Annotated[VoiceManagementService, Depends(get_voice_management_service)],
+    naming_service: Annotated[VoiceNamingService, Depends(get_voice_naming_service)],
     user: Annotated[CurrentUser, Depends(get_current_user)],
     response: Response,
 ) -> CreateVoiceResponse:
@@ -272,6 +322,7 @@ async def create_draft_voice(
         user.user_id,
         response,
         voice_service.lock_for_owner(user.user_id),
+        naming_service=naming_service,
     )
 
 

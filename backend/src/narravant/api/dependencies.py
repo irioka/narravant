@@ -13,6 +13,7 @@ from narravant.db.database import (
     DocumentRepository,
     TaskRepository,
 )
+from narravant.db.voice_names import VoiceNameRepository
 from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.services.ingestion import ImportDraftStore
 from narravant.services.narrative_adaptation import (
@@ -23,6 +24,7 @@ from narravant.services.tasks import TaskManager
 from narravant.services.vertex_analysis import VertexDocumentAnalyzer
 from narravant.services.voice_design import VoiceDesignClient, create_voice_design_client
 from narravant.services.voice_management import VoiceManagementService
+from narravant.services.voice_naming import GeminiVoiceNameClient, VoiceNameClient, VoiceNamingService
 from narravant.storage.gcs import ScriptStorageClient
 
 if TYPE_CHECKING:
@@ -159,6 +161,18 @@ def get_voice_management_service(
         local_owner_id=LOCAL_USER_ID,
         owner_locks=owner_locks,
     )
+
+
+def get_voice_name_client(settings: Annotated[Settings, Depends(get_settings)]) -> VoiceNameClient:
+    return GeminiVoiceNameClient(settings)
+
+
+def get_voice_naming_service(
+    client: Annotated[VoiceNameClient, Depends(get_voice_name_client)],
+    management: Annotated[VoiceManagementService, Depends(get_voice_management_service)],
+    db: Annotated[DatabaseManager, Depends(get_db_manager)],
+) -> VoiceNamingService:
+    return VoiceNamingService(client, management, VoiceNameRepository(db))
 
 
 def get_tts_client(

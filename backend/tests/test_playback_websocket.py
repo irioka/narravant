@@ -204,6 +204,7 @@ def test_setup(fake_tts: FakeTtsClient, monkeypatch: pytest.MonkeyPatch):
         gemini_safety_threshold="BLOCK_NONE",
         playback_scene_pause_duration_ms=1750,
         playback_speaker_change_pause_duration_ms=625,
+        playback_narrator_sentence_pause_duration_ms=0,
         emotion_arc_max_points=36,
         valence_max_arc_distance=1.0,
     )
@@ -329,13 +330,16 @@ async def test_playback_ws_validates_listener_voice_with_primary_voices_before_s
 async def test_playback_ws_uses_configured_narrator_sentence_pause(test_setup, start_index):
     app.state.settings.playback_narrator_sentence_pause_duration_ms = 500
     async with connect_websocket("/api/v1/documents/playback") as ws:
-        await ws.send_json({
-            "action": "start", "start_utterance_index": start_index,
-            "draft": {
-                "source_fountain": "INT. ROOM - DAY #1#\n\n@Narrator\nFirst, then second. Another sentence.\n",
-                "voice_assignments": [{"speaker": "Narrator", "voice_id": "voice_fake_narrator"}],
-            },
-        })
+        await ws.send_json(
+            {
+                "action": "start",
+                "start_utterance_index": start_index,
+                "draft": {
+                    "source_fountain": "INT. ROOM - DAY #1#\n\n@Narrator\nFirst, then second. Another sentence.\n",
+                    "voice_assignments": [{"speaker": "Narrator", "voice_id": "voice_fake_narrator"}],
+                },
+            }
+        )
         events = []
         while True:
             event = await ws.receive_json()
@@ -360,11 +364,9 @@ async def test_playback_ws_accepts_runtime_narrator_sentence_pause(test_setup, p
     if not use_draft:
         storage.read_structured_script = lambda *_: (data, None)
     path = "/api/v1/documents/playback" if use_draft else f"/api/v1/documents/{document_id}/playback"
-    request = {"action": "start", "start_utterance_index": 1,
-               "narrator_sentence_pause_duration_ms": pause_ms}
+    request = {"action": "start", "start_utterance_index": 1, "narrator_sentence_pause_duration_ms": pause_ms}
     if use_draft:
-        request["draft"] = {"source_fountain": data["source_fountain"],
-                            "voice_assignments": data["voice_assignments"]}
+        request["draft"] = {"source_fountain": data["source_fountain"], "voice_assignments": data["voice_assignments"]}
     async with connect_websocket(path) as ws:
         await ws.send_json(request)
         events = []
@@ -381,10 +383,13 @@ async def test_playback_ws_accepts_runtime_narrator_sentence_pause(test_setup, p
 
 
 @pytest.mark.parametrize("value", [-1, 60001, True, 1.5, "1000", {}])
-async def test_playback_ws_rejects_invalid_runtime_pause_before_tts(test_setup, value):
+@pytest.mark.parametrize(
+    "field", ["scene_pause_duration_ms", "speaker_change_pause_duration_ms", "narrator_sentence_pause_duration_ms"]
+)
+async def test_playback_ws_rejects_invalid_runtime_pause_before_tts(test_setup, value, field):
     _, document_id, fake_tts = test_setup
     async with connect_websocket(f"/api/v1/documents/{document_id}/playback") as ws:
-        await ws.send_json({"action": "start", "narrator_sentence_pause_duration_ms": value})
+        await ws.send_json({"action": "start", field: value})
         event = await ws.receive_json()
     assert event["event"] == "error"
     assert event["code"] == "INVALID_PLAYBACK_REQUEST"
@@ -550,6 +555,8 @@ async def test_playback_ws_resolves_deps_without_request_override(
         gemini_tts_model="gemini-3.8-flash-tts",
         gemini_safety_threshold="BLOCK_NONE",
         playback_speaker_change_pause_duration_ms=1000,
+        playback_scene_pause_duration_ms=3000,
+        playback_narrator_sentence_pause_duration_ms=0,
         emotion_arc_max_points=36,
         valence_max_arc_distance=1.0,
     )
@@ -584,3 +591,42 @@ async def test_playback_ws_resolves_deps_without_request_override(
             assert voice_provider.get_call_count == 1
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("use_draft", [False, True])
+async def test_all_runtime_pauses_are_scoped_to_each_start_and_socket(test_setup, monkeypatch, use_draft):
+    from narravant.api import playback
+
+    storage, document_id, _ = test_setup
+    captured = []
+    original = playback.TtsPlaybackCoordinator
+
+    def coordinator(**kwargs):
+        captured.append({name: kwargs[name] for name in playback.PAUSE_FIELDS})
+        return original(**kwargs)
+
+    monkeypatch.setattr(playback, "TtsPlaybackCoordinator", coordinator)
+    app.state.settings.playback_narrator_sentence_pause_duration_ms = 700
+    defaults = {name: getattr(app.state.settings, f"playback_{name}") for name in playback.PAUSE_FIELDS}
+    data, _ = storage.read_structured_script(document_id, 1)
+    start = {"action": "start"}
+    if use_draft:
+        start["draft"] = {"source_fountain": data["source_fountain"], "voice_assignments": data["voice_assignments"]}
+    path = "/api/v1/documents/playback" if use_draft else f"/api/v1/documents/{document_id}/playback"
+
+    async def drain(ws):
+        while (event := await ws.receive_json())["event"] not in {"playback_complete", "error"}:
+            pass
+        assert event["event"] == "playback_complete"
+
+    overrides = dict(zip(playback.PAUSE_FIELDS, (1200, 0, 300), strict=True))
+    async with connect_websocket(path) as a, connect_websocket(path) as b:
+        await a.send_json({**start, **overrides})
+        await b.send_json(start)
+        await asyncio.gather(drain(a), drain(b))
+        assert overrides in captured and defaults in captured
+        await a.send_json({"action": "stop"})
+        await a.send_json({**start, **dict.fromkeys(playback.PAUSE_FIELDS)})
+        await drain(a)
+    assert captured[-1] == defaults
+    assert defaults == {name: getattr(app.state.settings, f"playback_{name}") for name in playback.PAUSE_FIELDS}

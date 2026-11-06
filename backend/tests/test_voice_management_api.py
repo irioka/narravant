@@ -5,10 +5,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from narravant.db.database import DatabaseManager, DocumentRepository
+from narravant.db.voice_names import VoiceNameRepository
 from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.services.voice_design import FakeVoiceDesignClient, VoiceDesignError
 from narravant.services.voice_management import VoiceManagementError, VoiceManagementService
 from narravant.services.voice_models import ProviderVoice, StoredVoiceRecord, VoicePage, utc_iso
+from narravant.services.voice_naming import FakeVoiceNameClient, VoiceNamingService
 from narravant.storage.gcs import InMemoryScriptStorageClient
 
 
@@ -374,12 +376,7 @@ async def test_usage_scan_ignores_voice_assignments_in_noncurrent_versions(manag
 @pytest.mark.asyncio
 async def test_usage_scan_includes_voice_assigned_only_to_listener_reaction(management_setup) -> None:
     db, _, _, storage, _, service = management_setup
-    source_fountain = (
-        "INT. ROOM - DAY #1#\n\n"
-        "[[listener:Guide]]\n"
-        "@Narrator\n"
-        "この先で待って。 |わかった|\n"
-    )
+    source_fountain = "INT. ROOM - DAY #1#\n\n[[listener:Guide]]\n@Narrator\nこの先で待って。 |わかった|\n"
     _add_document(
         db,
         storage,
@@ -653,6 +650,9 @@ async def test_create_voice_registers_expiry_without_changing_public_response(ma
         "owner-a",
         response,
         service.lock_for_owner("owner-a"),
+        naming_service=VoiceNamingService(
+            FakeVoiceNameClient("Warm Velvet"), service, VoiceNameRepository(registry.db)
+        ),
     )
 
     record = registry.get("owner-a", result.voice_id)
@@ -660,6 +660,7 @@ async def test_create_voice_registers_expiry_without_changing_public_response(ma
         "speaker": "Alice",
         "voice_id": result.voice_id,
         "voice_traits": "warm voice",
+        "display_name": "Warm Velvet",
     }
     assert record is not None
     assert record.expire_time == utc_iso(provider.voices[result.voice_id].expire_time)
@@ -681,8 +682,12 @@ async def test_create_voice_registry_failure_returns_pending_without_retrying_or
     _add_document(db, storage, document_id="doc-create-partial", voice_id="voice_existing_1")
     before = documents.get_document("doc-create-partial")
 
-    def fail_upsert(_record: StoredVoiceRecord) -> None:
-        raise OSError("synthetic database failure")
+    original_upsert = registry.upsert
+
+    def fail_upsert(record: StoredVoiceRecord, **kwargs) -> None:
+        if record.voice_id.startswith("voice_fake_"):
+            raise OSError("synthetic database failure")
+        original_upsert(record, **kwargs)
 
     monkeypatch.setattr(registry, "upsert", fail_upsert)
     response = Response()
@@ -693,6 +698,9 @@ async def test_create_voice_registry_failure_returns_pending_without_retrying_or
         "owner-a",
         response,
         service.lock_for_owner("owner-a"),
+        naming_service=VoiceNamingService(
+            FakeVoiceNameClient("Warm Velvet"), service, VoiceNameRepository(registry.db)
+        ),
     )
 
     assert result.voice_id.startswith("voice_fake_")
@@ -731,3 +739,167 @@ async def test_invalid_voice_preview_stops_before_tts(management_setup) -> None:
 
     assert raised.value.code == "VOICE_NOT_FOUND"
     assert tts.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_list_match,expected_state", [(True, "unknown"), (False, "confirmed")])
+async def test_claim_reconciliation_includes_successful_gets(
+    management_setup, monkeypatch, include_list_match, expected_state
+):
+    from unittest.mock import AsyncMock
+
+    db, _, registry, _, provider, service = management_setup
+    names = VoiceNameRepository(db)
+    reservation = names.reserve("owner-a", "Warm Velvet", [])
+    names.mark_unknown(reservation)
+    listed = ProviderVoice(
+        voice_id="voice_list_match",
+        voice_type="prompted",
+        language_code="en-US",
+        expire_time=None,
+        display_name="Warm Velvet",
+    )
+    fetched = ProviderVoice(
+        voice_id="voice_get_match",
+        voice_type="prompted",
+        language_code="en-US",
+        expire_time=None,
+        display_name="Warm Velvet",
+    )
+    provider.voices[fetched.voice_id] = fetched
+    registry.upsert(_stored_record("owner-a", fetched.voice_id))
+    monkeypatch.setattr(
+        provider, "list_voices", AsyncMock(return_value=VoicePage((listed,) if include_list_match else (), None))
+    )
+    snapshot = await service.list_voices("owner-a")
+    assert snapshot.complete
+    with db.session() as conn:
+        claim = conn.execute("SELECT state, voice_id FROM voice_name_claims").fetchone()
+    assert claim["state"] == expected_state
+    assert claim["voice_id"] == (None if include_list_match else fetched.voice_id)
+
+
+@pytest.mark.asyncio
+async def test_claim_release_failure_rolls_back_registry_deletion(management_setup, monkeypatch):
+    db, _, registry, _, provider, service = management_setup
+    names = VoiceNameRepository(db)
+    claim = names.reserve("owner-a", "Warm Velvet", [])
+    voice = await provider.create_voice("Alice", "Synthetic", display_name=claim.display_name)
+    registry.upsert(_stored_record("owner-a", voice.voice_id))
+    names.confirm(claim, voice.voice_id)
+
+    def fail_release(*args, **kwargs):
+        raise OSError("Synthetic release failure")
+
+    monkeypatch.setattr(VoiceNameRepository, "release_confirmed", fail_release)
+    with pytest.raises(VoiceManagementError, match="Gemini"):
+        await service.delete_voice("owner-a", voice.voice_id)
+    assert voice.voice_id not in provider.voices
+    assert registry.get("owner-a", voice.voice_id) is not None
+    with db.session() as conn:
+        assert conn.execute("SELECT state FROM voice_name_claims").fetchone()[0] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_provider_name_replaces_local_alias_and_never_falls_back_to_speaker(management_setup):
+    from dataclasses import replace
+
+    _, _, registry, _, provider, service = management_setup
+    voice_id = "voice_shared_1"
+    cached = replace(_stored_record("owner-a"), display_name="Local alias")
+    registry.upsert(cached)
+    names = VoiceNameRepository(registry.db)
+    alias = names.reserve("owner-a", "Alias claim", [])
+    names.confirm(alias, voice_id)
+    provider.voices = {voice_id: replace(_provider_voice(voice_id), display_name="Gemini voice")}
+
+    assert (await service.list_voices("owner-a")).voices[0].display_name == "Gemini voice"
+    assert registry.get("owner-a", voice_id).display_name == "Gemini voice"
+    assert names.reserve("owner-a", "Alias claim", []).display_name == "Alias claim"
+    provider.voices[voice_id] = replace(provider.voices[voice_id], display_name=None)
+    assert (await service.get_voice("owner-a", voice_id)).display_name is None
+    assert registry.get("owner-a", voice_id).display_name is None
+    provider.voices.clear()
+    missing = await service.get_voice("owner-a", voice_id)
+    assert missing.display_name is None
+    assert missing.availability == "missing"
+
+
+@pytest.mark.asyncio
+async def test_delayed_provider_get_cannot_replace_newer_provider_name(management_setup):
+    import asyncio
+    from dataclasses import replace
+
+    _, documents, registry, storage, provider, service = management_setup
+    voice_id = "voice_shared_1"
+    registry.upsert(_stored_record("owner-a"))
+    provider.voices = {voice_id: replace(_provider_voice(voice_id), display_name="Old Gemini name")}
+    second = VoiceManagementService(provider, registry, documents, storage, local_owner_id="owner-a")
+    original_get = provider.get_voice
+    started, release = asyncio.Event(), asyncio.Event()
+    first = True
+
+    async def delayed_get(requested_id):
+        nonlocal first
+        captured = await original_get(requested_id)
+        if first:
+            first = False
+            started.set()
+            await release.wait()
+        return captured
+
+    provider.get_voice = delayed_get
+    pending = asyncio.create_task(service.get_voice("owner-a", voice_id))
+    await asyncio.wait_for(started.wait(), timeout=3)
+    try:
+        provider.voices[voice_id] = replace(provider.voices[voice_id], display_name="Current Gemini name")
+        assert (await second.get_voice("owner-a", voice_id)).display_name == "Current Gemini name"
+    finally:
+        release.set()
+    assert (await pending).display_name == "Current Gemini name"
+    assert registry.get("owner-a", voice_id).display_name == "Current Gemini name"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["get", "validate"])
+async def test_delayed_not_found_does_not_overwrite_newer_provider_cache(management_setup, operation):
+    import asyncio
+    from dataclasses import replace
+
+    _, documents, registry, storage, provider, service = management_setup
+    voice_id = "voice_shared_1"
+    registry.upsert(_stored_record("owner-a"))
+    provider.voices = {voice_id: replace(_provider_voice(voice_id), display_name="Current provider name")}
+    second = VoiceManagementService(provider, registry, documents, storage, local_owner_id="owner-a")
+    original_get = provider.get_voice
+    started, release = asyncio.Event(), asyncio.Event()
+    first = True
+
+    async def delayed_get(requested_id):
+        nonlocal first
+        if first:
+            first = False
+            started.set()
+            await release.wait()
+            raise VoiceDesignError("Synthetic not found", provider_status=404, provider_code="NOT_FOUND")
+        return await original_get(requested_id)
+
+    provider.get_voice = delayed_get
+    request = (service.get_voice("owner-a", voice_id) if operation == "get"
+               else service.validate_voice_ids("owner-a", [voice_id]))
+    pending = asyncio.create_task(request)
+    await asyncio.wait_for(started.wait(), timeout=3)
+    try:
+        await second.get_voice("owner-a", voice_id)
+    finally:
+        release.set()
+    if operation == "get":
+        result = await pending
+        assert result.availability == "available"
+        assert result.display_name == "Current provider name"
+    else:
+        with pytest.raises(VoiceManagementError):
+            await pending
+    current = registry.get("owner-a", voice_id)
+    assert current.availability == "available"
+    assert current.display_name == "Current provider name"

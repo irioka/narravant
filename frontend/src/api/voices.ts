@@ -29,6 +29,7 @@ export interface CreateVoiceResult {
   speaker: string
   voice_id: string
   voice_traits: string
+  display_name?: string | null
   registry_sync_pending?: boolean
 }
 
@@ -133,10 +134,12 @@ export async function previewVoice(
   input: PreviewVoiceInput,
   fetcher: typeof fetch = fetch,
   draft = false,
+  signal?: AbortSignal,
 ): Promise<Uint8Array> {
   const response = await fetcher(draft ? '/api/v1/voices/preview' : `/api/v1/documents/${documentId}/voices/preview`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'audio/l16, */*' },
+    signal,
     body: JSON.stringify({
       voice_id: input.voice_id,
       text: input.text,

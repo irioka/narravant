@@ -70,7 +70,8 @@ def draft_connection(monkeypatch):
     # Draft playback may read the owner-scoped voice registry, but never a saved
     # document or script object.
     app.state.settings = SimpleNamespace(
-        playback_scene_pause_duration_ms=0, playback_speaker_change_pause_duration_ms=1000
+        playback_scene_pause_duration_ms=0, playback_speaker_change_pause_duration_ms=1000,
+        playback_narrator_sentence_pause_duration_ms=0,
     )
     app.state.db_manager = db
     app.state.storage_client = SimpleNamespace()

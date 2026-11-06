@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronDown, LoaderCircle, RefreshCw, Trash2 } from 'lucide-react'
+import { AlertTriangle, ChevronDown, LoaderCircle, Play, RefreshCw, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
@@ -10,10 +10,23 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { useVoiceLibrary } from './VoiceLibraryProvider'
 import { voiceLibraryKey } from './voice-assignments'
 
+export interface VoiceCandidatePreview {
+  text: string
+  activeVoiceId?: string
+  loadingVoiceId?: string
+  disabled: boolean
+  error?: string
+  play(voice: VoiceSummary): Promise<void>
+  stop(): void
+}
+
 export interface VoiceLibraryDialogProps {
+  preview?: VoiceCandidatePreview
   open: boolean
+  onCloseAutoFocus?: (event: Event) => void
   onOpenChange: (open: boolean) => void
   onSelect?: (voice: VoiceSummary) => boolean | void | Promise<boolean | void>
   onVoicesChange?: (voices: VoiceSummary[]) => void
@@ -51,9 +64,12 @@ function isUsable(voice: VoiceSummary): boolean {
     && voice.expiry_state !== 'stale'
 }
 
-export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChange, onVoiceDeleted, selectedVoiceId, assignedVoiceIds = [] }: VoiceLibraryDialogProps) {
+export function VoiceLibraryDialog({ preview, onCloseAutoFocus, open, onOpenChange, onSelect, onVoicesChange, onVoiceDeleted, selectedVoiceId, assignedVoiceIds = [] }: VoiceLibraryDialogProps) {
   const { t } = useTranslation(['analysis', 'common', 'errors'])
   const { t: tErrors } = useTranslation('errors')
+  const library = useVoiceLibrary()
+  const libraryRef = useRef(library)
+  useEffect(() => { libraryRef.current = library }, [library])
   const [voices, setVoices] = useState<VoiceSummary[]>([])
   const [usagesByVoice, setUsagesByVoice] = useState<Record<string, VoiceUsageList>>({})
   const [loading, setLoading] = useState(false)
@@ -108,12 +124,14 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
 
   const selectVoice = async (voice: VoiceSummary) => {
     if (!onSelect || busyVoiceId) return
+    preview?.stop()
     setBusyVoiceId(voice.voice_id)
     setError('')
     try {
       const current = await getVoice(voice.voice_id)
       updateVoice(current)
-      if (!isUsable(current)) {
+      const shared = libraryRef.current.voicesById[voiceLibraryKey(current.voice_id)]
+      if (!isUsable(current) || libraryRef.current.isDeleted(current.voice_id) || (shared && !isUsable(shared))) {
         setError(t('analysis:voices.voiceCannotBeAssigned'))
         return
       }
@@ -222,6 +240,7 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
   const changeOpen = (nextOpen: boolean) => {
     if (blocked) return
     if (!nextOpen) {
+      preview?.stop()
       refreshGeneration.current += 1
       setCheckedIds(new Set())
       setDeleteTargets([])
@@ -239,7 +258,7 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
   }
 
   const assignedVoiceIdSet = new Set(assignedVoiceIds.map(voiceLibraryKey))
-  const sortedVoices = [...voices].sort((left, right) => {
+  const sortedVoices = voices.map((voice) => library.voicesById[voiceLibraryKey(voice.voice_id)] ?? voice).sort((left, right) => {
     const leftAssigned = assignedVoiceIdSet.has(voiceLibraryKey(left.voice_id))
     const rightAssigned = assignedVoiceIdSet.has(voiceLibraryKey(right.voice_id))
     if (leftAssigned !== rightAssigned) return leftAssigned ? -1 : 1
@@ -264,11 +283,13 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
 
   return <>
     <Dialog onOpenChange={changeOpen} open={open}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus} className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t('analysis:voices.libraryTitle')}</DialogTitle>
           <DialogDescription>{t('analysis:voices.libraryDescription')}</DialogDescription>
         </DialogHeader>
+        {!onSelect && <p className="text-xs text-muted-foreground">{t('analysis:voices.providerNameHint')}</p>}
+        {preview?.error && <p role="alert" className="text-sm text-destructive">{preview.error}</p>}
         {error && <p className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-sm text-destructive" role="alert">{error}</p>}
         {loading && voices.length === 0 && <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status"><LoaderCircle className="size-4 animate-spin" />{t('analysis:voices.libraryLoading')}</p>}
         {!loading && voices.length === 0 && !error && <p className="text-sm text-muted-foreground">{t('analysis:voices.libraryEmpty')}</p>}
@@ -292,8 +313,8 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
               <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3">
                 <div className="min-w-0 space-y-1">
                   <div className="flex items-start gap-2">
-                    <input aria-label={t('analysis:voices.selectVoice', { voice: voice.display_name || voice.speaker_label || voice.voice_id })} checked={checkedIds.has(voice.voice_id)} className="mt-1 size-4 shrink-0" disabled={blocked} onChange={() => toggleChecked(voice.voice_id)} type="checkbox" />
-                    <h3 className="break-words font-medium">{voice.display_name || voice.speaker_label || voice.voice_id}</h3>
+                    <input aria-label={t('analysis:voices.selectVoice', { voice: voice.display_name || voice.voice_id })} checked={checkedIds.has(voice.voice_id)} className="mt-1 size-4 shrink-0" disabled={blocked} onChange={() => toggleChecked(voice.voice_id)} type="checkbox" />
+                    <h3 className="break-words font-medium">{voice.display_name || voice.voice_id}</h3>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="min-w-0 break-all font-mono text-xs text-muted-foreground">{voice.voice_id}</p>
@@ -301,6 +322,7 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
                     <Badge variant={voice.availability === 'available' ? 'outline' : 'destructive'}>{t(`analysis:voices.availability.${availabilityKey}`)}</Badge>
                     <Badge variant={voice.expiry_state === 'expired' ? 'destructive' : 'outline'}>{t(`analysis:voices.expiry.${expiryKey}`)}</Badge>
                   </div>
+                  {preview && (preview.loadingVoiceId === voice.voice_id || preview.activeVoiceId === voice.voice_id) && <p role="status">{t(preview.loadingVoiceId === voice.voice_id ? 'analysis:voices.previewLoading' : 'analysis:voices.previewPlaying')}</p>}
                   {voice.voice_traits && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{voice.voice_traits}</p>}
                   <p className="text-xs text-muted-foreground">{createdAt && <>
                     <span>{t('analysis:voices.createdAt', { date: createdAt })}</span>
@@ -316,6 +338,7 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
                   </Button>
                 </div>
                 <div className="flex shrink-0 items-start justify-end gap-1">
+                  {onSelect && preview && <Button aria-label={t('analysis:voices.playCandidate', { voice: voice.display_name || voice.voice_id })} disabled={blocked || preview.disabled || !preview.text.trim() || !isUsable(voice) || preview.loadingVoiceId === voice.voice_id || preview.activeVoiceId === voice.voice_id} onClick={() => { void preview.play(voice) }} size="sm" variant="outline">{preview.loadingVoiceId === voice.voice_id ? <LoaderCircle className="animate-spin" /> : <Play />}{t('analysis:voices.play')}</Button>}
                   {onSelect && <Button disabled={blocked || !isUsable(voice)} onClick={() => { void selectVoice(voice) }} size="sm" variant="default">
                     {busyVoiceId === voice.voice_id ? <LoaderCircle className="animate-spin" /> : null}{t('analysis:voices.useVoice')}
                   </Button>}
@@ -345,7 +368,7 @@ export function VoiceLibraryDialog({ open, onOpenChange, onSelect, onVoicesChang
           <AlertDialogDescription>
             {t('analysis:voices.deleteSelectedDescription', { count: deleteTargets.length })}
             {deleteTargets.map(({ voice, usages }) => <span className="mt-2 block" key={voice.voice_id}>
-              <span className="block font-medium">{voice.display_name || voice.speaker_label || voice.voice_id}</span>
+              <span className="block font-medium">{voice.display_name || voice.voice_id}</span>
               {usages.usages.length === 0
                 ? <span className="block">{t('analysis:voices.noUsages')}</span>
                 : usages.usages.map((usage) => <span className="block" key={`${usage.document_id}-${usage.speaker}`}>{usage.title} ; {usage.speaker}</span>)}

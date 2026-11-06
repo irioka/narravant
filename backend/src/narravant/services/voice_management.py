@@ -13,6 +13,7 @@ from narravant.api.voice_schemas import (
     VoiceUsageResponse,
 )
 from narravant.db.database import DocumentRepository
+from narravant.db.voice_names import VoiceNameRepository
 from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.services.voice_design import VoiceDesignClient, VoiceDesignError
 from narravant.services.voice_models import (
@@ -22,6 +23,7 @@ from narravant.services.voice_models import (
     VoiceExpiryState,
     VoicePage,
     canonical_voice_id,
+    parse_provider_datetime,
     utc_iso,
 )
 from narravant.storage.gcs import ScriptStorageClient
@@ -77,6 +79,7 @@ class VoiceManagementService:
     async def list_voices(self, owner_user_id: str) -> VoiceListResponse:
         self._require_local_owner(owner_user_id)
         async with self._lock(owner_user_id):
+            checked_at = utc_iso()
             provider_voices = await self._list_all_provider_voices()
             usages, usages_complete = self._scan_usages(owner_user_id)
             existing = {record.voice_id: record for record in self.registry.list(owner_user_id)}
@@ -92,7 +95,6 @@ class VoiceManagementService:
 
             # A complete page traversal is required before applying any sync
             # result. Known list entries can now safely refresh local metadata.
-            checked_at = utc_iso()
             refreshed: dict[str, StoredVoiceRecord] = {}
             display_names = {voice_id: voice.display_name for voice_id, voice in provider_voices.items()}
             for voice_id, provider_voice in provider_voices.items():
@@ -134,6 +136,18 @@ class VoiceManagementService:
                         display_name=display_names.get(voice_id),
                     )
                 )
+            if complete:
+                confirmed_provider = {
+                    **provider_voices,
+                    **{
+                        voice_id: outcome
+                        for voice_id, outcome in outcomes.items()
+                        if isinstance(outcome, ProviderVoice)
+                    },
+                }
+                VoiceNameRepository(self.registry.db).reconcile(
+                    owner_user_id, [(voice_id, voice.display_name) for voice_id, voice in confirmed_provider.items()]
+                )
             return VoiceListResponse(voices=summaries, checked_at=checked_at, complete=complete)
 
     async def get_voice(self, owner_user_id: str, voice_id: str) -> VoiceSummary:
@@ -141,6 +155,7 @@ class VoiceManagementService:
         canonical_id = self._canonical_id(voice_id)
         self._reject_foreign_voice_id(owner_user_id, canonical_id)
         async with self._lock(owner_user_id):
+            checked_at = utc_iso()
             record = self.registry.get(owner_user_id, canonical_id)
             usages: list[VoiceUsage] = []
             if record is None:
@@ -154,7 +169,6 @@ class VoiceManagementService:
                 )
             except VoiceDesignError as exc:
                 if self._is_not_found(exc):
-                    checked_at = utc_iso()
                     if record is None:
                         record = self._unknown_record(owner_user_id, canonical_id, checked_at)
                     record = self._with_availability(record, "missing", checked_at)
@@ -166,7 +180,6 @@ class VoiceManagementService:
 
             if self._canonical_id(provider_voice.voice_id) != canonical_id:
                 raise self._unavailable()
-            checked_at = utc_iso()
             record = self._record_from_provider(
                 owner_user_id,
                 provider_voice,
@@ -214,7 +227,11 @@ class VoiceManagementService:
                 # DELETE is never retried: its remote result may be unknown.
                 raise self._unavailable() from exc
             try:
-                self.registry.delete(owner_user_id, canonical_id)
+                with self.registry.db.immediate_session() as connection:
+                    self.registry.delete(owner_user_id, canonical_id, connection=connection)
+                    VoiceNameRepository(self.registry.db).release_confirmed(
+                        owner_user_id, canonical_id, connection=connection
+                    )
             except Exception as exc:
                 logger.warning("Voice registry delete sync failed exception_type=%s", type(exc).__name__)
                 raise VoiceManagementError(
@@ -257,6 +274,7 @@ class VoiceManagementService:
             if unowned or (not usages_complete and set(canonical_ids) - set(records)):
                 raise self._not_found()
 
+            checked_at = utc_iso()
             outcomes = await self._get_many(canonical_ids)
             for voice_id in canonical_ids:
                 record = records.get(voice_id)
@@ -264,7 +282,6 @@ class VoiceManagementService:
                 if isinstance(outcome, ProviderVoice):
                     if self._canonical_id(outcome.voice_id) != voice_id:
                         raise self._unavailable()
-                    checked_at = utc_iso()
                     voice_usages = usages_by_voice.get(voice_id, [])
                     updated = self._record_from_provider(
                         owner_user_id,
@@ -281,7 +298,6 @@ class VoiceManagementService:
                             "声の有効期限が切れています。別の声を割り当ててください。",
                         )
                 elif isinstance(outcome, Exception) and self._is_not_found(outcome):
-                    checked_at = utc_iso()
                     updated = self._with_availability(
                         record or self._unknown_record(owner_user_id, voice_id, checked_at),
                         "missing",
@@ -500,6 +516,7 @@ class VoiceManagementService:
         return StoredVoiceRecord(
             owner_user_id=owner_user_id,
             voice_id=canonical_id,
+            display_name=provider_voice.display_name,
             speaker_label=(existing.speaker_label if existing else None) or speaker_label,
             voice_traits=existing.voice_traits if existing else None,
             language_code=provider_voice.language_code or (existing.language_code if existing else None),
@@ -547,9 +564,19 @@ class VoiceManagementService:
         *,
         display_name: str | None = None,
     ) -> VoiceSummary:
+        latest = self.registry.get(record.owner_user_id, record.voice_id)
+        if latest and record.last_checked_at and latest.last_checked_at:
+            try:
+                if parse_provider_datetime(latest.last_checked_at) > parse_provider_datetime(record.last_checked_at):
+                    record = latest
+                    display_name = latest.display_name
+            except (TypeError, ValueError):
+                pass
         return VoiceSummary(
             voice_id=record.voice_id,
-            display_name=display_name,
+            display_name=(
+                display_name if display_name and display_name.strip() and record.availability == "available" else None
+            ),
             speaker_label=record.speaker_label,
             voice_traits=record.voice_traits,
             language_code=record.language_code,

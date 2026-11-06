@@ -3,7 +3,7 @@
  * Do not edit manually.
  * NARRAVANT API
  * Intelligent screenplay analysis and narrative arc workbench API
- * OpenAPI spec version: 0.6.1
+ * OpenAPI spec version: 0.7.0
  */
 import * as zod from 'zod';
 
@@ -863,13 +863,14 @@ export const createDocumentVoiceApiV1DocumentsDocumentIdVoicesPostBodyLanguageCo
 
 
 export const CreateDocumentVoiceApiV1DocumentsDocumentIdVoicesPostBody = zod.object({
-  "display_name": zod.union([zod.string(),zod.null()]).optional().describe('Optional display name for the stored voice'),
+  "display_name": zod.union([zod.string(),zod.null()]).optional().describe('Accepted for compatibility; new voices use a server-generated trait-based name'),
   "language_code": zod.string().default(createDocumentVoiceApiV1DocumentsDocumentIdVoicesPostBodyLanguageCodeDefault).describe('Language code'),
   "speaker": zod.string().min(1).describe('Speaker name (narrator or character)'),
   "voice_traits": zod.string().min(1).describe('Natural language voice description')
 }).describe('Request payload to create a new voice persona.')
 
 export const CreateDocumentVoiceApiV1DocumentsDocumentIdVoicesPostResponse = zod.object({
+  "display_name": zod.union([zod.string(),zod.null()]).optional(),
   "speaker": zod.string(),
   "voice_id": zod.string(),
   "voice_traits": zod.string()
@@ -915,6 +916,23 @@ export const GetValencePatternsApiV1EmotionArcPatternsGetResponse = zod.object({
   "pattern_id": zod.string()
 }).describe('One configured valence-arc pattern safe to expose to the UI.'))
 }).describe('Configured Valence pattern catalogue in its canonical config order.')
+
+
+/**
+ * @summary Get Playback Settings
+ */
+export const getPlaybackSettingsApiV1PlaybackSettingsGetResponseMaxMsDefault = 60000;
+export const getPlaybackSettingsApiV1PlaybackSettingsGetResponseMinMsDefault = 0;
+export const getPlaybackSettingsApiV1PlaybackSettingsGetResponseStepMsDefault = 100;
+
+export const GetPlaybackSettingsApiV1PlaybackSettingsGetResponse = zod.object({
+  "max_ms": zod.literal(60000).default(getPlaybackSettingsApiV1PlaybackSettingsGetResponseMaxMsDefault).meta({ title: 'Max Ms' }),
+  "min_ms": zod.literal(0).default(getPlaybackSettingsApiV1PlaybackSettingsGetResponseMinMsDefault).meta({ title: 'Min Ms' }),
+  "narrator_sentence_pause_duration_ms": zod.int(),
+  "scene_pause_duration_ms": zod.int(),
+  "speaker_change_pause_duration_ms": zod.int(),
+  "step_ms": zod.literal(100).default(getPlaybackSettingsApiV1PlaybackSettingsGetResponseStepMsDefault).meta({ title: 'Step Ms' })
+})
 
 
 /**
@@ -986,13 +1004,14 @@ export const createDraftVoiceApiV1VoicesPostBodyLanguageCodeDefault = `ja-JP`;
 
 
 export const CreateDraftVoiceApiV1VoicesPostBody = zod.object({
-  "display_name": zod.union([zod.string(),zod.null()]).optional().describe('Optional display name for the stored voice'),
+  "display_name": zod.union([zod.string(),zod.null()]).optional().describe('Accepted for compatibility; new voices use a server-generated trait-based name'),
   "language_code": zod.string().default(createDraftVoiceApiV1VoicesPostBodyLanguageCodeDefault).describe('Language code'),
   "speaker": zod.string().min(1).describe('Speaker name (narrator or character)'),
   "voice_traits": zod.string().min(1).describe('Natural language voice description')
 }).describe('Request payload to create a new voice persona.')
 
 export const CreateDraftVoiceApiV1VoicesPostResponse = zod.object({
+  "display_name": zod.union([zod.string(),zod.null()]).optional(),
   "speaker": zod.string(),
   "voice_id": zod.string(),
   "voice_traits": zod.string()

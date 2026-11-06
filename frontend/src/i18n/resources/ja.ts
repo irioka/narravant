@@ -22,6 +22,8 @@ export const ja = {
     sections: { theme: 'テーマ', synopsis: 'あらすじ', emotionalArc: '感情アーク', turningPoints: '転換点', mainCharacters: '主要人物', characters: '登場人物', narrator: 'ナレーター' },
     characterManagement: { add: 'キャラクターを追加', nameInput: 'キャラクター名', invalidName: '空の名前や登録済みの名前は使えません。', delete: '{{name}} を Characters から削除', deleteTitle: 'キャラクターを削除しますか？', deleteDescription: '「{{name}}」のプロフィールと感情アーク系列を削除します。転換点の記録は保持されます。', unregistered: '本文の話者・未登録', register: 'Add to Characters' },
     voices: {
+      assignedName: 'Voice: {{name}}', unassigned: '未割当', assignedUnavailable: '利用不可', nameLoading: 'Voice名を取得中…',
+      providerNameHint: 'Voice名はGeminiのdisplay_nameです。現在のGemini APIでは作成後に変更できません。',
       generateAll: '全話者の声を生成',
       generate: '生成',
       play: '再生',
@@ -41,7 +43,10 @@ export const ja = {
       created: '声を作成しました。',
       registrySyncPending: '声は作成されましたが、ライブラリへの同期に失敗しました。再生成せず、ライブラリを再読み込みしてください。',
       actionsMenu: '話者の操作メニュー',
-      libraryTitle: '作成済みの声',
+      playCandidate: '{{voice}} を試聴',
+      previewLoading: '試聴を準備中…',
+      previewPlaying: '試聴中',
+      libraryTitle: 'Manage Voices', manageVoices: '声を管理',
       libraryDescription: '声の期限と利用先を確認し、別の話者へ割り当てたり削除したりできます。',
       libraryLoading: '声の一覧を読み込んでいます…',
       libraryEmpty: '作成済みの声はありません。',
@@ -79,6 +84,7 @@ export const ja = {
       limitExceeded: '作成できる声の上限に達しました。不要な古い声を削除してください。',
       creationFailedTitle: '声を作成できませんでした',
       failureReasons: {
+        naming_failed: 'Voice作成前の命名・名称確認に失敗しました。Voiceは作成されていません。',
         invalid_argument: '入力または設定が拒否されました。詳細な原因は不明です。',
         credentials: 'APIの認証に失敗しました。',
         permission_denied: 'Voice Designを利用する権限がありません。',
@@ -90,6 +96,7 @@ export const ja = {
         unknown: '声を作成できませんでした。詳細な原因は不明です。',
       },
       failureActions: {
+        naming_failed: '接続と一覧を確認してから、もう一度生成してください。',
         invalid_argument: 'Voice traits・モデル・言語の設定を確認して修正してください。',
         credentials: 'Gemini APIキーの設定と有効性を確認してください。',
         permission_denied: '設定したAPIキーでVoice Designを利用できるか確認してください。',
@@ -104,6 +111,7 @@ export const ja = {
       missingVoicesTitle: '声が作成されていません',
       missingVoicesBody: '次の話者の声を作成してください。',
     },
+    playbackSettings: { title: '再生設定', nextPlay: '次回の再生から適用します。設定はこの文書を表示している間だけ保持されます。', loading: '設定を取得中…', loadFailed: '設定を取得できませんでした。再取得してください。', reload: '再取得', invalid: '0.0〜60.0 sec の範囲で0.1秒単位の値を入力してください。', reset: '既定値に戻す', scene_pause_duration_ms: 'シーン間の間隔', speaker_change_pause_duration_ms: '話者交代の間隔', narrator_sentence_pause_duration_ms: 'ナレーション文間の間隔' },
     player: {
       narratorDelivery: 'ナレーターの語り口',
       clearNarratorDelivery: 'クリア',

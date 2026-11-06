@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-Version: **0.6.1** — see [CHANGELOG.md](CHANGELOG.md).
+Version: **0.7.0** — see [CHANGELOG.md](CHANGELOG.md).
 
 NARRAVANT is a lightweight, local-first application that uses AI to turn novels and screenplays into [Fountain](https://fountain.io/) audiobook scripts with **narration, character dialogue, and acting directions**, then reads them aloud with Gemini TTS.
 
@@ -34,6 +34,8 @@ https://github.com/user-attachments/assets/857be910-ec02-4969-8bbf-928e0b68de57
 - **Lightweight local setup** — One Gemini Developer API key, a local Python service, and a browser UI. SQLite stores your work locally.
 - **Story analysis** — Generate and keep a synopsis, five turning points, and an emotional arc from the uploaded work.
 - **Voice design** — Ground character voice traits in the original novel or screenplay, retaining age impressions, timbre and accent even when introductions are omitted from the generated script. Edit voice qualities and default delivery separately in English or Japanese, create a voice with Gemini, and assign it per speaker. Gemini retains stateful custom voices for one year after their last use; using a voice for TTS resets this period ([Google's guide](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation)).
+- **Reusable voices** — Open Manage Voices from the title bar to inspect your voice library. Preview candidates with the current Check text before assigning them. New voices receive trait-based names that take existing names into account, and character editors show the assigned Gemini Voice name.
+- **Playback intervals** — Adjust scene, speaker-change, and narrator-sentence pauses for the next Play. These settings last only while the document stays open.
 - **Real-time playback** — Synthesize each utterance in script order with Gemini TTS and stream it over WebSocket. Generated audio is not stored; playback is regenerated each time.
 - **Local-first storage** — Scripts, voice traits, voice assignments, and analysis are saved in a local database. Export and re-import via Native JSON.
 - **Bilingual UI** — Switch the interface between English and Japanese.
@@ -94,7 +96,7 @@ To run each process separately, use `make dev-backend` (FastAPI on port 8000) an
 
 1. **Import** a novel or screenplay (`.txt`, `.pdf`, `.fountain`, `.fdx`, or Native JSON). You can close progress and work on another document while Import runs. Return through the Import icon and choose **Open result** when ready. NARRAVANT confirms before replacing unsaved edits or stopping playback.
 2. **Review the analysis** — synopsis, five turning points, and the emotional arc. Edit and save as needed.
-3. **Design voices** — write voice traits for the narrator and each character, generate voices with Gemini, and assign them per speaker.
+3. **Design or reuse voices** — write voice traits for the narrator and each character, generate voices with Gemini, or preview and assign an existing voice. Use Manage Voices in the title bar to inspect the library.
 4. **Play** — once all speakers have voices, start real-time playback from the current paragraph using the current script and voice assignments, even before Save. The editor highlights and auto-scrolls to the spoken text.
 5. **Export / import** via Native JSON to move a work between local databases.
 

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { base64ToUint8Array, pcm16ToAudioBuffer } from './audio-decoder'
+import { describe, expect, it, vi } from 'vitest'
+import { base64ToUint8Array, pcm16ToAudioBuffer, playPcm16 } from './audio-decoder'
 
 describe('audio-decoder', () => {
   it('converts base64 to Uint8Array', () => {
@@ -35,4 +35,24 @@ describe('audio-decoder', () => {
     expect(mockChannelData[0]).toBe(0)
     expect(mockChannelData[1]).toBeCloseTo(1.0, 4)
   })
+})
+
+
+it('aborts immediately during delayed resume and never starts late audio', async () => {
+  let finishResume!: () => void
+  const source = { connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn() }
+  const context = {
+    state: 'suspended',
+    resume: vi.fn(() => new Promise<void>((resolve) => { finishResume = resolve })),
+    close: vi.fn().mockResolvedValue(undefined),
+    createBuffer: vi.fn(() => ({ getChannelData: () => new Float32Array(1) })),
+    createBufferSource: vi.fn(() => source),
+  }
+  const controller = new AbortController()
+  const playing = playPcm16(new Uint8Array(2), 24000, () => context as unknown as AudioContext, controller.signal)
+  controller.abort()
+  finishResume()
+  await playing
+  expect(source.start).not.toHaveBeenCalled()
+  expect(context.close).toHaveBeenCalled()
 })

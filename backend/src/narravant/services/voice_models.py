@@ -76,3 +76,4 @@ class StoredVoiceRecord:
     expire_time: str | None
     last_checked_at: str | None
     availability: VoiceAvailability
+    display_name: str | None = None

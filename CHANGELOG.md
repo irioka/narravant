@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.7.0] - 2026-11-06
+
+### Added
+
+- Open Manage Voices from the title bar, including before selecting a document, and preview assignment candidates with the current Check text.
+- Name new voices from their permanent traits while giving the naming model existing Voice names to avoid. Keep a final reservation check across concurrent creations. Use the Gemini-returned display name when showing created voices.
+- Adjust scene, speaker-change, and narrator-sentence intervals for the next Play. Defaults come from the server; overrides last only while the document is open.
+- Show assigned Voice names or an unassigned label beside character names and in character editors, including immediately after Generate or Assign. Show a loading indicator while names are being retrieved.
+
+### Changed
+
+- Center the application title and version, place language controls between the title and Manage Voices, and localize the management tooltip.
+- Use Gemini display names as the source of truth. Show names read-only in Manage Voices and identify unnamed voices by ID.
+- Accept legacy voice-creation `display_name` input for compatibility, while using the server-generated name for new voices. Creation responses optionally include the final `display_name`; existing voices are not renamed.
+- Do not automatically repeat voice creation when the previous creation result is unknown.
+
 ## [0.6.1] - 2026-11-05
 
 ### Security

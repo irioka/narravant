@@ -20,3 +20,9 @@ describe('voiceCreationFailure', () => {
     expect(voiceCreationFailure(new ApiClientError(status, code, 'private'), 'A').reason).toBe(reason)
   })
 })
+
+
+it('distinguishes safe precreation naming failures from unknown creation results', () => {
+  const error = new ApiClientError(503, 'VALIDATION_ERROR', 'Synthetic failure', { operation: 'voice_naming', reason: 'name_check_failed', creation_started: false, retryable: true })
+  expect(voiceCreationFailure(error, 'Alice')).toEqual({ speaker: 'Alice', reason: 'naming_failed' })
+})

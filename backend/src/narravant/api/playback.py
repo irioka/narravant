@@ -7,17 +7,21 @@ import base64
 import json
 import logging
 from contextlib import aclosing, suppress
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from narravant.api.dependencies import (
     LOCAL_USER_DISPLAY_NAME,
     LOCAL_USER_EMAIL,
     LOCAL_USER_ID,
+    CurrentUser,
+    get_current_user,
+    get_settings,
 )
 from narravant.api.schemas import VoiceAssignmentSchema
+from narravant.core.settings import Settings
 from narravant.db.database import DocumentRepository
 from narravant.db.voice_registry import VoiceRegistryRepository
 from narravant.services.playback import (
@@ -34,7 +38,26 @@ from narravant.services.voice_management import VoiceManagementError, VoiceManag
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/documents", tags=["playback"])
+router = APIRouter(prefix="/api/v1", tags=["playback"])
+
+PAUSE_FIELDS = ("scene_pause_duration_ms", "speaker_change_pause_duration_ms", "narrator_sentence_pause_duration_ms")
+
+
+class PlaybackSettingsResponse(BaseModel):
+    scene_pause_duration_ms: int
+    speaker_change_pause_duration_ms: int
+    narrator_sentence_pause_duration_ms: int
+    min_ms: Literal[0] = 0
+    max_ms: Literal[60000] = 60000
+    step_ms: Literal[100] = 100
+
+
+@router.get("/playback/settings", response_model=PlaybackSettingsResponse)
+def get_playback_settings(
+    settings: Annotated[Settings, Depends(get_settings)],
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+) -> PlaybackSettingsResponse:
+    return PlaybackSettingsResponse(**{name: getattr(settings, f"playback_{name}") for name in PAUSE_FIELDS})
 
 
 class DraftPlaybackRequest(BaseModel):
@@ -54,12 +77,21 @@ class PlaybackStartRequest(BaseModel):
     start_utterance_index: int = Field(default=0, ge=0, strict=True)
     draft: DraftPlaybackRequest | None = None
     narrator_style: str | None = Field(default=None, max_length=500, strict=True)
+    scene_pause_duration_ms: int | None = Field(default=None, ge=0, le=60000, strict=True)
+    speaker_change_pause_duration_ms: int | None = Field(default=None, ge=0, le=60000, strict=True)
     narrator_sentence_pause_duration_ms: int | None = Field(default=None, ge=0, le=60000, strict=True)
 
     @field_validator("narrator_style")
     @classmethod
     def normalize_narrator_style(cls, value: str | None) -> str | None:
         return value.strip() or None if value is not None else None
+
+
+def resolve_playback_pauses(request: PlaybackStartRequest, settings: Settings) -> dict[str, int]:
+    return {
+        name: value if (value := getattr(request, name)) is not None else getattr(settings, f"playback_{name}")
+        for name in PAUSE_FIELDS
+    }
 
 
 def _build_tts_client(settings):
@@ -93,8 +125,8 @@ def _build_voice_management_service(websocket: WebSocket, settings) -> VoiceMana
     )
 
 
-@router.websocket("/playback")
-@router.websocket("/{document_id}/playback")
+@router.websocket("/documents/playback")
+@router.websocket("/documents/{document_id}/playback")
 async def document_playback_websocket(
     websocket: WebSocket,
     document_id: str | None = None,
@@ -154,7 +186,7 @@ async def document_playback_websocket(
         start_utterance_index: int,
         draft: DraftPlaybackRequest | None,
         narrator_style: str | None,
-        narrator_sentence_pause_duration_ms: int | None,
+        pauses: dict[str, int],
     ) -> None:
         nonlocal coordinator
         try:
@@ -190,16 +222,7 @@ async def document_playback_websocket(
                     allow_current_assignment=draft is None,
                 )
 
-            coordinator = TtsPlaybackCoordinator(
-                tts_client=tts_client,
-                scene_pause_duration_ms=getattr(settings, "playback_scene_pause_duration_ms", 3000),
-                speaker_change_pause_duration_ms=settings.playback_speaker_change_pause_duration_ms,
-                narrator_sentence_pause_duration_ms=(
-                    narrator_sentence_pause_duration_ms
-                    if narrator_sentence_pause_duration_ms is not None
-                    else getattr(settings, "playback_narrator_sentence_pause_duration_ms", 0)
-                ),
-            )
+            coordinator = TtsPlaybackCoordinator(tts_client=tts_client, **pauses)
             events = buffer_window.stream(coordinator.run_stream(plan.utterances))
             async with aclosing(events):
                 async for ev in events:
@@ -263,7 +286,8 @@ async def document_playback_websocket(
                     elif ev_type == "error":
                         logger.warning(
                             "Playback failed reason=tts_stream_error scene_number=%s utterance_index=%s",
-                            ev["scene_number"], ev["utterance_index"],
+                            ev["scene_number"],
+                            ev["utterance_index"],
                         )
                         await websocket.send_json(
                             {
@@ -276,7 +300,8 @@ async def document_playback_websocket(
                     elif ev_type == "playback_complete":
                         logger.info(
                             "Playback stream completed pending_buffers=%d buffered_seconds=%.3f",
-                            buffer_window.pending_count, buffer_window.pending_seconds,
+                            buffer_window.pending_count,
+                            buffer_window.pending_seconds,
                         )
                         await websocket.send_json(
                             {
@@ -347,7 +372,8 @@ async def document_playback_websocket(
                     continue
                 logger.info(
                     "Playback started buffer_window=%d buffer_seconds=%d",
-                    buffer_window.max_items, PLAYBACK_BUFFER_SECONDS,
+                    buffer_window.max_items,
+                    PLAYBACK_BUFFER_SECONDS,
                 )
                 active_task = asyncio.create_task(
                     _execute_playback(
@@ -355,7 +381,7 @@ async def document_playback_websocket(
                         request.start_utterance_index,
                         request.draft,
                         request.narrator_style,
-                        request.narrator_sentence_pause_duration_ms,
+                        resolve_playback_pauses(request, settings),
                     )
                 )
 

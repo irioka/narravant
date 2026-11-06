@@ -310,7 +310,11 @@ async def test_narrator_sentence_pause_is_configurable_without_changing_comma_or
     pauses = [e["duration_ms"] for e in events if e["type"] == "utterance_pause"]
     assert pauses == ([duration_ms, duration_ms] if duration_ms else []) + [1000]
     assert [text for text, _ in fake_tts.synthesized_utterances] == [
-        "風が吹き、扉が開いた。", "『誰だろう。』", "次の文です。", "こんにちは。", "元気？"
+        "風が吹き、扉が開いた。",
+        "『誰だろう。』",
+        "次の文です。",
+        "こんにちは。",
+        "元気？",
     ]
     assert events[0]["type"] == "utterance_start"
     resumed = [e async for e in coordinator.run_stream(utterances[1:2])]
@@ -319,12 +323,12 @@ async def test_narrator_sentence_pause_is_configurable_without_changing_comma_or
 
 @pytest.mark.asyncio
 async def test_multi_sentence_heading_has_only_one_scene_pause_after_its_end(fake_tts):
-    heading = PlannedUtterance(
-        1, 0, "Narrator", "narrator", "第一部。夜の観測所。", "voice-n", is_scene_heading=True
-    )
+    heading = PlannedUtterance(1, 0, "Narrator", "narrator", "第一部。夜の観測所。", "voice-n", is_scene_heading=True)
     body = PlannedUtterance(1, 1, "Narrator", "narrator", "星が光った。", "voice-n")
     coordinator = TtsPlaybackCoordinator(
-        fake_tts, scene_pause_duration_ms=1750, speaker_change_pause_duration_ms=625,
+        fake_tts,
+        scene_pause_duration_ms=1750,
+        speaker_change_pause_duration_ms=625,
         narrator_sentence_pause_duration_ms=500,
     )
     events = [e async for e in coordinator.run_stream([heading, body])]
@@ -350,15 +354,21 @@ async def test_narrator_long_sentence_splits_do_not_add_sentence_pause(fake_tts)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("speaker", ["Narrator", "MAYA"])
 async def test_heading_has_scene_pause_before_and_after_but_no_speaker_pause(fake_tts, speaker):
-    plan = build_playback_plan({
-        "source_fountain": f"INT. ROOM - DAY #1#\n\n@MAYA\nFirst.\n\nEXT. GARDEN - NIGHT #2#\n\n@{speaker}\nNext.\n",
-        "voice_assignments": [
-            {"speaker": "Narrator", "voice_id": "voice-n"},
-            {"speaker": "MAYA", "voice_id": "voice-m"},
-        ],
-    })
+    plan = build_playback_plan(
+        {
+            "source_fountain": (
+                f"INT. ROOM - DAY #1#\n\n@MAYA\nFirst.\n\nEXT. GARDEN - NIGHT #2#\n\n@{speaker}\nNext.\n"
+            ),
+            "voice_assignments": [
+                {"speaker": "Narrator", "voice_id": "voice-n"},
+                {"speaker": "MAYA", "voice_id": "voice-m"},
+            ],
+        }
+    )
     coordinator = TtsPlaybackCoordinator(
-        fake_tts, scene_pause_duration_ms=1750, speaker_change_pause_duration_ms=625,
+        fake_tts,
+        scene_pause_duration_ms=1750,
+        speaker_change_pause_duration_ms=625,
         narrator_sentence_pause_duration_ms=500,
     )
     events = [e async for e in coordinator.run_stream(plan.utterances)]
@@ -541,3 +551,33 @@ async def test_first_tts_audio_wait_is_logged_without_text_or_voice(fake_tts, ca
     assert "PRIVATE_SPEAKER" not in caplog.text
     assert "Synthetic private" not in caplog.text
     assert "voice_fake_private" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_all_positive_pause_overrides_keep_the_same_boundaries_and_counts():
+    utterances = [
+        PlannedUtterance(1, 0, "Narrator", "narrator", "Scene one.", "voice-n", is_scene_heading=True),
+        PlannedUtterance(1, 1, "Narrator", "narrator", "First, then second. Another sentence.", "voice-n"),
+        PlannedUtterance(1, 2, "Alice", "character", "Hello. Again.", "voice-a"),
+        PlannedUtterance(2, 0, "Narrator", "narrator", "Scene two.", "voice-n", is_scene_heading=True),
+        PlannedUtterance(2, 1, "Narrator", "narrator", "Last sentence.", "voice-n"),
+    ]
+
+    async def run(values):
+        coordinator = TtsPlaybackCoordinator(FakeTtsClient(), **values)
+        return [event async for event in coordinator.run_stream(utterances)]
+
+    fields = ("scene_pause_duration_ms", "speaker_change_pause_duration_ms", "narrator_sentence_pause_duration_ms")
+    first = await run(dict(zip(fields, (3000, 1000, 1000), strict=True)))
+    second = await run(dict(zip(fields, (1200, 400, 300), strict=True)))
+
+    def pauses(events):
+        return [(i, event) for i, event in enumerate(events) if event["type"] in {"scene_pause", "utterance_pause"}]
+
+    a, b = pauses(first), pauses(second)
+    assert len(a) == len(b) == 5
+    assert [(i, {key: value for key, value in event.items() if key != "duration_ms"}) for i, event in a] == [
+        (i, {key: value for key, value in event.items() if key != "duration_ms"}) for i, event in b
+    ]
+    assert [event["duration_ms"] for _, event in a] == [3000, 1000, 1000, 3000, 3000]
+    assert [event["duration_ms"] for _, event in b] == [1200, 300, 400, 1200, 1200]

@@ -40,32 +40,46 @@ export function pcm16ToAudioBuffer(
   return audioBuffer
 }
 
-/**
- * Play a single raw 16-bit PCM (24kHz, mono) buffer through an AudioContext and
- * resolve when playback ends. Creates (and returns) the AudioContext so callers
- * can reuse or close it; in non-audio environments (tests) it resolves immediately.
- */
+/** Play PCM, releasing the source and context on completion, abort, or failure. */
 export async function playPcm16(
   pcm: Uint8Array,
   sampleRate = 24000,
   createContext: () => AudioContext | null = defaultAudioContext,
+  signal?: AbortSignal,
 ): Promise<void> {
   const context = createContext()
   if (!context) return
-  if (context.state === 'suspended') {
-    await context.resume()
-  }
-  const buffer = pcm16ToAudioBuffer([pcm], context, sampleRate)
-  await new Promise<void>((resolve) => {
-    const source = context.createBufferSource()
+  let source: AudioBufferSourceNode | undefined
+  let finish!: () => void
+  const aborted = new Promise<void>((resolve) => { finish = resolve })
+  const stop = () => finish()
+  signal?.addEventListener('abort', stop, { once: true })
+  try {
+    if (signal?.aborted) return
+    if (context.state === 'suspended') {
+      await Promise.race([context.resume(), aborted])
+      if (signal?.aborted) return
+    }
+    const buffer = pcm16ToAudioBuffer([pcm], context, sampleRate)
+    source = context.createBufferSource()
     source.buffer = buffer
     source.connect(context.destination)
-    source.onended = () => resolve()
+    source.onended = finish
+    if (signal?.aborted) return
     source.start(0)
-  })
+    await aborted
+  } finally {
+    signal?.removeEventListener('abort', stop)
+    if (source) {
+      source.onended = null
+      try { source.stop() } catch { /* The source may already have ended. */ }
+      source.disconnect()
+    }
+    if (context.state !== 'closed') await context.close()
+  }
 }
 
-function defaultAudioContext(): AudioContext | null {
+export function defaultAudioContext(): AudioContext | null {
   const AudioCtx =
     window.AudioContext ||
     (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext

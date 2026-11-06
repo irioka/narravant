@@ -2,12 +2,16 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { getPlaybackSettings } from '@/api/playback'
 import type { Scene } from '@/api/contracts'
 import { createLocaleRuntime, LocaleProvider } from '@/i18n/LocaleProvider'
 import { AudiobookPlayer } from './AudiobookPlayer'
 import * as audioDecoder from './audio-decoder'
 
+vi.mock('@/api/playback', async (original) => ({ ...await original<typeof import('@/api/playback')>(), getPlaybackSettings: vi.fn() }))
+
 class MockWebSocket {
+  static autoOpen = true
   static CONNECTING = 0
   static OPEN = 1
   static CLOSING = 2
@@ -25,7 +29,7 @@ class MockWebSocket {
   constructor(url: string) {
     this.url = url
     MockWebSocket.instances.push(this)
-    setTimeout(() => {
+    if (MockWebSocket.autoOpen) setTimeout(() => {
       this.onopen?.()
     }, 0)
   }
@@ -309,6 +313,8 @@ describe('AudiobookPlayer', () => {
 
   beforeEach(() => {
     MockWebSocket.instances = []
+    MockWebSocket.autoOpen = true
+    vi.mocked(getPlaybackSettings).mockReset().mockResolvedValue({ scene_pause_duration_ms: 1700, speaker_change_pause_duration_ms: 600, narrator_sentence_pause_duration_ms: 800, min_ms: 0, max_ms: 60000, step_ms: 100 })
     MockAudioContext.instances = []
     MockAudioContext.starts = []
     MockAudioContext.startedBufferLengths = []
@@ -974,4 +980,48 @@ describe('AudiobookPlayer', () => {
       wait_ms: 20000, release_ms: 0, callback_lag_ms: 0, decode_ms: 0,
     }))
   })
+
+  it.each([false, true])('snapshots all pauses at click, keeps edits for next Play, resets on document switch (draft=%s)', async (useDraft) => {
+    MockWebSocket.autoOpen = false
+    const props = { documentId: 'pause-doc', isPlaying: false, onPlayingChange: vi.fn(), scenes, ...(useDraft ? { draft: { source_fountain: 'INT. ROOM - DAY #1#\n\n@Narrator\nSynthetic.\n', voice_assignments: [] } } : {}) }
+    const view = renderPlayer(props)
+    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
+    const field = await screen.findByRole('spinbutton', { name: 'シーン間の間隔 (sec)' })
+    fireEvent.change(field, { target: { value: '1.2' } })
+    fireEvent.change(screen.getByRole('spinbutton', { name: '話者交代の間隔 (sec)' }), { target: { value: '0' } })
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    const first = MockWebSocket.instances[0]
+    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
+    fireEvent.change(await screen.findByRole('spinbutton', { name: 'シーン間の間隔 (sec)' }), { target: { value: '2.4' } })
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    expect(first.sentMessages).toHaveLength(0)
+    act(() => first.onopen?.())
+    expect(JSON.parse(first.sentMessages[0])).toMatchObject({ scene_pause_duration_ms: 1200, speaker_change_pause_duration_ms: 0, narrator_sentence_pause_duration_ms: 800 })
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    act(() => MockWebSocket.instances[1].onopen?.())
+    expect(JSON.parse(MockWebSocket.instances[1].sentMessages[0]).scene_pause_duration_ms).toBe(2400)
+    view.rerender(<LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><AudiobookPlayer {...props} documentId="next-pause-doc" /></LocaleProvider>)
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    act(() => MockWebSocket.instances[2].onopen?.())
+    const next = JSON.parse(MockWebSocket.instances[2].sentMessages[0])
+    expect(next).not.toHaveProperty('scene_pause_duration_ms')
+    expect(next).not.toHaveProperty('speaker_change_pause_duration_ms')
+    expect(next).not.toHaveProperty('narrator_sentence_pause_duration_ms')
+  })
+
+  it('allows legacy Play without overrides after settings fetch fails', async () => {
+    vi.mocked(getPlaybackSettings).mockRejectedValueOnce(new Error('Synthetic failure'))
+    renderPlayer({ documentId: 'fetch-failure-doc', isPlaying: false, onPlayingChange: vi.fn(), scenes })
+    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }))
+    fireEvent.click(screen.getByRole('button', { name: '再生開始' }))
+    await waitFor(() => expect(MockWebSocket.instances[0].sentMessages).toHaveLength(1))
+    const start = JSON.parse(MockWebSocket.instances[0].sentMessages[0])
+    expect(start).not.toHaveProperty('scene_pause_duration_ms')
+    expect(start).not.toHaveProperty('speaker_change_pause_duration_ms')
+    expect(start).not.toHaveProperty('narrator_sentence_pause_duration_ms')
+  })
+
 })

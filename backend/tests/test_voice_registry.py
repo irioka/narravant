@@ -124,6 +124,7 @@ def test_registry_adds_to_existing_database_without_changing_document_versions(d
         "expire_time",
         "last_checked_at",
         "availability",
+        "display_name",
     }
     assert primary_key == ("owner_user_id", "voice_id")
 
@@ -141,10 +142,76 @@ def test_registry_persists_after_database_manager_restart(tmp_path) -> None:
     first_manager = DatabaseManager(db_path)
     first_manager.init_schema()
     DocumentRepository(first_manager).ensure_user("owner-a", "a@example.test", "A")
-    record = _record("owner-a")
+    from dataclasses import replace
+
+    record = replace(_record("owner-a"), display_name="Warm Velvet")
     VoiceRegistryRepository(first_manager).upsert(record)
 
     restarted_manager = DatabaseManager(db_path)
     restarted_manager.init_schema()
 
     assert VoiceRegistryRepository(restarted_manager).get("owner-a", "voice_shared_1") == record
+
+
+def test_registry_name_cache_tracks_provider_without_preserving_a_local_alias(database):
+    from dataclasses import replace
+
+    registry = VoiceRegistryRepository(database)
+    base = _record("owner-a")
+    registry.upsert(replace(base, display_name="Old local alias"))
+    for value, expected in [
+        ("Gemini display name", "Gemini display name"), (None, None), ("", None),
+        ("   ", None), ("  Provider spacing  ", "  Provider spacing  "),
+    ]:
+        registry.upsert(replace(base, display_name=value))
+        assert registry.get("owner-a", base.voice_id).display_name == expected
+
+
+def test_migrates_only_exact_legacy_registry_schema(tmp_path):
+    db = DatabaseManager(str(tmp_path / "legacy.sqlite3"))
+    db.init_schema()
+    with db.session() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(voice_registry)")}
+        if "display_name" in columns:
+            conn.execute("ALTER TABLE voice_registry DROP COLUMN display_name")
+        conn.execute("INSERT INTO users VALUES ('owner-a', 'a@example.test', 'A', 'time', 'time')")
+    with db.session() as conn:
+        conn.execute(
+            "INSERT INTO documents "
+            "(document_id, owner_user_id, title, current_version_id, version_id, created_at, updated_at) "
+            "VALUES ('legacy-document', 'owner-a', 'Synthetic', 1, 1, 'time', 'time')"
+        )
+        conn.execute(
+            "INSERT INTO document_versions "
+            "(document_id, version_id, gcs_uri, gcs_generation, payload_sha256, title, is_saved, created_at) "
+            "VALUES ('legacy-document', 1, 'file://synthetic', 7, 'synthetic-hash', 'Synthetic', 1, 'time')"
+        )
+    registry = VoiceRegistryRepository(db)
+    from dataclasses import asdict
+
+    legacy = {key: value for key, value in asdict(_record("owner-a")).items() if key != "display_name"}
+    with db.session() as conn:
+        conn.execute(
+            f"INSERT INTO voice_registry ({', '.join(legacy)}) VALUES ({', '.join('?' for _ in legacy)})",
+            tuple(legacy.values()),
+        )
+    db.init_schema()
+    db.init_schema()
+    with db.session() as conn:
+        assert "display_name" in {row["name"] for row in conn.execute("PRAGMA table_info(voice_registry)")}
+    assert registry.get("owner-a", "voice_shared_1").display_name is None
+    with db.session() as conn:
+        assert tuple(
+            conn.execute(
+                "SELECT current_version_id, version_id FROM documents WHERE document_id='legacy-document'"
+            ).fetchone()
+        ) == (1, 1)
+        assert tuple(
+            conn.execute(
+                "SELECT payload_sha256, gcs_generation FROM document_versions WHERE document_id='legacy-document'"
+            ).fetchone()
+        ) == ("synthetic-hash", 7)
+    with db.session() as conn:
+        conn.execute("ALTER TABLE voice_registry ADD COLUMN unexpected TEXT")
+    with pytest.raises(RuntimeError, match="voice_registry schema is stale"):
+        db.init_schema()

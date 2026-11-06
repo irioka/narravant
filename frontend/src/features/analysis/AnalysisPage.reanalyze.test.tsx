@@ -1,3 +1,4 @@
+import { VoiceLibraryProvider } from '@/features/analysis/VoiceLibraryProvider'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
@@ -82,7 +83,7 @@ describe('AnalysisPage の未保存本文 Reanalyze', () => {
     vi.mocked(getDocument).mockImplementation(async (id) => id === 'next-document'
       ? new Promise<DocumentDetail>((resolve) => { resolveNext = resolve })
       : baseDocument)
-    render(<QueryClientProvider client={client}><LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><MemoryRouter initialEntries={['/analysis/synthetic-document']}><ImportSessionProvider><Routes><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes></ImportSessionProvider></MemoryRouter></LocaleProvider></QueryClientProvider>)
+    render(<QueryClientProvider client={client}><LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><VoiceLibraryProvider><MemoryRouter initialEntries={['/analysis/synthetic-document']}><ImportSessionProvider><Routes><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes></ImportSessionProvider></MemoryRouter></VoiceLibraryProvider></LocaleProvider></QueryClientProvider>)
     await screen.findByRole('textbox', { name: '脚本本文' })
     const list = screen.getByTestId('document-list')
     list.scrollTop = 420
@@ -118,11 +119,11 @@ describe('AnalysisPage の未保存本文 Reanalyze', () => {
 
     render(
       <QueryClientProvider client={client}>
-        <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+        <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><VoiceLibraryProvider>
           <MemoryRouter initialEntries={['/analysis/synthetic-document']}>
             <ImportSessionProvider><Routes><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes></ImportSessionProvider>
           </MemoryRouter>
-        </LocaleProvider>
+        </VoiceLibraryProvider></LocaleProvider>
       </QueryClientProvider>,
     )
 

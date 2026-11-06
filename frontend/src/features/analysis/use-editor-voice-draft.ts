@@ -5,10 +5,11 @@ import { toast } from 'sonner'
 import { ApiClientError } from '@/api/client'
 import { createVoice, deleteVoice, VOICE_LIMIT_EXCEEDED, type VoiceSummary } from '@/api/voices'
 import { upsertVoiceAssignment, voiceLibraryKey, type VoiceAssignment } from './voice-assignments'
+import { useVoiceLibrary } from './VoiceLibraryProvider'
 import { voiceCreationFailure, type VoiceCreationFailure } from './voice-creation-errors'
 
 /** 編集中の割当と、このダイアログで生成した声の所有権を別々に保持する。 */
-export function useEditorVoiceDraft({ assignments, documentId, documentTitle, isDraft, onCreationFailed, onLimitExceeded, onDeleted }: {
+export function useEditorVoiceDraft({ assignments, documentId, isDraft, onCreationFailed, onLimitExceeded, onDeleted }: {
   assignments: VoiceAssignment[]
   documentId: string
   documentTitle: string
@@ -18,6 +19,7 @@ export function useEditorVoiceDraft({ assignments, documentId, documentTitle, is
   onDeleted: (voiceId: string) => void
 }) {
   const { t } = useTranslation('analysis')
+  const { rememberCreatedVoice } = useVoiceLibrary()
   const [pending, setPending] = useState<VoiceAssignment>()
   const pendingRef = useRef<VoiceAssignment | undefined>(undefined)
   const generated = useRef<VoiceAssignment | undefined>(undefined)
@@ -74,13 +76,15 @@ export function useEditorVoiceDraft({ assignments, documentId, documentTitle, is
     await deleteGenerated()
     setGenerating(true)
     try {
-      const input = { speaker, voice_traits: traits, display_name: `${documentTitle} ; ${speaker}` }
+      const input = { speaker, voice_traits: traits }
       const result = isDraft
         ? await createVoice(documentId, input, undefined, true)
         : await createVoice(documentId, input)
+      rememberCreatedVoice(result)
+      const assignment = { speaker: result.speaker, voice_id: result.voice_id, voice_traits: result.voice_traits }
       if (result.registry_sync_pending) toast.warning(t('voices.registrySyncPending'))
-      if (result.voice_id && !protectedIds.current.has(voiceLibraryKey(result.voice_id))) generated.current = result
-      updatePending(result)
+      if (result.voice_id && !protectedIds.current.has(voiceLibraryKey(result.voice_id))) generated.current = assignment
+      updatePending(assignment)
     } catch (cause) {
       if (cause instanceof ApiClientError && cause.code === VOICE_LIMIT_EXCEEDED) onLimitExceeded()
       else onCreationFailed(voiceCreationFailure(cause, speaker))
@@ -120,6 +124,6 @@ export function useEditorVoiceDraft({ assignments, documentId, documentTitle, is
 
   return {
     assignments: pending ? upsertVoiceAssignment(assignments, pending) : assignments,
-    generate, assign, cancel, save, forgetDeleted, error, generating, busy: busy || cancelling, cancelling,
+    pending, generate, assign, cancel, save, forgetDeleted, error, generating, busy: busy || cancelling, cancelling,
   }
 }

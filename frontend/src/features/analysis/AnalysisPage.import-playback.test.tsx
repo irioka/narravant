@@ -1,3 +1,4 @@
+import { VoiceLibraryProvider } from '@/features/analysis/VoiceLibraryProvider'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
@@ -65,11 +66,11 @@ it('Import失敗のdialogに対象場面・停止理由・リトライ回数を�
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const { container } = render(
     <QueryClientProvider client={client}>
-      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><VoiceLibraryProvider>
         <MemoryRouter initialEntries={['/analysis/new']}>
           <ImportSessionProvider><Routes><Route path="/analysis/new" element={<AnalysisPage />} /></Routes></ImportSessionProvider>
         </MemoryRouter>
-      </LocaleProvider>
+      </VoiceLibraryProvider></LocaleProvider>
     </QueryClientProvider>,
   )
   fireEvent.change(container.querySelector('input[type="file"]')!, {
@@ -115,11 +116,11 @@ it('途中再生の選択とスクロールは元原稿の再開位置に一致�
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const { container } = render(
     <QueryClientProvider client={client}>
-      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><VoiceLibraryProvider>
         <MemoryRouter initialEntries={['/analysis/new']}>
           <ImportSessionProvider><Routes><Route path="/analysis/new" element={<AnalysisPage />} /></Routes></ImportSessionProvider>
         </MemoryRouter>
-      </LocaleProvider>
+      </VoiceLibraryProvider></LocaleProvider>
     </QueryClientProvider>,
   )
   fireEvent.change(container.querySelector('input[type="file"]')!, {
@@ -211,11 +212,11 @@ it.each([
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const { container } = render(
     <QueryClientProvider client={client}>
-      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+      <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><VoiceLibraryProvider>
         <MemoryRouter initialEntries={[route]}>
           <ImportSessionProvider><Routes><Route path="/analysis/new" element={<AnalysisPage />} /><Route path="/analysis/:documentId" element={<AnalysisPage />} /></Routes></ImportSessionProvider>
         </MemoryRouter>
-      </LocaleProvider>
+      </VoiceLibraryProvider></LocaleProvider>
     </QueryClientProvider>,
   )
   if (!savedDocument) fireEvent.change(container.querySelector('input[type="file"]')!, {

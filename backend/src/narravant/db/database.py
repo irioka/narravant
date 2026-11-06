@@ -75,7 +75,19 @@ CREATE TABLE IF NOT EXISTS voice_registry (
     expire_time TEXT,
     last_checked_at TEXT,
     availability TEXT NOT NULL CHECK (availability IN ('available', 'missing', 'unknown')),
+    display_name TEXT,
     PRIMARY KEY (owner_user_id, voice_id)
+);
+
+CREATE TABLE IF NOT EXISTS voice_name_claims (
+    owner_user_id TEXT NOT NULL REFERENCES users(user_id),
+    name_key TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    attempt_id TEXT NOT NULL UNIQUE,
+    voice_id TEXT,
+    state TEXT NOT NULL CHECK (state IN ('reserved', 'confirmed', 'unknown')),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (owner_user_id, name_key)
 );
 
 -- Documents metadata table
@@ -267,6 +279,7 @@ class DatabaseManager:
                 "expire_time",
                 "last_checked_at",
                 "availability",
+                "display_name",
             }
             registry_primary_key = tuple(
                 row["name"] for row in sorted(registry_info, key=lambda item: item["pk"]) if row["pk"]
@@ -275,14 +288,45 @@ class DatabaseManager:
                 (row["from"], row["table"], row["to"])
                 for row in conn.execute("PRAGMA foreign_key_list(voice_registry)")
             }
+            expected_registry_fk = {("owner_user_id", "users", "user_id")}
+            if (
+                registry_columns == required_registry_columns - {"display_name"}
+                and registry_primary_key == ("owner_user_id", "voice_id")
+                and registry_foreign_keys == expected_registry_fk
+            ):
+                conn.execute("ALTER TABLE voice_registry ADD COLUMN display_name TEXT")
+                registry_columns = {row["name"] for row in conn.execute("PRAGMA table_info(voice_registry)")}
             if (
                 registry_columns != required_registry_columns
                 or registry_primary_key != ("owner_user_id", "voice_id")
-                or ("owner_user_id", "users", "user_id") not in registry_foreign_keys
+                or registry_foreign_keys != expected_registry_fk
             ):
                 raise RuntimeError(
                     "SQLite voice_registry schema is stale; recreate development data from the current v1 schema."
                 )
+            claim_info = list(conn.execute("PRAGMA table_info(voice_name_claims)"))
+            claim_pk = tuple(row["name"] for row in sorted(claim_info, key=lambda row: row["pk"]) if row["pk"])
+            claim_fk = {
+                (row["from"], row["table"], row["to"])
+                for row in conn.execute("PRAGMA foreign_key_list(voice_name_claims)")
+            }
+            claim_unique = {
+                tuple(row["name"] for row in conn.execute(f"PRAGMA index_info('{index['name']}')"))
+                for index in conn.execute("PRAGMA index_list(voice_name_claims)")
+                if index["unique"]
+            }
+            claim_sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'voice_name_claims'").fetchone()["sql"]
+            normalized_claim_sql = "".join(claim_sql.lower().split())
+            if (
+                {row["name"] for row in claim_info}
+                != {"owner_user_id", "name_key", "display_name", "attempt_id", "voice_id", "state", "created_at"}
+                or claim_pk != ("owner_user_id", "name_key")
+                or claim_fk != {("owner_user_id", "users", "user_id")}
+                or ("attempt_id",) not in claim_unique
+                or "check(statein('reserved','confirmed','unknown'))" not in normalized_claim_sql
+                or any(not row["notnull"] for row in claim_info if row["name"] != "voice_id")
+            ):
+                raise RuntimeError("SQLite voice_name_claims schema is stale.")
 
 
 def now_utc_iso() -> str:

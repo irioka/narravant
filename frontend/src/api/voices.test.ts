@@ -83,6 +83,7 @@ describe('voice library API', () => {
     usage_count: 1,
   }
 
+
   it('一覧・詳細・利用先を取得し、Delete は一度だけ送る', async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ voices: [voice], checked_at: null, complete: true }), { status: 200 }))

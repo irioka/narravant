@@ -1,3 +1,4 @@
+import { useVoiceLibrary, VoiceLibraryProvider } from '@/features/analysis/VoiceLibraryProvider'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -18,6 +19,7 @@ vi.mock('@/api/voices', () => ({
 
 const activeVoice: VoiceSummary = {
   voice_id: 'voice_saved_1',
+  display_name: 'Alice',
   speaker_label: 'Alice',
   voice_traits: 'warm and clear',
   language_code: 'ja-JP',
@@ -32,9 +34,9 @@ const activeVoice: VoiceSummary = {
 
 function renderDialog(props: Partial<ComponentProps<typeof VoiceLibraryDialog>> = {}) {
   return render(
-    <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}>
+    <LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'ja' })}><VoiceLibraryProvider>
       <VoiceLibraryDialog open onOpenChange={() => undefined} {...props} />
-    </LocaleProvider>,
+    </VoiceLibraryProvider></LocaleProvider>,
   )
 }
 
@@ -143,7 +145,7 @@ describe('VoiceLibraryDialog', () => {
 
   it('全選択した声と利用先をまとめて確認し、キャンセルでは削除しない', async () => {
     const user = userEvent.setup()
-    const second = { ...activeVoice, voice_id: 'voice_saved_2', speaker_label: 'Bob' }
+    const second = { ...activeVoice, voice_id: 'voice_saved_2', speaker_label: 'Bob', display_name: 'Bob' }
     vi.mocked(listVoices).mockResolvedValue({ voices: [activeVoice, second], checked_at: null, complete: true })
     vi.mocked(getVoiceUsages).mockImplementation(async (id) => ({
       usages: [{ document_id: 'doc-a', title: 'Synthetic story', speaker: id === activeVoice.voice_id ? 'Alice' : 'Bob' }],
@@ -167,9 +169,9 @@ describe('VoiceLibraryDialog', () => {
 
   it('選択した声だけを順番に削除し、途中失敗では成功分を通知して残りの選択を保持する', async () => {
     const user = userEvent.setup()
-    const second = { ...activeVoice, voice_id: 'voice_saved_2', speaker_label: 'Bob' }
-    const third = { ...activeVoice, voice_id: 'voice_saved_3', speaker_label: 'Carol' }
-    const untouched = { ...activeVoice, voice_id: 'voice_saved_4', speaker_label: 'Dave' }
+    const second = { ...activeVoice, voice_id: 'voice_saved_2', speaker_label: 'Bob', display_name: 'Bob' }
+    const third = { ...activeVoice, voice_id: 'voice_saved_3', speaker_label: 'Carol', display_name: 'Carol' }
+    const untouched = { ...activeVoice, voice_id: 'voice_saved_4', speaker_label: 'Dave', display_name: 'Dave' }
     const onVoiceDeleted = vi.fn()
     const onVoicesChange = vi.fn()
     vi.mocked(listVoices).mockResolvedValue({ voices: [activeVoice, second, third, untouched], checked_at: null, complete: true })
@@ -194,8 +196,8 @@ describe('VoiceLibraryDialog', () => {
 
   it('複数の削除が成功すると選択を解除し、未選択の声を保持する', async () => {
     const user = userEvent.setup()
-    const second = { ...activeVoice, voice_id: 'voice_saved_2', speaker_label: 'Bob' }
-    const third = { ...activeVoice, voice_id: 'voice_saved_3', speaker_label: 'Carol' }
+    const second = { ...activeVoice, voice_id: 'voice_saved_2', speaker_label: 'Bob', display_name: 'Bob' }
+    const third = { ...activeVoice, voice_id: 'voice_saved_3', speaker_label: 'Carol', display_name: 'Carol' }
     const onVoiceDeleted = vi.fn()
     const onVoicesChange = vi.fn()
     const onSelect = vi.fn()
@@ -217,7 +219,7 @@ describe('VoiceLibraryDialog', () => {
 
   it('選択中の1件でも利用先が不完全なら一括削除を始めない', async () => {
     const user = userEvent.setup()
-    const second = { ...activeVoice, voice_id: 'voice_saved_2', speaker_label: 'Bob' }
+    const second = { ...activeVoice, voice_id: 'voice_saved_2', speaker_label: 'Bob', display_name: 'Bob' }
     vi.mocked(listVoices).mockResolvedValue({ voices: [activeVoice, second], checked_at: null, complete: true })
     vi.mocked(getVoiceUsages).mockImplementation(async (id) => ({ usages: [], complete: id !== second.voice_id }))
     renderDialog()
@@ -237,4 +239,34 @@ describe('VoiceLibraryDialog', () => {
 
     expect(await screen.findByRole('button', { name: '割り当てる' })).toBeDisabled()
   })
+})
+
+function SharedDeletion() {
+  const { markDeleted } = useVoiceLibrary()
+  return <button onClick={() => markDeleted(activeVoice)}>Delete shared</button>
+}
+
+it('rejects delayed Assign after a deletion in the shared management state', async () => {
+  let finish!: (voice: VoiceSummary) => void
+  vi.mocked(getVoice).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+  const onSelect = vi.fn()
+  render(<LocaleProvider runtime={createLocaleRuntime({ initialLocale: 'en' })}><VoiceLibraryProvider><SharedDeletion /><VoiceLibraryDialog open onOpenChange={() => undefined} onSelect={onSelect} /></VoiceLibraryProvider></LocaleProvider>)
+  fireEvent.click(await screen.findByRole('button', { name: 'Assign' }))
+  await waitFor(() => expect(getVoice).toHaveBeenCalledTimes(1))
+  fireEvent.click(screen.getByText('Delete shared'))
+  await act(async () => finish(activeVoice))
+  expect(onSelect).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: 'Assign' })).toBeDisabled()
+  expect(screen.getByRole('alert')).toBeInTheDocument()
+})
+
+it('Geminiの名前を表示専用で示し、名前がない場合はVoice IDで識別する', async () => {
+  const named = { ...activeVoice, display_name: 'Gemini voice' }
+  const unnamed = { ...activeVoice, voice_id: 'voice_unnamed', display_name: null, speaker_label: 'Speaker label' }
+  vi.mocked(listVoices).mockResolvedValue({ voices: [named, unnamed], checked_at: null, complete: true })
+  renderDialog()
+  expect(await screen.findByRole('heading', { name: 'Gemini voice' })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'voice_unnamed' })).toBeInTheDocument()
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  expect(screen.getByText('Voice名はGeminiのdisplay_nameです。現在のGemini APIでは作成後に変更できません。')).toBeInTheDocument()
 })
